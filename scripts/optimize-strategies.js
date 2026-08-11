@@ -42,6 +42,49 @@ const RECOMMENDED_PRESETS = {
   },
 };
 
+const LOCAL_INDICATOR_PRESETS = {
+  "588000": [
+    {
+      label: "USER LOCAL-HIGH BASELINE",
+      runner: runLocalHighLadderStrategy,
+      config: {
+        type: "local-high-ladder",
+        lookbackDays: 3,
+        entryDrop: 2,
+        ladderDrop: 2,
+        buyAdd: 20,
+        maxTarget: 100,
+        sellRise: 2,
+        sellReduce: 20,
+        maxSellsPerDay: 2,
+        resetRise: 0,
+        resetPositionBelow: 10,
+        stopLoss: 0,
+        stopReduce: 0,
+      },
+    },
+    {
+      label: "OPTIMIZED LOCAL-HIGH LADDER",
+      runner: runLocalHighLadderStrategy,
+      config: {
+        type: "local-high-ladder",
+        lookbackDays: 5,
+        entryDrop: 2,
+        ladderDrop: 4,
+        buyAdd: 30,
+        maxTarget: 100,
+        sellRise: 4,
+        sellReduce: 25,
+        maxSellsPerDay: 2,
+        resetRise: 0,
+        resetPositionBelow: 10,
+        stopLoss: 25,
+        stopReduce: 100,
+      },
+    },
+  ],
+};
+
 function fetchJson(path) {
   return new Promise(function(resolve, reject) {
     const url = new URL(path, "http://127.0.0.1:3000");
@@ -187,6 +230,11 @@ function sellByReduction(account, row, reducePercent) {
   return true;
 }
 
+function currentPositionRatio(account, row) {
+  const equity = account.cash + account.shares * row.close;
+  return equity > 0 ? account.shares * row.close / equity * 100 : 0;
+}
+
 function buildBuyHold(rows) {
   const firstPrice = rows[0].close;
   const shares = Math.floor(INITIAL_CASH / firstPrice);
@@ -261,6 +309,100 @@ function runWaveStrategy(rows, config) {
       }
     } else if (account.shares <= 0) {
       positionHighClose = 0;
+    }
+
+    const snapshot = accountSnapshot(account, row, INITIAL_CASH, peakEquity);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+  });
+
+  const last = accountSnapshot(account, rows[rows.length - 1], INITIAL_CASH, peakEquity);
+  return { returnRate: last.returnRate, maxDrawdown: maxDrawdown, trades: trades };
+}
+
+function getRollingHighSeries(context, days) {
+  const key = "rolling-high:" + days;
+  if (context.cache[key]) return context.cache[key];
+  const rows = context.rows;
+  const values = new Array(rows.length);
+  for (let index = 0; index < rows.length; index += 1) {
+    const start = Math.max(0, index - days + 1);
+    let best = rows[start].high;
+    for (let i = start + 1; i <= index; i += 1) {
+      best = Math.max(best, rows[i].high);
+    }
+    values[index] = best;
+  }
+  context.cache[key] = values;
+  return values;
+}
+
+function runLocalHighLadderStrategy(context, config) {
+  const rows = context.rows;
+  const rollingHighs = getRollingHighSeries(context, config.lookbackDays);
+  const account = { cash: INITIAL_CASH, shares: 0 };
+  const buyLots = [];
+  let anchorHigh = rollingHighs[0];
+  let deepestLevelBought = 0;
+  let peakEquity = INITIAL_CASH;
+  let maxDrawdown = 0;
+  let trades = 0;
+
+  rows.forEach(function(row, index) {
+    const rollingHigh = rollingHighs[index];
+    const ratioBefore = currentPositionRatio(account, row);
+    const allowAnchorReset = ratioBefore <= config.resetPositionBelow || row.high >= anchorHigh * (1 + config.resetRise / 100);
+    if (allowAnchorReset && rollingHigh > anchorHigh) {
+      anchorHigh = rollingHigh;
+      deepestLevelBought = 0;
+    }
+
+    if (row.high > anchorHigh) {
+      anchorHigh = row.high;
+      deepestLevelBought = 0;
+    }
+
+    const pullback = anchorHigh > 0 ? (anchorHigh - row.close) / anchorHigh * 100 : 0;
+    if (pullback >= config.entryDrop) {
+      const level = 1 + Math.floor((pullback - config.entryDrop) / config.ladderDrop);
+      while (deepestLevelBought < level) {
+        const target = Math.min(config.maxTarget, currentPositionRatio(account, row) + config.buyAdd);
+        if (target <= currentPositionRatio(account, row) + 0.01) break;
+        if (buyToTarget(account, row, target)) {
+          buyLots.push({ price: row.close, level: deepestLevelBought + 1 });
+          trades += 1;
+        }
+        deepestLevelBought += 1;
+        if (currentPositionRatio(account, row) >= config.maxTarget - 0.5) break;
+      }
+    }
+
+    if (account.shares > 0 && buyLots.length > 0) {
+      let guard = 0;
+      while (buyLots.length > 0 && guard < config.maxSellsPerDay) {
+        const lastBuy = buyLots[buyLots.length - 1];
+        const rise = lastBuy.price > 0 ? (row.close - lastBuy.price) / lastBuy.price * 100 : 0;
+        if (rise < config.sellRise) break;
+        if (sellByReduction(account, row, config.sellReduce)) {
+          trades += 1;
+          buyLots.pop();
+        } else {
+          break;
+        }
+        guard += 1;
+      }
+    }
+
+    if (config.stopLoss > 0 && account.shares > 0) {
+      const pullbackFromAnchor = anchorHigh > 0 ? (anchorHigh - row.close) / anchorHigh * 100 : 0;
+      if (pullbackFromAnchor >= config.stopLoss) {
+        if (sellByReduction(account, row, config.stopReduce)) {
+          trades += 1;
+          buyLots.length = 0;
+          deepestLevelBought = 0;
+          anchorHigh = rollingHigh;
+        }
+      }
     }
 
     const snapshot = accountSnapshot(account, row, INITIAL_CASH, peakEquity);
@@ -461,7 +603,7 @@ function scoreCandidate(results) {
 function evaluate(contexts, runner, config) {
   const results = contexts.map(function(context) {
     const periodRows = context.rows;
-    const model = config.type === "trend-pullback" || config.type === "wave-trend-guard"
+    const model = config.type === "trend-pullback" || config.type === "wave-trend-guard" || config.type === "local-high-ladder"
       ? runner(context, config)
       : runner(periodRows, config);
     return {
@@ -505,6 +647,26 @@ function rememberRiskFirst(best, candidate, limit) {
       return total + (result.hold.maxDrawdown - result.model.maxDrawdown);
     }, 0);
     if (riskA !== riskB) return riskB - riskA;
+    return b.score - a.score;
+  });
+  if (best.length > limit) best.length = limit;
+}
+
+function rememberReturnFirst(best, candidate, limit) {
+  const hasAllPeriodReturnEdge = candidate.results.every(function(result) {
+    return result.model.returnRate >= result.hold.returnRate;
+  });
+  if (!hasAllPeriodReturnEdge) return;
+
+  best.push(candidate);
+  best.sort(function(a, b) {
+    const returnA = a.results.reduce(function(total, result) {
+      return total + result.model.returnRate;
+    }, 0);
+    const returnB = b.results.reduce(function(total, result) {
+      return total + result.model.returnRate;
+    }, 0);
+    if (returnA !== returnB) return returnB - returnA;
     return b.score - a.score;
   });
   if (best.length > limit) best.length = limit;
@@ -700,6 +862,50 @@ function waveTrendGuardCandidates(contexts) {
   return best;
 }
 
+function localHighLadderCandidates(contexts) {
+  const best = [];
+  const riskBest = [];
+  const returnBest = [];
+  [3, 4, 5, 8].forEach(function(lookbackDays) {
+    [2, 2.5, 3, 4].forEach(function(entryDrop) {
+      [2, 2.5, 3, 4].forEach(function(ladderDrop) {
+        [20, 25, 30, 35].forEach(function(buyAdd) {
+          [80, 100].forEach(function(maxTarget) {
+            [2, 2.5, 3, 4].forEach(function(sellRise) {
+              [15, 20, 25].forEach(function(sellReduce) {
+                [
+                  { stopLoss: 0, stopReduce: 0 },
+                  { stopLoss: 25, stopReduce: 100 },
+                ].forEach(function(stop) {
+                  const candidate = evaluate(contexts, runLocalHighLadderStrategy, {
+                    type: "local-high-ladder",
+                    lookbackDays: lookbackDays,
+                    entryDrop: entryDrop,
+                    ladderDrop: ladderDrop,
+                    buyAdd: buyAdd,
+                    maxTarget: maxTarget,
+                    sellRise: sellRise,
+                    sellReduce: sellReduce,
+                    maxSellsPerDay: 2,
+                    resetRise: 0,
+                    resetPositionBelow: 10,
+                    stopLoss: stop.stopLoss,
+                    stopReduce: stop.stopReduce,
+                  });
+                  remember(best, candidate, 20);
+                  rememberRiskFirst(riskBest, candidate, 20);
+                  rememberReturnFirst(returnBest, candidate, 20);
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+  return best.concat(riskBest).concat(returnBest);
+}
+
 async function main() {
   const data = await fetchJson("/api/klines?code=" + CODE + "&start=" + START_DATE + "&end=" + END_DATE);
   const rows = data.rows.filter(isValidRow);
@@ -708,17 +914,27 @@ async function main() {
 
   const best = [];
   const riskFirst = [];
+  const returnFirst = [];
   waveCandidates(contexts).forEach(function(candidate) {
     remember(best, candidate, 20);
     rememberRiskFirst(riskFirst, candidate, 12);
+    rememberReturnFirst(returnFirst, candidate, 12);
   });
   trendCandidates(contexts).forEach(function(candidate) {
     remember(best, candidate, 20);
     rememberRiskFirst(riskFirst, candidate, 12);
+    rememberReturnFirst(returnFirst, candidate, 12);
   });
   waveTrendGuardCandidates(contexts).forEach(function(candidate) {
     remember(best, candidate, 20);
     rememberRiskFirst(riskFirst, candidate, 12);
+    rememberReturnFirst(returnFirst, candidate, 12);
+  });
+  const localCandidates = localHighLadderCandidates(contexts);
+  localCandidates.forEach(function(candidate) {
+    remember(best, candidate, 20);
+    rememberRiskFirst(riskFirst, candidate, 12);
+    rememberReturnFirst(returnFirst, candidate, 12);
   });
 
   best.slice(0, 8).forEach(function(candidate, index) {
@@ -740,8 +956,26 @@ async function main() {
     printCandidate("RECOMMENDED PRESET", evaluate(contexts, preset.runner, preset.config));
   }
 
+  if (LOCAL_INDICATOR_PRESETS[CODE]) {
+    LOCAL_INDICATOR_PRESETS[CODE].forEach(function(preset) {
+      printCandidate(preset.label, evaluate(contexts, preset.runner, preset.config));
+    });
+  }
+
   riskFirst.slice(0, 5).forEach(function(candidate, index) {
     printCandidate("risk-first candidate #" + (index + 1), candidate);
+  });
+
+  returnFirst.slice(0, 5).forEach(function(candidate, index) {
+    printCandidate("return-first candidate #" + (index + 1), candidate);
+  });
+
+  const localReturnFirst = [];
+  localCandidates.forEach(function(candidate) {
+    rememberReturnFirst(localReturnFirst, candidate, 5);
+  });
+  localReturnFirst.forEach(function(candidate, index) {
+    printCandidate("local-high-ladder return-first #" + (index + 1), candidate);
   });
 }
 
