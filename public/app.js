@@ -20,6 +20,8 @@ const sellRulesContainer = document.querySelector("#sellRules");
 const initialCashInput = document.querySelector("#initialCashInput");
 const waveThresholdInput = document.querySelector("#waveThresholdInput");
 const playSpeedInput = document.querySelector("#playSpeedInput");
+const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
+const applyPresetButton = document.querySelector("#applyPresetButton");
 const riskEnabledInput = document.querySelector("#riskEnabledInput");
 const riskLookbackInput = document.querySelector("#riskLookbackInput");
 const riskStalledInput = document.querySelector("#riskStalledInput");
@@ -86,6 +88,43 @@ const defaultNoNewHighExitRule = {
   reduce: 100,
 };
 
+const strategyPresets = {
+  optimized: {
+    label: "513100 多周期优化策略",
+    waveThreshold: 15,
+    buyRules: [
+      { enabled: true, drop: 5, target: 40 },
+      { enabled: true, drop: 10, target: 70 },
+      { enabled: true, drop: 15, target: 100 },
+      { enabled: false, drop: 20, target: 100 },
+      { enabled: false, drop: 25, target: 100 },
+      { enabled: false, drop: 30, target: 100 },
+    ],
+    sellRules: [
+      { enabled: true, rise: 30, reduce: 30 },
+      { enabled: true, rise: 70, reduce: 70 },
+      { enabled: true, rise: 80, reduce: 100 },
+      { enabled: false, rise: 110, reduce: 100 },
+    ],
+    noNewHighExitRule: {
+      enabled: false,
+      lookbackDays: 6,
+      stalledDays: 5,
+      reduce: 100,
+    },
+  },
+  original: {
+    label: "原始分批加仓策略",
+    waveThreshold: 5,
+    buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: true })),
+    sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: true })),
+    noNewHighExitRule: {
+      enabled: true,
+      ...defaultNoNewHighExitRule,
+    },
+  },
+};
+
 function formatDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -127,13 +166,18 @@ function setLoading(isLoading) {
   form.querySelector("button").disabled = isLoading;
 }
 
-function renderRuleInputs() {
-  buyRulesContainer.innerHTML = defaultBuyRules
+function renderRuleInputs(presetName = "optimized") {
+  const preset = strategyPresets[presetName] || strategyPresets.optimized;
+  const buyRules = preset.buyRules || defaultBuyRules;
+  const sellRules = preset.sellRules || defaultSellRules;
+
+  buyRulesContainer.innerHTML = buyRules
     .map((rule, index) => {
+      const checked = rule.enabled === false ? "" : " checked";
       return `
         <div class="rule-row">
           <label class="rule-switch">
-            <input class="buy-enabled" data-index="${index}" type="checkbox" checked>
+            <input class="buy-enabled" data-index="${index}" type="checkbox"${checked}>
             启用
           </label>
           <label>
@@ -149,12 +193,13 @@ function renderRuleInputs() {
     })
     .join("");
 
-  sellRulesContainer.innerHTML = defaultSellRules
+  sellRulesContainer.innerHTML = sellRules
     .map((rule, index) => {
+      const checked = rule.enabled === false ? "" : " checked";
       return `
         <div class="rule-row">
           <label class="rule-switch">
-            <input class="sell-enabled" data-index="${index}" type="checkbox" checked>
+            <input class="sell-enabled" data-index="${index}" type="checkbox"${checked}>
             启用
           </label>
           <label>
@@ -169,6 +214,31 @@ function renderRuleInputs() {
       `;
     })
     .join("");
+}
+
+function applyStrategyPreset(presetName, shouldAnnounce = true) {
+  const preset = strategyPresets[presetName] || strategyPresets.optimized;
+  if (strategyPresetSelect) strategyPresetSelect.value = presetName;
+  waveThresholdInput.value = preset.waveThreshold;
+  renderRuleInputs(presetName);
+
+  if (riskEnabledInput && preset.noNewHighExitRule) {
+    riskEnabledInput.checked = Boolean(preset.noNewHighExitRule.enabled);
+    riskLookbackInput.value = preset.noNewHighExitRule.lookbackDays;
+    riskStalledInput.value = preset.noNewHighExitRule.stalledDays;
+    riskReduceInput.value = preset.noNewHighExitRule.reduce;
+  }
+
+  if (lastRows && lastSummary) {
+    drawChart(lastRows, lastSummary);
+    if (hasBacktestRun) {
+      recomputeBacktestWithLatestConfig();
+    } else if (shouldAnnounce) {
+      setStatus(`已套用 ${preset.label}，历史波浪点已按 ${formatPercent(preset.waveThreshold)} 阈值刷新。`);
+    }
+  } else if (shouldAnnounce) {
+    setStatus(`已套用 ${preset.label}。`);
+  }
 }
 
 function readBacktestConfig() {
@@ -1160,6 +1230,10 @@ startBacktestButton.addEventListener("click", () => {
   startBacktest();
 });
 
+applyPresetButton.addEventListener("click", () => {
+  applyStrategyPreset(strategyPresetSelect.value);
+});
+
 waveThresholdInput.addEventListener("input", () => {
   if (lastRows && lastSummary) {
     drawChart(lastRows, lastSummary);
@@ -1204,6 +1278,6 @@ window.addEventListener("resize", () => {
   }
 });
 
-renderRuleInputs();
+applyStrategyPreset("optimized", false);
 initializeDates();
 loadData();

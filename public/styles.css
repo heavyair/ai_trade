@@ -115,13 +115,15 @@ label {
 }
 
 input,
+select,
 button {
   height: 42px;
   border-radius: 6px;
   font: inherit;
 }
 
-input {
+input,
+select {
   width: 100%;
   border: 1px solid var(--border);
   padding: 0 12px;
@@ -129,7 +131,8 @@ input {
   background: #fff;
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: 3px solid rgba(31, 122, 140, 0.18);
   border-color: var(--accent);
 }
@@ -337,6 +340,14 @@ button:disabled {
 .backtest-form,
 .account-panel {
   min-width: 0;
+}
+
+.preset-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
 }
 
 .settings-grid {
@@ -759,6 +770,7 @@ tbody tr:last-child td {
   .query-form,
   .summary-grid,
   .backtest-layout,
+  .preset-panel,
   .settings-grid,
   .risk-grid,
   .account-strip,

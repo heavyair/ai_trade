@@ -4,7 +4,8 @@
   "private": true,
   "description": "Local web app for finding high and low points for A-share symbols over a selected date range.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "optimize": "node scripts/optimize-strategies.js"
   },
   "engines": {
     "node": ">=12"

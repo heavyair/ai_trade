@@ -70,6 +70,17 @@ function parseEastMoneyKlineRow(row) {
   };
 }
 
+function isValidKlineRow(row) {
+  return Number.isFinite(row.open)
+    && Number.isFinite(row.close)
+    && Number.isFinite(row.high)
+    && Number.isFinite(row.low)
+    && row.open > 0
+    && row.close > 0
+    && row.high > 0
+    && row.low > 0;
+}
+
 function summarize(symbol, name, rows) {
   const highest = rows.reduce((best, item) => (item.high > best.high ? item : best), rows[0]);
   const lowest = rows.reduce((best, item) => (item.low < best.low ? item : best), rows[0]);
@@ -210,12 +221,7 @@ function parseYahooRows(payload) {
 
       return row;
     })
-    .filter((row) => {
-      return Number.isFinite(row.open)
-        && Number.isFinite(row.close)
-        && Number.isFinite(row.high)
-        && Number.isFinite(row.low);
-    });
+    .filter(isValidKlineRow);
 }
 
 async function fetchEastMoneyKlines({ code, market, start, end }) {
@@ -229,9 +235,7 @@ async function fetchEastMoneyKlines({ code, market, start, end }) {
     throw new Error("没有查到该代码在所选时间区间内的日线数据。");
   }
 
-  const rows = data.klines.map(parseEastMoneyKlineRow).filter((row) => {
-    return Number.isFinite(row.high) && Number.isFinite(row.low);
-  });
+  const rows = data.klines.map(parseEastMoneyKlineRow).filter(isValidKlineRow);
 
   if (rows.length === 0) {
     throw new Error("行情数据格式异常，无法计算最高和最低点。");

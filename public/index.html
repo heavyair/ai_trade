@@ -101,6 +101,17 @@
 
         <div class="backtest-layout">
           <form id="backtestForm" class="backtest-form">
+            <div class="preset-panel">
+              <label>
+                策略预设
+                <select id="strategyPresetSelect">
+                  <option value="optimized">513100 多周期优化策略</option>
+                  <option value="original">原始分批加仓策略</option>
+                </select>
+              </label>
+              <button id="applyPresetButton" type="button">套用</button>
+            </div>
+
             <div class="settings-grid">
               <label>
                 初始现金
