@@ -2,7 +2,7 @@ const http = require("http");
 
 const END_DATE = "2026-08-11";
 const START_DATE = "2018-08-11";
-const CODE = "513100";
+const CODE = process.argv[2] || "513100";
 const INITIAL_CASH = 100000;
 
 const PERIODS = [
@@ -13,10 +13,33 @@ const PERIODS = [
 ];
 
 const CURRENT_BEST = {
-  "1y": { returnRate: 33.67, maxDrawdown: 11.25 },
-  "3y": { returnRate: 102.47, maxDrawdown: 20.74 },
-  "5y": { returnRate: 163.55, maxDrawdown: 20.74 },
-  "8y": { returnRate: 437.77, maxDrawdown: 27.50 },
+  "513100": {
+    "1y": { returnRate: 33.67, maxDrawdown: 11.25 },
+    "3y": { returnRate: 102.47, maxDrawdown: 20.74 },
+    "5y": { returnRate: 163.55, maxDrawdown: 20.74 },
+    "8y": { returnRate: 437.77, maxDrawdown: 27.50 },
+  },
+};
+
+const RECOMMENDED_PRESETS = {
+  "588000": {
+    runner: runWaveStrategy,
+    config: {
+      type: "wave",
+      waveThreshold: 20,
+      buyRules: [
+        { drop: 5, target: 35 },
+        { drop: 10, target: 60 },
+        { drop: 15, target: 100 },
+      ],
+      sellRules: [
+        { rise: 40, reduce: 25 },
+        { rise: 70, reduce: 70 },
+        { rise: 80, reduce: 100 },
+      ],
+      trailingStops: [],
+    },
+  },
 };
 
 function fetchJson(path) {
@@ -249,6 +272,80 @@ function runWaveStrategy(rows, config) {
   return { returnRate: last.returnRate, maxDrawdown: maxDrawdown, trades: trades };
 }
 
+function runWaveTrendGuardStrategy(context, config) {
+  const rows = context.rows;
+  const maSeries = getMovingAverageSeries(context, config.maDays);
+  const account = { cash: INITIAL_CASH, shares: 0 };
+  const wave = createWaveTracker(rows[0], config.waveThreshold);
+  const triggeredBuys = {};
+  const triggeredSells = {};
+  let lastBuy = null;
+  let peakEquity = INITIAL_CASH;
+  let maxDrawdown = 0;
+  let trades = 0;
+
+  rows.forEach(function(row, index) {
+    const events = updateWaveTracker(wave, row);
+    if (events.indexOf("new-high") !== -1) {
+      Object.keys(triggeredBuys).forEach(function(key) { delete triggeredBuys[key]; });
+    }
+
+    const ma = maSeries[index];
+    let targetCap = config.noMaCap;
+    if (ma) {
+      if (row.close < ma * (1 - config.bearCut / 100)) {
+        targetCap = config.bearCap;
+      } else if (row.close >= ma * (1 + config.recover / 100)) {
+        targetCap = config.bullCap;
+      } else {
+        targetCap = config.neutralCap;
+      }
+    }
+
+    const equity = account.cash + account.shares * row.close;
+    const currentRatio = equity > 0 ? account.shares * row.close / equity * 100 : 0;
+    if (currentRatio > targetCap + config.rebalanceBand) {
+      if (sellByReduction(account, row, currentRatio - targetCap)) {
+        trades += 1;
+        Object.keys(triggeredSells).forEach(function(sellKey) { delete triggeredSells[sellKey]; });
+      }
+    }
+
+    const drawdown = wave.high.price > 0 ? (wave.high.price - row.close) / wave.high.price * 100 : 0;
+    config.buyRules.forEach(function(rule) {
+      const target = Math.min(rule.target, targetCap);
+      const key = wave.high.version + ":" + rule.drop + ":" + target + ":" + targetCap;
+      if (target > currentRatio && drawdown >= rule.drop && !triggeredBuys[key]) {
+        if (buyToTarget(account, row, target)) {
+          lastBuy = { price: row.close, index: index };
+          Object.keys(triggeredSells).forEach(function(sellKey) { delete triggeredSells[sellKey]; });
+          trades += 1;
+        }
+        triggeredBuys[key] = true;
+      }
+    });
+
+    if (lastBuy && account.shares > 0) {
+      const rise = lastBuy.price > 0 ? (row.close - lastBuy.price) / lastBuy.price * 100 : 0;
+      config.sellRules.forEach(function(rule) {
+        const key = lastBuy.index + ":" + lastBuy.price + ":" + rule.rise + ":" + rule.reduce;
+        if (rise >= rule.rise && !triggeredSells[key]) {
+          if (sellByReduction(account, row, rule.reduce)) trades += 1;
+          triggeredSells[key] = true;
+        }
+      });
+    }
+
+    const snapshot = accountSnapshot(account, row, INITIAL_CASH, peakEquity);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+  });
+
+  const last = accountSnapshot(account, rows[rows.length - 1], INITIAL_CASH, peakEquity);
+  return { returnRate: last.returnRate, maxDrawdown: maxDrawdown, trades: trades };
+}
+
+
 function getMovingAverageSeries(context, days) {
   const key = "ma:" + days;
   if (context.cache[key]) return context.cache[key];
@@ -345,24 +442,26 @@ function scoreCandidate(results) {
   let score = 0;
   let beatsHold = true;
   let beatsCurrent = true;
+  const currentBest = CURRENT_BEST[CODE];
   results.forEach(function(result) {
     score += result.model.returnRate - result.hold.returnRate;
     score += (result.hold.maxDrawdown - result.model.maxDrawdown) * 1.5;
-    const current = CURRENT_BEST[result.period];
     if (result.model.returnRate <= result.hold.returnRate || result.model.maxDrawdown >= result.hold.maxDrawdown) {
       beatsHold = false;
     }
+    const current = currentBest && currentBest[result.period];
     if (current && (result.model.returnRate <= current.returnRate || result.model.maxDrawdown >= current.maxDrawdown)) {
       beatsCurrent = false;
     }
   });
+  if (!currentBest) beatsCurrent = beatsHold;
   return { score: score, beatsHold: beatsHold, beatsCurrent: beatsCurrent };
 }
 
 function evaluate(contexts, runner, config) {
   const results = contexts.map(function(context) {
     const periodRows = context.rows;
-    const model = config.type === "trend-pullback"
+    const model = config.type === "trend-pullback" || config.type === "wave-trend-guard"
       ? runner(context, config)
       : runner(periodRows, config);
     return {
@@ -386,6 +485,26 @@ function remember(best, candidate, limit) {
   best.sort(function(a, b) {
     if (a.beatsCurrent !== b.beatsCurrent) return a.beatsCurrent ? -1 : 1;
     if (a.beatsHold !== b.beatsHold) return a.beatsHold ? -1 : 1;
+    return b.score - a.score;
+  });
+  if (best.length > limit) best.length = limit;
+}
+
+function rememberRiskFirst(best, candidate, limit) {
+  const hasAllPeriodReturnEdge = candidate.results.every(function(result) {
+    return result.model.returnRate >= result.hold.returnRate;
+  });
+  if (!hasAllPeriodReturnEdge) return;
+
+  best.push(candidate);
+  best.sort(function(a, b) {
+    const riskA = a.results.reduce(function(total, result) {
+      return total + (result.hold.maxDrawdown - result.model.maxDrawdown);
+    }, 0);
+    const riskB = b.results.reduce(function(total, result) {
+      return total + (result.hold.maxDrawdown - result.model.maxDrawdown);
+    }, 0);
+    if (riskA !== riskB) return riskB - riskA;
     return b.score - a.score;
   });
   if (best.length > limit) best.length = limit;
@@ -534,6 +653,53 @@ function trendCandidates(contexts) {
   return best;
 }
 
+function waveTrendGuardCandidates(contexts) {
+  const best = [];
+  const buySets = [
+    [{ drop: 5, target: 35 }, { drop: 10, target: 60 }, { drop: 15, target: 100 }],
+    [{ drop: 5, target: 40 }, { drop: 10, target: 70 }, { drop: 15, target: 100 }],
+    [{ drop: 8, target: 45 }, { drop: 13, target: 75 }, { drop: 20, target: 100 }],
+  ];
+  const sellSets = [
+    [{ rise: 40, reduce: 30 }, { rise: 70, reduce: 70 }, { rise: 110, reduce: 100 }],
+    [{ rise: 30, reduce: 25 }, { rise: 60, reduce: 55 }, { rise: 90, reduce: 100 }],
+    [{ rise: 35, reduce: 20 }, { rise: 70, reduce: 50 }, { rise: 110, reduce: 100 }],
+  ];
+
+  [15, 20, 25].forEach(function(waveThreshold) {
+    [80, 120, 160, 200].forEach(function(maDays) {
+      [0, 3, 5, 8].forEach(function(bearCut) {
+        [0, 20, 35].forEach(function(bearCap) {
+          [50, 70, 100].forEach(function(neutralCap) {
+            [0, 2, 5].forEach(function(recover) {
+              buySets.forEach(function(buyRules) {
+                sellSets.forEach(function(sellRules) {
+                  const candidate = evaluate(contexts, runWaveTrendGuardStrategy, {
+                    type: "wave-trend-guard",
+                    waveThreshold: waveThreshold,
+                    maDays: maDays,
+                    bearCut: bearCut,
+                    bearCap: bearCap,
+                    neutralCap: neutralCap,
+                    bullCap: 100,
+                    noMaCap: maDays >= 160 ? 0 : 100,
+                    recover: recover,
+                    rebalanceBand: 8,
+                    buyRules: buyRules,
+                    sellRules: sellRules,
+                  });
+                  remember(best, candidate, 12);
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+  return best;
+}
+
 async function main() {
   const data = await fetchJson("/api/klines?code=" + CODE + "&start=" + START_DATE + "&end=" + END_DATE);
   const rows = data.rows.filter(isValidRow);
@@ -541,11 +707,18 @@ async function main() {
   const contexts = buildContexts(rows);
 
   const best = [];
+  const riskFirst = [];
   waveCandidates(contexts).forEach(function(candidate) {
     remember(best, candidate, 20);
+    rememberRiskFirst(riskFirst, candidate, 12);
   });
   trendCandidates(contexts).forEach(function(candidate) {
     remember(best, candidate, 20);
+    rememberRiskFirst(riskFirst, candidate, 12);
+  });
+  waveTrendGuardCandidates(contexts).forEach(function(candidate) {
+    remember(best, candidate, 20);
+    rememberRiskFirst(riskFirst, candidate, 12);
   });
 
   best.slice(0, 8).forEach(function(candidate, index) {
@@ -557,10 +730,19 @@ async function main() {
   })[0];
 
   if (winner) {
-    printCandidate("STRICT WINNER", winner);
+    printCandidate(CURRENT_BEST[CODE] ? "STRICT WINNER" : "BEST ALL-PERIOD HOLD WINNER", winner);
   } else {
-    console.log("\nNo candidate beat the previous best on every 1/3/5/8 year return and drawdown test.");
+    console.log("\nNo candidate beat the comparison target on every 1/3/5/8 year return and drawdown test.");
   }
+
+  if (RECOMMENDED_PRESETS[CODE]) {
+    const preset = RECOMMENDED_PRESETS[CODE];
+    printCandidate("RECOMMENDED PRESET", evaluate(contexts, preset.runner, preset.config));
+  }
+
+  riskFirst.slice(0, 5).forEach(function(candidate, index) {
+    printCandidate("risk-first candidate #" + (index + 1), candidate);
+  });
 }
 
 main().catch(function(error) {

@@ -113,6 +113,30 @@ const strategyPresets = {
       reduce: 100,
     },
   },
+  optimized588000: {
+    label: "588000 多周期优化策略",
+    waveThreshold: 20,
+    buyRules: [
+      { enabled: true, drop: 5, target: 35 },
+      { enabled: true, drop: 10, target: 60 },
+      { enabled: true, drop: 15, target: 100 },
+      { enabled: false, drop: 20, target: 100 },
+      { enabled: false, drop: 25, target: 100 },
+      { enabled: false, drop: 30, target: 100 },
+    ],
+    sellRules: [
+      { enabled: true, rise: 40, reduce: 25 },
+      { enabled: true, rise: 70, reduce: 70 },
+      { enabled: true, rise: 80, reduce: 100 },
+      { enabled: false, rise: 110, reduce: 100 },
+    ],
+    noNewHighExitRule: {
+      enabled: false,
+      lookbackDays: 6,
+      stalledDays: 5,
+      reduce: 100,
+    },
+  },
   original: {
     label: "原始分批加仓策略",
     waveThreshold: 5,
