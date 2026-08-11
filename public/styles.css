@@ -252,6 +252,16 @@ button:disabled {
   gap: 6px;
 }
 
+.chart-wave-control {
+  width: 156px;
+  flex: 0 0 156px;
+  font-size: 12px;
+}
+
+.chart-wave-control input {
+  height: 36px;
+}
+
 .line {
   width: 22px;
   height: 3px;
@@ -297,11 +307,24 @@ button:disabled {
   background: #344054;
 }
 
+.wave-high-dot {
+  background: #8a4b08;
+}
+
+.wave-low-dot {
+  background: #344054;
+}
+
+.confirm-dot {
+  background: #f0a202;
+}
+
 .chart-wrap {
   height: 430px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: #fbfcff;
 }
 
@@ -370,6 +393,28 @@ button:disabled {
   background: #fff;
 }
 
+.rule-switch,
+.risk-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rule-switch {
+  grid-column: 1 / -1;
+}
+
+.rule-switch input,
+.risk-switch input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .rule-row label {
   font-size: 12px;
 }
@@ -379,10 +424,21 @@ button:disabled {
   padding: 0 10px;
 }
 
+.rule-row .rule-switch input,
+.risk-switch input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
 .risk-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  margin-top: 12px;
+}
+
+.risk-switch {
   margin-top: 12px;
 }
 
@@ -712,6 +768,11 @@ tbody tr:last-child td {
 
   .chart-head {
     flex-direction: column;
+  }
+
+  .chart-wave-control {
+    width: 100%;
+    flex-basis: auto;
   }
 
   .comparison-head,

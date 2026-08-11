@@ -9,6 +9,9 @@ const returnCompareChart = document.querySelector("#returnCompareChart");
 const tradePriceChart = document.querySelector("#tradePriceChart");
 const tableBody = document.querySelector("#dataTable");
 const startBacktestButton = document.querySelector("#startBacktestButton");
+const priceZoomOutButton = document.querySelector("#priceZoomOutButton");
+const priceZoomResetButton = document.querySelector("#priceZoomResetButton");
+const priceZoomInButton = document.querySelector("#priceZoomInButton");
 const tradeZoomOutButton = document.querySelector("#tradeZoomOutButton");
 const tradeZoomResetButton = document.querySelector("#tradeZoomResetButton");
 const tradeZoomInButton = document.querySelector("#tradeZoomInButton");
@@ -17,6 +20,7 @@ const sellRulesContainer = document.querySelector("#sellRules");
 const initialCashInput = document.querySelector("#initialCashInput");
 const waveThresholdInput = document.querySelector("#waveThresholdInput");
 const playSpeedInput = document.querySelector("#playSpeedInput");
+const riskEnabledInput = document.querySelector("#riskEnabledInput");
 const riskLookbackInput = document.querySelector("#riskLookbackInput");
 const riskStalledInput = document.querySelector("#riskStalledInput");
 const riskReduceInput = document.querySelector("#riskReduceInput");
@@ -25,6 +29,8 @@ let lastSummary = null;
 let backtestTimer = null;
 let backtestStates = [];
 let backtestIndex = 0;
+let hasBacktestRun = false;
+let priceChartZoom = 1;
 let tradePriceZoom = 1;
 
 const fields = {
@@ -126,6 +132,10 @@ function renderRuleInputs() {
     .map((rule, index) => {
       return `
         <div class="rule-row">
+          <label class="rule-switch">
+            <input class="buy-enabled" data-index="${index}" type="checkbox" checked>
+            启用
+          </label>
           <label>
             回撤 %
             <input class="buy-drop" data-index="${index}" type="number" min="0" max="90" step="0.5" value="${rule.drop}">
@@ -143,6 +153,10 @@ function renderRuleInputs() {
     .map((rule, index) => {
       return `
         <div class="rule-row">
+          <label class="rule-switch">
+            <input class="sell-enabled" data-index="${index}" type="checkbox" checked>
+            启用
+          </label>
           <label>
             上涨 %
             <input class="sell-rise" data-index="${index}" type="number" min="0" max="90" step="0.5" value="${rule.rise}">
@@ -158,25 +172,29 @@ function renderRuleInputs() {
 }
 
 function readBacktestConfig() {
+  const buyEnabled = Array.from(document.querySelectorAll(".buy-enabled"));
   const buyDrops = Array.from(document.querySelectorAll(".buy-drop"));
   const buyTargets = Array.from(document.querySelectorAll(".buy-target"));
+  const sellEnabled = Array.from(document.querySelectorAll(".sell-enabled"));
   const sellRises = Array.from(document.querySelectorAll(".sell-rise"));
   const sellReduces = Array.from(document.querySelectorAll(".sell-reduce"));
 
   const buyRules = buyDrops
     .map((input, index) => ({
+      enabled: buyEnabled[index] ? buyEnabled[index].checked : true,
       drop: Number(input.value),
       target: Number(buyTargets[index].value),
     }))
-    .filter((rule) => Number.isFinite(rule.drop) && Number.isFinite(rule.target))
+    .filter((rule) => rule.enabled && Number.isFinite(rule.drop) && Number.isFinite(rule.target))
     .sort((a, b) => a.drop - b.drop);
 
   const sellRules = sellRises
     .map((input, index) => ({
+      enabled: sellEnabled[index] ? sellEnabled[index].checked : true,
       rise: Number(input.value),
       reduce: Number(sellReduces[index].value),
     }))
-    .filter((rule) => Number.isFinite(rule.rise) && Number.isFinite(rule.reduce))
+    .filter((rule) => rule.enabled && Number.isFinite(rule.rise) && Number.isFinite(rule.reduce))
     .sort((a, b) => a.rise - b.rise);
 
   return {
@@ -186,6 +204,7 @@ function readBacktestConfig() {
     buyRules,
     sellRules,
     noNewHighExitRule: {
+      enabled: riskEnabledInput ? riskEnabledInput.checked : true,
       lookbackDays: Math.max(2, Math.round(Number(riskLookbackInput.value) || defaultNoNewHighExitRule.lookbackDays)),
       stalledDays: Math.max(1, Math.round(Number(riskStalledInput.value) || defaultNoNewHighExitRule.stalledDays)),
       reduce: Math.min(100, Math.max(0, Number(riskReduceInput.value) || defaultNoNewHighExitRule.reduce)),
@@ -240,6 +259,63 @@ function updateWaveTracker(wave, row) {
   }
 
   return events;
+}
+
+function getWaveThreshold() {
+  return Math.max(0.1, Number(waveThresholdInput.value) || 5);
+}
+
+function calculateWavePoints(rows, threshold) {
+  if (!rows || rows.length === 0) {
+    return { highs: [], lows: [] };
+  }
+
+  const wave = createWaveTracker(rows[0], threshold);
+  const dateToIndex = new Map(rows.map((row, index) => [row.date, index]));
+  const highs = [];
+  const lows = [];
+  const seenHighs = new Set();
+  const seenLows = new Set();
+
+  rows.forEach((row) => {
+    const events = updateWaveTracker(wave, row);
+
+    if (events.includes("new-high")) {
+      const key = `${wave.high.version}:${wave.high.date}:${wave.high.price}`;
+      if (!seenHighs.has(key)) {
+        highs.push({
+          date: wave.high.date,
+          price: wave.high.price,
+          rowIndex: dateToIndex.get(wave.high.date),
+          confirmDate: row.date,
+          confirmPrice: row.low,
+          confirmRowIndex: dateToIndex.get(row.date),
+          confirmLabel: "确认低价",
+          version: wave.high.version,
+        });
+        seenHighs.add(key);
+      }
+    }
+
+    if (events.includes("new-low")) {
+      const key = `${wave.low.version}:${wave.low.date}:${wave.low.price}`;
+      if (!seenLows.has(key)) {
+        lows.push({
+          date: wave.low.date,
+          price: wave.low.price,
+          rowIndex: dateToIndex.get(wave.low.date),
+          confirmDate: row.date,
+          confirmPrice: row.high,
+          confirmRowIndex: dateToIndex.get(row.date),
+          confirmLabel: "确认高价",
+          version: wave.low.version,
+        });
+        seenLows.add(key);
+      }
+    }
+  });
+
+  return { highs, lows };
 }
 
 function getAccountSnapshot(account, row, initialCash, peakEquity, trades) {
@@ -342,6 +418,7 @@ function buildBacktestStates(rows, config) {
   const triggeredSells = new Set();
   const trades = [];
   const states = [];
+  const waveHighs = [];
   let lastBuyTrade = null;
   let noNewHighDays = 0;
   let peakEquity = config.initialCash;
@@ -349,7 +426,19 @@ function buildBacktestStates(rows, config) {
 
   rows.forEach((row, index) => {
     const events = updateWaveTracker(wave, row);
-    if (events.includes("new-high")) triggeredBuys.clear();
+    if (events.includes("new-high")) {
+      triggeredBuys.clear();
+      waveHighs.push({
+        date: wave.high.date,
+        price: wave.high.price,
+        rowIndex: rows.findIndex((item) => item.date === wave.high.date),
+        confirmDate: row.date,
+        confirmPrice: row.low,
+        confirmRowIndex: index,
+        confirmLabel: "确认低价",
+        version: wave.high.version,
+      });
+    }
     let boughtToday = false;
 
     const drawdown = wave.high.price > 0
@@ -369,6 +458,9 @@ function buildBacktestStates(rows, config) {
             label: "阶段高点",
             date: wave.high.date,
             price: wave.high.price,
+            confirmDate: row.date,
+            confirmPrice: row.low,
+            confirmLabel: "确认低价",
           },
           drawdown,
           trades
@@ -410,7 +502,7 @@ function buildBacktestStates(rows, config) {
       });
     }
 
-    if (account.shares > 0 && !boughtToday) {
+    if (noNewHighRule.enabled && account.shares > 0 && !boughtToday) {
       const previousHigh = getPreviousHigh(rows, index, noNewHighRule.lookbackDays);
       if (previousHigh) {
         if (row.high > previousHigh.high) {
@@ -452,6 +544,7 @@ function buildBacktestStates(rows, config) {
     peakEquity = snapshot.peakEquity;
     maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
     snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = waveHighs.slice();
     states.push(snapshot);
   });
 
@@ -619,12 +712,16 @@ function drawTradePriceChart(states) {
 
   const rows = usableStates.map((state) => state.row);
   const trades = usableStates[usableStates.length - 1].trades;
+  const waveHighs = usableStates[usableStates.length - 1].waveHighs || [];
   const dateToIndex = new Map(rows.map((row, index) => [row.date, index]));
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
 
   trades.forEach((trade) => {
     priceValues.push(trade.price);
     if (trade.reference) priceValues.push(trade.reference.price);
+  });
+  waveHighs.forEach((point) => {
+    priceValues.push(point.price);
   });
 
   const max = Math.max(...priceValues);
@@ -648,6 +745,35 @@ function drawTradePriceChart(states) {
     Math.floor((rows.length - 1) * 0.5),
     rows.length - 1,
   ]));
+
+  const waveHighNodes = waveHighs
+    .map((point, index) => {
+      const pointIndex = dateToIndex.get(point.date);
+      if (!Number.isInteger(pointIndex)) return "";
+
+      const x = xForIndex(pointIndex);
+      const y = scaleY(point.price);
+      const hasConfirmPoint = Number.isInteger(point.confirmRowIndex);
+      const confirmX = hasConfirmPoint ? xForIndex(point.confirmRowIndex) : x;
+      const confirmY = hasConfirmPoint ? scaleY(point.confirmPrice) : y;
+      const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 150);
+      const labelY = Math.min(Math.max(y + (index % 2 === 0 ? -36 : 18), pad.top + 4), height - pad.bottom - 34);
+      const confirmLabelX = Math.min(Math.max(confirmX + 8, pad.left + 4), width - pad.right - 150);
+      const confirmLabelY = Math.min(Math.max(confirmY + 18, pad.top + 4), height - pad.bottom - 34);
+
+      return `
+        ${hasConfirmPoint ? `<line class="trade-ref-line" x1="${x}" y1="${y}" x2="${confirmX}" y2="${confirmY}"></line>` : ""}
+        <circle cx="${x}" cy="${y}" r="5" fill="#8a4b08"></circle>
+        <rect class="trade-label-bg" x="${labelX}" y="${labelY}" width="142" height="31" rx="4"></rect>
+        <text class="trade-label" x="${labelX + 6}" y="${labelY + 12}">波浪高点 ${formatPrice(point.price)}</text>
+        <text class="trade-label" x="${labelX + 6}" y="${labelY + 25}">${point.date}</text>
+        ${hasConfirmPoint ? `<circle cx="${confirmX}" cy="${confirmY}" r="4.5" fill="#f0a202"></circle>` : ""}
+        ${hasConfirmPoint ? `<rect class="trade-label-bg" x="${confirmLabelX}" y="${confirmLabelY}" width="142" height="31" rx="4"></rect>` : ""}
+        ${hasConfirmPoint ? `<text class="trade-label" x="${confirmLabelX + 6}" y="${confirmLabelY + 12}">${point.confirmLabel} ${formatPrice(point.confirmPrice)}</text>` : ""}
+        ${hasConfirmPoint ? `<text class="trade-label" x="${confirmLabelX + 6}" y="${confirmLabelY + 25}">${point.confirmDate}</text>` : ""}
+      `;
+    })
+    .join("");
 
   const tradeNodes = trades
     .map((trade, index) => {
@@ -697,6 +823,7 @@ function drawTradePriceChart(states) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${pricePath}"></path>
+    ${waveHighNodes}
     ${tradeNodes}
     ${dateTickIndexes
       .map((index) => {
@@ -765,6 +892,13 @@ function setTradePriceZoom(nextZoom) {
   redrawVisibleBacktestCharts();
 }
 
+function setPriceChartZoom(nextZoom) {
+  priceChartZoom = Math.min(12, Math.max(1, nextZoom));
+  if (lastRows && lastSummary) {
+    drawChart(lastRows, lastSummary);
+  }
+}
+
 function stopBacktestReplay() {
   if (backtestTimer) {
     clearInterval(backtestTimer);
@@ -778,7 +912,20 @@ function resetBacktest() {
   stopBacktestReplay();
   backtestStates = [];
   backtestIndex = 0;
+  hasBacktestRun = false;
   renderBacktestState(null, 0, 0);
+}
+
+function recomputeBacktestWithLatestConfig() {
+  if (!lastRows || lastRows.length === 0 || !hasBacktestRun) return;
+
+  const config = readBacktestConfig();
+  stopBacktestReplay();
+  backtestStates = buildParallelBacktestStates(lastRows, config);
+  backtestIndex = backtestStates.length;
+  const finalState = backtestStates[backtestStates.length - 1];
+  renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
+  setStatus(`已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`);
 }
 
 function startBacktest() {
@@ -796,6 +943,7 @@ function startBacktest() {
   stopBacktestReplay();
   backtestStates = buildParallelBacktestStates(lastRows, config);
   backtestIndex = 0;
+  hasBacktestRun = true;
   startBacktestButton.disabled = true;
   startBacktestButton.textContent = "测试中";
   setStatus("正在并行回放模型策略和全仓基准...");
@@ -819,8 +967,11 @@ function pointX(index, count, left, width) {
 }
 
 function drawChart(rows, summary) {
-  const rect = chart.getBoundingClientRect();
-  const width = Math.max(640, Math.round(rect.width));
+  const rect = chart.parentElement
+    ? chart.parentElement.getBoundingClientRect()
+    : chart.getBoundingClientRect();
+  const viewportWidth = Math.max(640, Math.round(rect.width));
+  const width = Math.round(viewportWidth * priceChartZoom);
   const height = Math.max(320, Math.round(rect.height));
   const pad = { top: 28, right: 68, bottom: 46, left: 58 };
   const innerWidth = width - pad.left - pad.right;
@@ -851,6 +1002,8 @@ function drawChart(rows, summary) {
   const highY = scaleY(summary.highest.price);
   const lowX = pointX(lowIndex, rows.length, pad.left, innerWidth);
   const lowY = scaleY(summary.lowest.price);
+  const waveThreshold = getWaveThreshold();
+  const wavePoints = calculateWavePoints(rows, waveThreshold);
   const priceTicks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
   const dateTickIndexes = Array.from(new Set([
     0,
@@ -860,6 +1013,42 @@ function drawChart(rows, summary) {
     rows.length - 1,
   ]));
 
+  const renderWavePoint = (point, type, index) => {
+    if (!Number.isInteger(point.rowIndex)) return "";
+
+    const x = pointX(point.rowIndex, rows.length, pad.left, innerWidth);
+    const y = scaleY(point.price);
+    const hasConfirmPoint = Number.isInteger(point.confirmRowIndex);
+    const confirmX = hasConfirmPoint ? pointX(point.confirmRowIndex, rows.length, pad.left, innerWidth) : x;
+    const confirmY = hasConfirmPoint ? scaleY(point.confirmPrice) : y;
+    const isHigh = type === "high";
+    const color = isHigh ? "#8a4b08" : "#344054";
+    const label = isHigh ? "波浪高" : "波浪低";
+    const baseY = isHigh ? y - 38 : y + 18;
+    const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 126);
+    const labelY = Math.min(Math.max(baseY + (index % 2) * (isHigh ? -8 : 8), pad.top + 4), height - pad.bottom - 32);
+    const confirmLabelX = Math.min(Math.max(confirmX + 8, pad.left + 4), width - pad.right - 132);
+    const confirmLabelY = Math.min(Math.max(confirmY + (isHigh ? 18 : -38), pad.top + 4), height - pad.bottom - 32);
+
+    return `
+      ${hasConfirmPoint ? `<line class="trade-ref-line" x1="${x}" y1="${y}" x2="${confirmX}" y2="${confirmY}"></line>` : ""}
+      <circle cx="${x}" cy="${y}" r="4.5" fill="${color}"></circle>
+      <rect class="trade-label-bg" x="${labelX}" y="${labelY}" width="118" height="31" rx="4"></rect>
+      <text class="trade-label" x="${labelX + 6}" y="${labelY + 12}">${label} ${formatPrice(point.price)}</text>
+      <text class="trade-label" x="${labelX + 6}" y="${labelY + 25}">${point.date}</text>
+      ${hasConfirmPoint ? `<circle cx="${confirmX}" cy="${confirmY}" r="4.5" fill="#f0a202"></circle>` : ""}
+      ${hasConfirmPoint ? `<rect class="trade-label-bg" x="${confirmLabelX}" y="${confirmLabelY}" width="126" height="31" rx="4"></rect>` : ""}
+      ${hasConfirmPoint ? `<text class="trade-label" x="${confirmLabelX + 6}" y="${confirmLabelY + 12}">${point.confirmLabel} ${formatPrice(point.confirmPrice)}</text>` : ""}
+      ${hasConfirmPoint ? `<text class="trade-label" x="${confirmLabelX + 6}" y="${confirmLabelY + 25}">${point.confirmDate}</text>` : ""}
+    `;
+  };
+
+  const wavePointNodes = [
+    ...wavePoints.highs.map((point, index) => renderWavePoint(point, "high", index)),
+    ...wavePoints.lows.map((point, index) => renderWavePoint(point, "low", index)),
+  ].join("");
+
+  chart.style.width = `${width}px`;
   chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
   chart.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
@@ -875,6 +1064,7 @@ function drawChart(rows, summary) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${linePath}"></path>
+    ${wavePointNodes}
     <circle cx="${highX}" cy="${highY}" r="5.5" fill="#c2413b"></circle>
     <text class="point-label" x="${Math.min(highX + 8, width - 190)}" y="${Math.max(highY - 10, 18)}">最高 ${formatPrice(summary.highest.price)}</text>
     <circle cx="${lowX}" cy="${lowY}" r="5.5" fill="#227a4f"></circle>
@@ -885,6 +1075,7 @@ function drawChart(rows, summary) {
         return `<text class="tick-label" x="${x}" y="${height - 16}" text-anchor="middle">${rows[index].date.slice(5)}</text>`;
       })
       .join("")}
+    <text class="tick-label" x="${pad.left}" y="${pad.top - 8}">波浪阈值 ${formatPercent(waveThreshold)}：高点 ${wavePoints.highs.length}，低点 ${wavePoints.lows.length}</text>
   `;
 }
 
@@ -967,6 +1158,29 @@ form.addEventListener("submit", (event) => {
 
 startBacktestButton.addEventListener("click", () => {
   startBacktest();
+});
+
+waveThresholdInput.addEventListener("input", () => {
+  if (lastRows && lastSummary) {
+    drawChart(lastRows, lastSummary);
+    if (hasBacktestRun) {
+      recomputeBacktestWithLatestConfig();
+    } else {
+      setStatus(`已按 ${formatPercent(getWaveThreshold())} 波动阈值重新计算历史波浪高低点。`);
+    }
+  }
+});
+
+priceZoomOutButton.addEventListener("click", () => {
+  setPriceChartZoom(priceChartZoom - 1);
+});
+
+priceZoomResetButton.addEventListener("click", () => {
+  setPriceChartZoom(1);
+});
+
+priceZoomInButton.addEventListener("click", () => {
+  setPriceChartZoom(priceChartZoom + 1);
 });
 
 tradeZoomOutButton.addEventListener("click", () => {
