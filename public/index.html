@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>A股高低点查询</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar" aria-label="查询条件">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>A股高低点查询</h1>
+            <p>按股票代码和时间区间计算日线最高价与最低价。</p>
+          </div>
+        </div>
+
+        <form id="queryForm" class="query-form">
+          <label>
+            股票代码
+            <input id="codeInput" name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" value="513100" required>
+          </label>
+          <label>
+            开始日期
+            <input id="startInput" name="start" type="date" required>
+          </label>
+          <label>
+            结束日期
+            <input id="endInput" name="end" type="date" required>
+          </label>
+          <button type="submit">查询</button>
+        </form>
+      </section>
+
+      <section class="status-band" aria-live="polite">
+        <div id="statusText">正在准备查询条件...</div>
+      </section>
+
+      <section class="summary-grid" aria-label="高低点摘要">
+        <article class="metric high">
+          <span>最高点</span>
+          <strong id="highestPrice">--</strong>
+          <small id="highestDate">--</small>
+        </article>
+        <article class="metric low">
+          <span>最低点</span>
+          <strong id="lowestPrice">--</strong>
+          <small id="lowestDate">--</small>
+        </article>
+        <article class="metric">
+          <span>最新收盘</span>
+          <strong id="latestClose">--</strong>
+          <small id="latestDate">--</small>
+        </article>
+        <article class="metric">
+          <span>交易日数</span>
+          <strong id="tradeCount">--</strong>
+          <small id="dataRange">--</small>
+        </article>
+      </section>
+
+      <section class="chart-section" aria-label="价格走势图">
+        <div class="chart-head">
+          <div>
+            <h2 id="chartTitle">513100</h2>
+            <p id="chartSubtitle">最近一年日线</p>
+          </div>
+          <div class="legend">
+            <span><i class="line"></i>收盘价</span>
+            <span><i class="dot high-dot"></i>最高点</span>
+            <span><i class="dot low-dot"></i>最低点</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <svg id="priceChart" role="img" aria-label="价格走势图"></svg>
+        </div>
+      </section>
+
+      <section class="backtest-section" aria-label="模拟交易历史回测">
+        <div class="section-head">
+          <div>
+            <h2>模拟交易回测</h2>
+            <p>按模型策略逐日回放，并与第一天全仓买入后一直持有的基准比较。</p>
+          </div>
+          <button id="startBacktestButton" type="button">开始测试</button>
+        </div>
+
+        <div class="backtest-layout">
+          <form id="backtestForm" class="backtest-form">
+            <div class="settings-grid">
+              <label>
+                初始现金
+                <input id="initialCashInput" type="number" min="1000" step="1000" value="100000">
+              </label>
+              <label>
+                波浪确认波动
+                <input id="waveThresholdInput" type="number" min="1" max="30" step="0.5" value="5">
+              </label>
+              <label>
+                交易速度
+                <input id="playSpeedInput" type="number" min="10" max="1000" step="10" value="80">
+              </label>
+            </div>
+
+            <div class="rule-panel">
+              <div class="rule-head">
+                <h3>买入规则</h3>
+                <span>回撤达到阈值时调仓到目标仓位</span>
+              </div>
+              <div id="buyRules" class="rule-grid"></div>
+            </div>
+
+            <div class="rule-panel">
+              <div class="rule-head">
+                <h3>卖出规则</h3>
+                <span>较最近一次模型买入价上涨达到阈值时减仓</span>
+              </div>
+              <div id="sellRules" class="rule-grid compact"></div>
+              <div class="risk-grid">
+                <label>
+                  参考高点天数
+                  <input id="riskLookbackInput" type="number" min="2" max="120" step="1" value="6">
+                </label>
+                <label>
+                  连续未突破天数
+                  <input id="riskStalledInput" type="number" min="1" max="120" step="1" value="5">
+                </label>
+                <label>
+                  平仓比例 %
+                  <input id="riskReduceInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+              </div>
+              <div class="condition-note">风控平仓：持仓后，连续指定天数未突破前 N 日高点时，按设置比例平仓。</div>
+            </div>
+          </form>
+
+          <div class="account-panel">
+            <div class="account-strip">
+              <div>
+                <span>当前日期</span>
+                <strong id="btDate">--</strong>
+              </div>
+              <div>
+                <span>总资产</span>
+                <strong id="btEquity">--</strong>
+              </div>
+              <div>
+                <span>现金</span>
+                <strong id="btCash">--</strong>
+              </div>
+              <div>
+                <span>仓位</span>
+                <strong id="btPosition">--</strong>
+              </div>
+            </div>
+
+            <div class="progress-track" aria-label="回测进度">
+              <span id="btProgress"></span>
+            </div>
+
+            <div class="baseline-note">
+              <strong>全仓基准</strong>
+              <span id="btBuyHoldPolicy">历史第一天全仓买入，之后一直持有，不执行卖出。</span>
+            </div>
+
+            <div class="analysis-grid">
+              <article>
+                <span>模型收益</span>
+                <strong id="btReturn">--</strong>
+              </article>
+              <article>
+                <span>全仓持有收益</span>
+                <strong id="btBuyHoldReturn">--</strong>
+              </article>
+              <article>
+                <span>超额收益</span>
+                <strong id="btExcessReturn">--</strong>
+              </article>
+              <article>
+                <span>模型最大回撤</span>
+                <strong id="btMaxDrawdown">--</strong>
+              </article>
+              <article>
+                <span>全仓最大回撤</span>
+                <strong id="btBuyHoldMaxDrawdown">--</strong>
+              </article>
+              <article>
+                <span>回撤差异</span>
+                <strong id="btDrawdownDiff">--</strong>
+              </article>
+              <article>
+                <span>交易次数</span>
+                <strong id="btTrades">--</strong>
+              </article>
+              <article>
+                <span>持仓数量</span>
+                <strong id="btShares">--</strong>
+              </article>
+            </div>
+
+            <div class="comparison-panel">
+              <div class="comparison-head">
+                <h3>模型收益 vs 全仓收益</h3>
+                <div class="legend">
+                  <span><i class="line model-line"></i>模型收益</span>
+                  <span><i class="line hold-line"></i>全仓持有收益</span>
+                </div>
+              </div>
+              <div class="comparison-wrap">
+                <svg id="returnCompareChart" role="img" aria-label="模型收益和全仓收益对比曲线"></svg>
+              </div>
+            </div>
+
+            <div class="log-wrap">
+              <div class="log-title">模型策略交易记录</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>操作</th>
+                    <th>价格</th>
+                    <th>数量</th>
+                    <th>仓位</th>
+                    <th>参考点</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody id="tradeLog"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="comparison-panel full-width-panel">
+          <div class="comparison-head">
+            <h3>价格波动与交易参考点</h3>
+            <div class="chart-tools" aria-label="价格图缩放">
+              <button id="tradeZoomOutButton" type="button">缩小</button>
+              <button id="tradeZoomResetButton" type="button">重置</button>
+              <button id="tradeZoomInButton" type="button">放大</button>
+            </div>
+            <div class="legend">
+              <span><i class="line"></i>收盘价</span>
+              <span><i class="dot buy-dot"></i>买入</span>
+              <span><i class="dot sell-dot"></i>卖出</span>
+              <span><i class="dot ref-high-dot"></i>参考高点</span>
+              <span><i class="dot ref-low-dot"></i>卖出参考点</span>
+            </div>
+          </div>
+          <div class="trade-price-wrap">
+            <svg id="tradePriceChart" role="img" aria-label="价格波动曲线和买卖参考点"></svg>
+          </div>
+        </div>
+      </section>
+
+      <section class="table-section" aria-label="关键数据">
+        <div class="table-head">
+          <h2>关键数据</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>开盘</th>
+                <th>最高</th>
+                <th>最低</th>
+                <th>收盘</th>
+                <th>涨跌幅</th>
+              </tr>
+            </thead>
+            <tbody id="dataTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
