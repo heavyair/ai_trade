@@ -12,15 +12,36 @@
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h1>A股高低点查询</h1>
-            <p>按股票代码和时间区间计算日线最高价与最低价。</p>
+            <h1>市场高低点查询</h1>
+            <p>按 A 股代码或美股 ticker 和时间区间计算日线最高价与最低价。</p>
           </div>
         </div>
 
         <form id="queryForm" class="query-form">
           <label>
             股票代码
-            <input id="codeInput" name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" value="513100" required>
+            <input id="codeInput" name="code" inputmode="text" maxlength="16" pattern="[A-Za-z0-9.-]{1,16}" value="513100" required>
+          </label>
+          <label>
+            常用代码
+            <select id="symbolPresetSelect">
+              <option value="513100">513100</option>
+              <option value="588000">588000</option>
+              <option value="NET">NET</option>
+              <option value="QQQ">QQQ</option>
+              <option value="AMD">AMD</option>
+            </select>
+          </label>
+          <label>
+            历史区间
+            <select id="rangePresetSelect">
+              <option value="1">最近 1 年</option>
+              <option value="3">最近 3 年</option>
+              <option value="5">最近 5 年</option>
+              <option value="8">最近 8 年</option>
+              <option value="10">最近 10 年</option>
+              <option value="custom">自定义</option>
+            </select>
           </label>
           <label>
             开始日期
@@ -73,6 +94,7 @@
               <select id="indicatorModelSelect">
                 <option value="wave">波浪模型</option>
                 <option value="local-high-ladder">近端高点阶梯指标</option>
+                <option value="ma-rsi-band">MA-RSI 波段模型</option>
               </select>
             </label>
             <label class="wave-param">
@@ -131,6 +153,23 @@
                 每笔交易费
                 <input id="tradeFeeInput" type="number" min="0" step="0.01" value="5">
               </label>
+              <label>
+                回测抽样
+                <select id="backtestWindowModeSelect">
+                  <option value="all">导入数据全区间</option>
+                  <option value="random">随机开始时间</option>
+                </select>
+              </label>
+              <label>
+                测试年限
+                <select id="backtestYearsSelect">
+                  <option value="1">1 年</option>
+                  <option value="2">2 年</option>
+                  <option value="3">3 年</option>
+                  <option value="4">4 年</option>
+                  <option value="5">5 年</option>
+                </select>
+              </label>
             </div>
 
             <div id="localLadderPanel" class="rule-panel hidden">
@@ -174,6 +213,103 @@
                 <label>
                   保护平仓 %
                   <input id="ladderStopReduceInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+              </div>
+            </div>
+
+            <div id="maRsiBandPanel" class="rule-panel hidden">
+              <div class="rule-head">
+                <h3>MA-RSI 波段参数</h3>
+                <span>按均线趋势、RSI 和 ATR 波动率每日调仓到目标仓位</span>
+              </div>
+              <div class="ma-rsi-grid">
+                <label class="condition-switch">
+                  <input id="maUseSlowTrendInput" type="checkbox" checked>
+                  启用慢线趋势
+                </label>
+                <label>
+                  快均线天数
+                  <input id="maFastMaInput" type="number" min="2" max="300" step="1" value="60">
+                </label>
+                <label>
+                  慢均线天数
+                  <input id="maSlowMaInput" type="number" min="5" max="400" step="1" value="120">
+                </label>
+                <label>
+                  慢线突破 %
+                  <input id="maSlowBufferInput" type="number" min="-20" max="20" step="0.5" value="0">
+                </label>
+                <label>
+                  熊市仓位 %
+                  <input id="maBearTargetInput" type="number" min="0" max="100" step="1" value="30">
+                </label>
+                <label>
+                  牛市仓位 %
+                  <input id="maBullTargetInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+                <label class="condition-switch">
+                  <input id="maUseFastBullInput" type="checkbox" checked>
+                  启用快线强势
+                </label>
+                <label>
+                  快线强势仓位 %
+                  <input id="maFastBullTargetInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+                <label class="condition-switch">
+                  <input id="maUseFastCutInput" type="checkbox" checked>
+                  启用快线跌破
+                </label>
+                <label>
+                  快线跌破仓位 %
+                  <input id="maFastBearTargetInput" type="number" min="0" max="100" step="1" value="0">
+                </label>
+                <label>
+                  快线跌破 %
+                  <input id="maFastCutInput" type="number" min="0" max="30" step="0.5" value="3">
+                </label>
+                <label>
+                  RSI 天数
+                  <input id="maRsiDaysInput" type="number" min="2" max="60" step="1" value="14">
+                </label>
+                <label class="condition-switch">
+                  <input id="maUseRsiBuyInput" type="checkbox" checked>
+                  启用 RSI 买入
+                </label>
+                <label>
+                  RSI 买入阈值
+                  <input id="maRsiBuyInput" type="number" min="1" max="99" step="1" value="35">
+                </label>
+                <label>
+                  RSI 买入仓位 %
+                  <input id="maRsiTargetInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+                <label class="condition-switch">
+                  <input id="maUseRsiSellInput" type="checkbox" checked>
+                  启用 RSI 卖出
+                </label>
+                <label>
+                  RSI 卖出阈值
+                  <input id="maRsiSellInput" type="number" min="1" max="99" step="1" value="70">
+                </label>
+                <label>
+                  过热仓位 %
+                  <input id="maHotTargetInput" type="number" min="0" max="100" step="1" value="40">
+                </label>
+                <label>
+                  ATR 天数
+                  <input id="maAtrDaysInput" type="number" min="2" max="60" step="1" value="14">
+                </label>
+                <label class="condition-switch">
+                  <input id="maUseAtrInput" type="checkbox" checked>
+                  启用 ATR 风控
+                </label>
+                <label>
+                  高波动 ATR %
+                  <input id="maHighAtrInput" type="number" min="0" max="50" step="0.5" value="7">
+                </label>
+                <label>
+                  高波动仓位 %
+                  <input id="maVolTargetInput" type="number" min="0" max="100" step="1" value="40">
                 </label>
               </div>
             </div>
@@ -332,7 +468,8 @@
               <span><i class="line"></i>收盘价</span>
               <span><i class="dot buy-dot"></i>买入</span>
               <span><i class="dot sell-dot"></i>卖出</span>
-              <span><i class="dot wave-high-dot"></i>模型高点</span>
+              <span><i class="dot wave-high-dot"></i>模型高/减仓信号</span>
+              <span><i class="dot wave-low-dot"></i>模型低/加仓信号</span>
               <span><i class="dot ref-high-dot"></i>参考高点</span>
               <span><i class="dot ref-low-dot"></i>卖出参考点</span>
             </div>

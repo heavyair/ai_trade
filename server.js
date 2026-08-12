@@ -25,10 +25,18 @@ function sendJson(res, statusCode, payload) {
 
 function normalizeCode(code) {
   const value = String(code || "").trim();
-  if (!/^\d{6}$/.test(value)) {
-    throw new Error("股票代码必须是 6 位数字。");
+  if (/^\d{6}$/.test(value)) {
+    return value;
   }
-  return value;
+  const ticker = value.toUpperCase();
+  if (/^[A-Z][A-Z0-9.-]{0,15}$/.test(ticker)) {
+    return ticker;
+  }
+  throw new Error("股票代码必须是 6 位 A 股代码，或美股 ticker，例如 NET、QQQ、AMD。");
+}
+
+function isChinaCode(code) {
+  return /^\d{6}$/.test(code);
 }
 
 function normalizeDate(value, fieldName) {
@@ -178,6 +186,7 @@ function buildEastMoneyUrls({ code, market, start, end }) {
 }
 
 function toYahooSymbol(code, market) {
+  if (market === "US") return code;
   if (market === "1") return `${code}.SS`;
   if (/^[48]/.test(code)) return `${code}.BJ`;
   return `${code}.SZ`;
@@ -275,13 +284,17 @@ async function fetchYahooKlines({ code, market, start, end }) {
 }
 
 async function fetchKlines({ code, start, end }) {
-  const market = inferMarket(code);
+  const market = isChinaCode(code) ? inferMarket(code) : "US";
   let result;
 
-  try {
-    result = await fetchEastMoneyKlines({ code, market, start, end });
-  } catch (eastMoneyError) {
+  if (market === "US") {
     result = await fetchYahooKlines({ code, market, start, end });
+  } else {
+    try {
+      result = await fetchEastMoneyKlines({ code, market, start, end });
+    } catch (eastMoneyError) {
+      result = await fetchYahooKlines({ code, market, start, end });
+    }
   }
 
   return {

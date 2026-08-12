@@ -46,7 +46,7 @@ body {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(520px, 1.35fr);
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr);
   gap: 24px;
   align-items: end;
   padding: 22px;
@@ -101,7 +101,7 @@ h1 {
 
 .query-form {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 12px;
   align-items: end;
 }
@@ -367,7 +367,7 @@ button:disabled {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }
@@ -481,13 +481,15 @@ button:disabled {
   padding: 0 10px;
 }
 
-.local-ladder-grid {
+.local-ladder-grid,
+.ma-rsi-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
-.local-ladder-grid label {
+.local-ladder-grid label,
+.ma-rsi-grid label {
   padding: 10px;
   border: 1px solid #e5ebf3;
   border-radius: 8px;
@@ -495,9 +497,23 @@ button:disabled {
   font-size: 12px;
 }
 
-.local-ladder-grid input {
+.local-ladder-grid input,
+.ma-rsi-grid input {
   height: 36px;
   padding: 0 10px;
+}
+
+.ma-rsi-grid .condition-switch {
+  align-content: center;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+}
+
+.ma-rsi-grid .condition-switch input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
 }
 
 .condition-note {
@@ -809,6 +825,7 @@ tbody tr:last-child td {
   .settings-grid,
   .risk-grid,
   .local-ladder-grid,
+  .ma-rsi-grid,
   .account-strip,
   .analysis-grid {
     grid-template-columns: 1fr;

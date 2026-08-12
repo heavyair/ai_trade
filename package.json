@@ -2,7 +2,7 @@
   "name": "a-share-high-low-app",
   "version": "1.0.0",
   "private": true,
-  "description": "Local web app for finding high and low points for A-share symbols over a selected date range.",
+  "description": "Local web app for finding high and low points for A-share and US symbols over a selected date range.",
   "scripts": {
     "start": "node server.js",
     "optimize": "node scripts/optimize-strategies.js"

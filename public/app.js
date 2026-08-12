@@ -1,5 +1,7 @@
 const form = document.querySelector("#queryForm");
 const codeInput = document.querySelector("#codeInput");
+const symbolPresetSelect = document.querySelector("#symbolPresetSelect");
+const rangePresetSelect = document.querySelector("#rangePresetSelect");
 const startInput = document.querySelector("#startInput");
 const endInput = document.querySelector("#endInput");
 const statusBand = document.querySelector(".status-band");
@@ -22,9 +24,12 @@ const indicatorModelSelect = document.querySelector("#indicatorModelSelect");
 const waveThresholdInput = document.querySelector("#waveThresholdInput");
 const playSpeedInput = document.querySelector("#playSpeedInput");
 const tradeFeeInput = document.querySelector("#tradeFeeInput");
+const backtestWindowModeSelect = document.querySelector("#backtestWindowModeSelect");
+const backtestYearsSelect = document.querySelector("#backtestYearsSelect");
 const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
 const applyPresetButton = document.querySelector("#applyPresetButton");
 const localLadderPanel = document.querySelector("#localLadderPanel");
+const maRsiBandPanel = document.querySelector("#maRsiBandPanel");
 const waveBuyPanel = document.querySelector("#waveBuyPanel");
 const waveSellPanel = document.querySelector("#waveSellPanel");
 const indicatorHighLegend = document.querySelector("#indicatorHighLegend");
@@ -39,6 +44,28 @@ const ladderSellRiseInput = document.querySelector("#ladderSellRiseInput");
 const ladderSellReduceInput = document.querySelector("#ladderSellReduceInput");
 const ladderStopLossInput = document.querySelector("#ladderStopLossInput");
 const ladderStopReduceInput = document.querySelector("#ladderStopReduceInput");
+const maFastMaInput = document.querySelector("#maFastMaInput");
+const maSlowMaInput = document.querySelector("#maSlowMaInput");
+const maSlowBufferInput = document.querySelector("#maSlowBufferInput");
+const maUseSlowTrendInput = document.querySelector("#maUseSlowTrendInput");
+const maBearTargetInput = document.querySelector("#maBearTargetInput");
+const maBullTargetInput = document.querySelector("#maBullTargetInput");
+const maUseFastBullInput = document.querySelector("#maUseFastBullInput");
+const maFastBullTargetInput = document.querySelector("#maFastBullTargetInput");
+const maUseFastCutInput = document.querySelector("#maUseFastCutInput");
+const maFastBearTargetInput = document.querySelector("#maFastBearTargetInput");
+const maFastCutInput = document.querySelector("#maFastCutInput");
+const maRsiDaysInput = document.querySelector("#maRsiDaysInput");
+const maUseRsiBuyInput = document.querySelector("#maUseRsiBuyInput");
+const maRsiBuyInput = document.querySelector("#maRsiBuyInput");
+const maRsiTargetInput = document.querySelector("#maRsiTargetInput");
+const maUseRsiSellInput = document.querySelector("#maUseRsiSellInput");
+const maRsiSellInput = document.querySelector("#maRsiSellInput");
+const maHotTargetInput = document.querySelector("#maHotTargetInput");
+const maAtrDaysInput = document.querySelector("#maAtrDaysInput");
+const maUseAtrInput = document.querySelector("#maUseAtrInput");
+const maHighAtrInput = document.querySelector("#maHighAtrInput");
+const maVolTargetInput = document.querySelector("#maVolTargetInput");
 const riskEnabledInput = document.querySelector("#riskEnabledInput");
 const riskLookbackInput = document.querySelector("#riskLookbackInput");
 const riskStalledInput = document.querySelector("#riskStalledInput");
@@ -48,9 +75,13 @@ let lastSummary = null;
 let backtestTimer = null;
 let backtestStates = [];
 let backtestIndex = 0;
+let activeBacktestRows = null;
+let activeBacktestRangeLabel = "";
 let hasBacktestRun = false;
 let priceChartZoom = 1;
 let tradePriceZoom = 1;
+
+const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 
 const fields = {
   highestPrice: document.querySelector("#highestPrice"),
@@ -121,6 +152,31 @@ const defaultLocalLadderRule = {
   resetPositionBelow: 10,
 };
 
+const defaultMaRsiBandRule = {
+  fastMa: 60,
+  slowMa: 120,
+  slowBuffer: 0,
+  useSlowTrend: true,
+  bearTarget: 30,
+  bullTarget: 100,
+  useFastBull: true,
+  fastBullTarget: 100,
+  useFastCut: true,
+  fastBearTarget: 0,
+  fastCut: 3,
+  rsiDays: 14,
+  useRsiBuy: true,
+  rsiBuy: 35,
+  rsiTarget: 100,
+  useRsiSell: true,
+  rsiSell: 70,
+  hotTarget: 40,
+  atrDays: 14,
+  useAtr: true,
+  highAtr: 7,
+  volTarget: 40,
+};
+
 const strategyPresets = {
   optimized: {
     label: "513100 多周期优化策略",
@@ -186,6 +242,20 @@ const strategyPresets = {
       ...defaultNoNewHighExitRule,
     },
   },
+  maRsiBand513100: {
+    label: "513100 MA-RSI 波段策略",
+    strategyType: "ma-rsi-band",
+    waveThreshold: 5,
+    maRsiBandRule: {
+      ...defaultMaRsiBandRule,
+    },
+    buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: false })),
+    sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: false })),
+    noNewHighExitRule: {
+      enabled: false,
+      ...defaultNoNewHighExitRule,
+    },
+  },
   original: {
     label: "原始分批加仓策略",
     strategyType: "wave",
@@ -210,6 +280,28 @@ function shiftYears(date, years) {
   const next = new Date(date);
   next.setFullYear(next.getFullYear() + years);
   return next;
+}
+
+function normalizeSymbolInput(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function updateSymbolPresetFromInput() {
+  const symbol = normalizeSymbolInput(codeInput.value);
+  if (symbolPresetSelect && symbolPresets.includes(symbol)) {
+    symbolPresetSelect.value = symbol;
+  }
+}
+
+function setDateRangeByYears(years) {
+  const endDate = new Date();
+  endInput.value = formatDate(endDate);
+  startInput.value = formatDate(shiftYears(endDate, -years));
+}
+
+function applyRangePreset() {
+  if (!rangePresetSelect || rangePresetSelect.value === "custom") return;
+  setDateRangeByYears(Number(rangePresetSelect.value));
 }
 
 function formatPrice(value) {
@@ -323,16 +415,89 @@ function applyLocalLadderRule(rule = defaultLocalLadderRule) {
   ladderStopReduceInput.value = rule.stopReduce;
 }
 
-function updateIndicatorUi() {
-  const isLocalLadder = indicatorModelSelect.value === "local-high-ladder";
-  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", isLocalLadder));
-  localLadderPanel.classList.toggle("hidden", !isLocalLadder);
-  waveBuyPanel.classList.toggle("hidden", isLocalLadder);
-  waveSellPanel.classList.toggle("hidden", isLocalLadder);
+function readMaRsiBandRule() {
+  const readNumber = (input, fallback) => {
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  };
 
-  indicatorHighLegend.textContent = isLocalLadder ? "近端高点" : "波浪高点";
-  indicatorLowLegend.textContent = isLocalLadder ? "阶梯触发低点" : "波浪低点";
-  indicatorConfirmLegend.textContent = isLocalLadder ? "卖出/保护点" : "确认点";
+  const clampPercent = (value) => Math.min(100, Math.max(0, value));
+
+  return {
+    fastMa: Math.max(2, Math.round(readNumber(maFastMaInput, defaultMaRsiBandRule.fastMa))),
+    slowMa: Math.max(5, Math.round(readNumber(maSlowMaInput, defaultMaRsiBandRule.slowMa))),
+    slowBuffer: readNumber(maSlowBufferInput, defaultMaRsiBandRule.slowBuffer),
+    useSlowTrend: maUseSlowTrendInput ? maUseSlowTrendInput.checked : defaultMaRsiBandRule.useSlowTrend,
+    bearTarget: clampPercent(readNumber(maBearTargetInput, defaultMaRsiBandRule.bearTarget)),
+    bullTarget: clampPercent(readNumber(maBullTargetInput, defaultMaRsiBandRule.bullTarget)),
+    useFastBull: maUseFastBullInput ? maUseFastBullInput.checked : defaultMaRsiBandRule.useFastBull,
+    fastBullTarget: clampPercent(readNumber(maFastBullTargetInput, defaultMaRsiBandRule.fastBullTarget)),
+    useFastCut: maUseFastCutInput ? maUseFastCutInput.checked : defaultMaRsiBandRule.useFastCut,
+    fastBearTarget: clampPercent(readNumber(maFastBearTargetInput, defaultMaRsiBandRule.fastBearTarget)),
+    fastCut: Math.max(0, readNumber(maFastCutInput, defaultMaRsiBandRule.fastCut)),
+    rsiDays: Math.max(2, Math.round(readNumber(maRsiDaysInput, defaultMaRsiBandRule.rsiDays))),
+    useRsiBuy: maUseRsiBuyInput ? maUseRsiBuyInput.checked : defaultMaRsiBandRule.useRsiBuy,
+    rsiBuy: Math.min(99, Math.max(1, readNumber(maRsiBuyInput, defaultMaRsiBandRule.rsiBuy))),
+    rsiTarget: clampPercent(readNumber(maRsiTargetInput, defaultMaRsiBandRule.rsiTarget)),
+    useRsiSell: maUseRsiSellInput ? maUseRsiSellInput.checked : defaultMaRsiBandRule.useRsiSell,
+    rsiSell: Math.min(99, Math.max(1, readNumber(maRsiSellInput, defaultMaRsiBandRule.rsiSell))),
+    hotTarget: clampPercent(readNumber(maHotTargetInput, defaultMaRsiBandRule.hotTarget)),
+    atrDays: Math.max(2, Math.round(readNumber(maAtrDaysInput, defaultMaRsiBandRule.atrDays))),
+    useAtr: maUseAtrInput ? maUseAtrInput.checked : defaultMaRsiBandRule.useAtr,
+    highAtr: Math.max(0, readNumber(maHighAtrInput, defaultMaRsiBandRule.highAtr)),
+    volTarget: clampPercent(readNumber(maVolTargetInput, defaultMaRsiBandRule.volTarget)),
+  };
+}
+
+function applyMaRsiBandRule(rule = defaultMaRsiBandRule) {
+  maFastMaInput.value = rule.fastMa;
+  maSlowMaInput.value = rule.slowMa;
+  maSlowBufferInput.value = rule.slowBuffer;
+  maUseSlowTrendInput.checked = rule.useSlowTrend !== false;
+  maBearTargetInput.value = rule.bearTarget;
+  maBullTargetInput.value = rule.bullTarget;
+  maUseFastBullInput.checked = rule.useFastBull !== false;
+  maFastBullTargetInput.value = rule.fastBullTarget;
+  maUseFastCutInput.checked = rule.useFastCut !== false;
+  maFastBearTargetInput.value = rule.fastBearTarget;
+  maFastCutInput.value = rule.fastCut;
+  maRsiDaysInput.value = rule.rsiDays;
+  maUseRsiBuyInput.checked = rule.useRsiBuy !== false;
+  maRsiBuyInput.value = rule.rsiBuy;
+  maRsiTargetInput.value = rule.rsiTarget;
+  maUseRsiSellInput.checked = rule.useRsiSell !== false;
+  maRsiSellInput.value = rule.rsiSell;
+  maHotTargetInput.value = rule.hotTarget;
+  maAtrDaysInput.value = rule.atrDays;
+  maUseAtrInput.checked = rule.useAtr !== false;
+  maHighAtrInput.value = rule.highAtr;
+  maVolTargetInput.value = rule.volTarget;
+}
+
+function updateIndicatorUi() {
+  const strategyType = indicatorModelSelect.value;
+  const isWave = strategyType === "wave";
+  const isLocalLadder = strategyType === "local-high-ladder";
+  const isMaRsiBand = strategyType === "ma-rsi-band";
+  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", !isWave));
+  localLadderPanel.classList.toggle("hidden", !isLocalLadder);
+  maRsiBandPanel.classList.toggle("hidden", !isMaRsiBand);
+  waveBuyPanel.classList.toggle("hidden", !isWave);
+  waveSellPanel.classList.toggle("hidden", !isWave);
+
+  if (isLocalLadder) {
+    indicatorHighLegend.textContent = "近端高点";
+    indicatorLowLegend.textContent = "阶梯触发低点";
+    indicatorConfirmLegend.textContent = "卖出/保护点";
+  } else if (isMaRsiBand) {
+    indicatorHighLegend.textContent = "减仓信号";
+    indicatorLowLegend.textContent = "加仓信号";
+    indicatorConfirmLegend.textContent = "指标参考";
+  } else {
+    indicatorHighLegend.textContent = "波浪高点";
+    indicatorLowLegend.textContent = "波浪低点";
+    indicatorConfirmLegend.textContent = "确认点";
+  }
 }
 
 function getPresetEntriesForType(strategyType) {
@@ -366,6 +531,7 @@ function fillStrategyPresetControls(presetName) {
   waveThresholdInput.value = preset.waveThreshold;
   renderRuleInputs(presetName);
   applyLocalLadderRule(preset.localLadderRule || defaultLocalLadderRule);
+  applyMaRsiBandRule(preset.maRsiBandRule || defaultMaRsiBandRule);
   updateIndicatorUi();
 
   if (riskEnabledInput && preset.noNewHighExitRule) {
@@ -424,8 +590,11 @@ function readBacktestConfig() {
     initialCash: Math.max(0, Number(initialCashInput.value)),
     waveThreshold: Math.max(0.1, Number(waveThresholdInput.value)),
     localLadderRule: readLocalLadderRule(),
+    maRsiBandRule: readMaRsiBandRule(),
     playSpeed: Math.max(10, Number(playSpeedInput.value)),
     tradeFee: Math.max(0, Number(tradeFeeInput.value) || 0),
+    backtestWindowMode: backtestWindowModeSelect ? backtestWindowModeSelect.value : "all",
+    backtestYears: backtestYearsSelect ? Math.min(5, Math.max(1, Math.round(Number(backtestYearsSelect.value) || 1))) : 1,
     buyRules,
     sellRules,
     noNewHighExitRule: {
@@ -626,6 +795,185 @@ function calculateLocalLadderPoints(rows, rule) {
   return { highs, lows };
 }
 
+function getMovingAverageSeries(rows, days) {
+  const values = new Array(rows.length).fill(null);
+  let sum = 0;
+  rows.forEach((row, index) => {
+    sum += row.close;
+    if (index >= days) sum -= rows[index - days].close;
+    values[index] = index + 1 >= days ? sum / days : null;
+  });
+  return values;
+}
+
+function getRsiSeries(rows, days) {
+  const values = new Array(rows.length).fill(null);
+  let gains = 0;
+  let losses = 0;
+
+  for (let index = 1; index < rows.length; index += 1) {
+    const change = rows[index].close - rows[index - 1].close;
+    gains += Math.max(0, change);
+    losses += Math.max(0, -change);
+
+    if (index > days) {
+      const oldChange = rows[index - days].close - rows[index - days - 1].close;
+      gains -= Math.max(0, oldChange);
+      losses -= Math.max(0, -oldChange);
+    }
+
+    if (index >= days) {
+      values[index] = losses === 0 ? 100 : 100 - (100 / (1 + gains / losses));
+    }
+  }
+
+  return values;
+}
+
+function getAtrPercentSeries(rows, days) {
+  const values = new Array(rows.length).fill(null);
+  let sum = 0;
+
+  rows.forEach((row, index) => {
+    const previousClose = index > 0 ? rows[index - 1].close : row.close;
+    const trueRange = Math.max(
+      row.high - row.low,
+      Math.abs(row.high - previousClose),
+      Math.abs(row.low - previousClose)
+    );
+    sum += trueRange;
+
+    if (index >= days) {
+      const old = rows[index - days];
+      const oldPreviousClose = index - days > 0 ? rows[index - days - 1].close : old.close;
+      sum -= Math.max(
+        old.high - old.low,
+        Math.abs(old.high - oldPreviousClose),
+        Math.abs(old.low - oldPreviousClose)
+      );
+    }
+
+    values[index] = index + 1 >= days ? (sum / days / row.close) * 100 : null;
+  });
+
+  return values;
+}
+
+function buildMaRsiBandSeries(rows, rule) {
+  return {
+    fastMa: getMovingAverageSeries(rows, rule.fastMa),
+    slowMa: getMovingAverageSeries(rows, rule.slowMa),
+    rsi: getRsiSeries(rows, rule.rsiDays),
+    atr: getAtrPercentSeries(rows, rule.atrDays),
+  };
+}
+
+function getMaRsiBandDecision(row, index, series, rule) {
+  const fastMa = series.fastMa[index];
+  const slowMa = series.slowMa[index];
+  const rsi = series.rsi[index];
+  const atr = series.atr[index];
+  const reasons = [];
+
+  if (!fastMa || !slowMa) {
+    return {
+      target: 0,
+      fastMa,
+      slowMa,
+      rsi,
+      atr,
+      reason: "均线数据不足，空仓等待",
+    };
+  }
+
+  let target = rule.bearTarget;
+  if (rule.useSlowTrend !== false) {
+    target = row.close >= slowMa * (1 + rule.slowBuffer / 100)
+      ? rule.bullTarget
+      : rule.bearTarget;
+    reasons.push(row.close >= slowMa * (1 + rule.slowBuffer / 100)
+      ? `收盘价站上慢线，目标 ${formatPercent(rule.bullTarget)}`
+      : `收盘价低于慢线，目标 ${formatPercent(rule.bearTarget)}`);
+  } else {
+    reasons.push(`慢线趋势关闭，基础目标 ${formatPercent(rule.bearTarget)}`);
+  }
+
+  if (rule.useFastBull !== false && row.close >= fastMa && fastMa >= slowMa) {
+    target = Math.max(target, rule.fastBullTarget);
+    reasons.push(`快线强势，目标不低于 ${formatPercent(rule.fastBullTarget)}`);
+  }
+
+  if (rule.useFastCut !== false && row.close < fastMa * (1 - rule.fastCut / 100)) {
+    target = Math.min(target, rule.fastBearTarget);
+    reasons.push(`跌破快线 ${formatPercent(rule.fastCut)}，目标不高于 ${formatPercent(rule.fastBearTarget)}`);
+  }
+
+  if (rule.useRsiBuy !== false && rsi !== null && rsi <= rule.rsiBuy) {
+    target = Math.max(target, rule.rsiTarget);
+    reasons.push(`RSI ${rsi.toFixed(1)} 超跌，目标不低于 ${formatPercent(rule.rsiTarget)}`);
+  }
+
+  if (rule.useRsiSell !== false && rsi !== null && rsi >= rule.rsiSell) {
+    target = Math.min(target, rule.hotTarget);
+    reasons.push(`RSI ${rsi.toFixed(1)} 过热，目标不高于 ${formatPercent(rule.hotTarget)}`);
+  }
+
+  if (rule.useAtr !== false && atr !== null && atr >= rule.highAtr) {
+    target = Math.min(target, rule.volTarget);
+    reasons.push(`ATR ${formatPercent(atr)} 高波动，目标不高于 ${formatPercent(rule.volTarget)}`);
+  }
+
+  return {
+    target: Math.min(100, Math.max(0, target)),
+    fastMa,
+    slowMa,
+    rsi,
+    atr,
+    reason: reasons.join("；"),
+  };
+}
+
+function calculateMaRsiBandPoints(rows, rule) {
+  if (!rows || rows.length === 0) {
+    return { highs: [], lows: [] };
+  }
+
+  const series = buildMaRsiBandSeries(rows, rule);
+  const highs = [];
+  const lows = [];
+  let previousTarget = 0;
+
+  rows.forEach((row, index) => {
+    const decision = getMaRsiBandDecision(row, index, series, rule);
+    if (decision.target > previousTarget + 0.5) {
+      lows.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        confirmDate: row.date,
+        confirmPrice: decision.slowMa || row.close,
+        confirmRowIndex: index,
+        confirmLabel: "慢均线",
+        version: lows.length + 1,
+      });
+    } else if (decision.target < previousTarget - 0.5) {
+      highs.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        confirmDate: row.date,
+        confirmPrice: decision.fastMa || row.close,
+        confirmRowIndex: index,
+        confirmLabel: "快均线",
+        version: highs.length + 1,
+      });
+    }
+    previousTarget = decision.target;
+  });
+
+  return { highs, lows };
+}
+
 function getAccountSnapshot(account, row, initialCash, peakEquity, trades) {
   const positionValue = account.shares * row.close;
   const equity = account.cash + positionValue;
@@ -710,6 +1058,69 @@ function sellByReduction(account, row, rowIndex, reducePercent, reference, trigg
     reference,
     triggerPercent,
     reason: `较${reference.label}上涨 ${formatPercent(triggerPercent)}`,
+  };
+  trades.push(trade);
+  return trade;
+}
+
+function rebalanceToTarget(account, row, rowIndex, targetPercent, reference, reason, trades, tradeFee = 0) {
+  const price = row.close;
+  const equity = account.cash + account.shares * price;
+  if (equity <= 0 || price <= 0) return false;
+
+  const currentRatio = getPositionRatio(account, row);
+  const targetRatio = Math.min(100, Math.max(0, targetPercent));
+  const targetShares = Math.floor((equity * targetRatio / 100) / price);
+  const delta = targetShares - account.shares;
+  if (delta === 0) return false;
+
+  if (delta > 0) {
+    const maxShares = Math.floor(Math.max(0, account.cash - tradeFee) / price);
+    const shares = Math.min(delta, maxShares);
+    if (shares <= 0) return false;
+
+    account.cash -= shares * price + tradeFee;
+    account.shares += shares;
+    account.totalFees = (account.totalFees || 0) + tradeFee;
+    const positionRatio = getPositionRatio(account, row);
+    const trade = {
+      date: row.date,
+      rowIndex,
+      side: "buy",
+      label: "买入",
+      price,
+      shares,
+      fee: tradeFee,
+      totalFees: account.totalFees,
+      positionRatio,
+      reference,
+      triggerPercent: targetRatio - currentRatio,
+      reason,
+    };
+    trades.push(trade);
+    return trade;
+  }
+
+  const shares = Math.min(account.shares, -delta);
+  if (shares <= 0) return false;
+
+  account.cash += shares * price - tradeFee;
+  account.shares -= shares;
+  account.totalFees = (account.totalFees || 0) + tradeFee;
+  const positionRatio = getPositionRatio(account, row);
+  const trade = {
+    date: row.date,
+    rowIndex,
+    side: "sell",
+    label: "卖出",
+    price,
+    shares,
+    fee: tradeFee,
+    totalFees: account.totalFees,
+    positionRatio,
+    reference,
+    triggerPercent: currentRatio - targetRatio,
+    reason,
   };
   trades.push(trade);
   return trade;
@@ -1047,9 +1458,81 @@ function buildLocalLadderBacktestStates(rows, config) {
   return states;
 }
 
+function buildMaRsiBandBacktestStates(rows, config) {
+  if (!rows || rows.length === 0) return [];
+
+  const rule = config.maRsiBandRule || defaultMaRsiBandRule;
+  const series = buildMaRsiBandSeries(rows, rule);
+  const account = {
+    cash: config.initialCash,
+    shares: 0,
+    totalFees: 0,
+  };
+  const trades = [];
+  const states = [];
+  const targetDownSignals = [];
+  const targetUpSignals = [];
+  let previousTarget = 0;
+  let peakEquity = config.initialCash;
+  let maxDrawdown = 0;
+
+  rows.forEach((row, index) => {
+    const decision = getMaRsiBandDecision(row, index, series, rule);
+
+    if (decision.target > previousTarget + 0.5) {
+      targetUpSignals.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        confirmDate: row.date,
+        confirmPrice: decision.slowMa || row.close,
+        confirmRowIndex: index,
+        confirmLabel: "慢均线",
+        version: targetUpSignals.length + 1,
+      });
+    } else if (decision.target < previousTarget - 0.5) {
+      targetDownSignals.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        confirmDate: row.date,
+        confirmPrice: decision.fastMa || row.close,
+        confirmRowIndex: index,
+        confirmLabel: "快均线",
+        version: targetDownSignals.length + 1,
+      });
+    }
+
+    const currentRatio = getPositionRatio(account, row);
+    const reference = {
+      type: "indicator",
+      label: "目标仓位",
+      date: row.date,
+      price: row.close,
+    };
+    const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
+    const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
+    rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
+    previousTarget = decision.target;
+
+    const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+    snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = targetDownSignals.slice();
+    snapshot.indicatorLows = targetUpSignals.slice();
+    states.push(snapshot);
+  });
+
+  return states;
+}
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "local-high-ladder") {
     return buildLocalLadderBacktestStates(rows, config);
+  }
+  if (config.strategyType === "ma-rsi-band") {
+    return buildMaRsiBandBacktestStates(rows, config);
   }
   return buildWaveBacktestStates(rows, config);
 }
@@ -1220,7 +1703,18 @@ function drawTradePriceChart(states) {
   const rows = usableStates.map((state) => state.row);
   const trades = usableStates[usableStates.length - 1].trades;
   const waveHighs = usableStates[usableStates.length - 1].waveHighs || [];
-  const highPointLabel = indicatorModelSelect.value === "local-high-ladder" ? "近端高点" : "波浪高点";
+  const indicatorLows = usableStates[usableStates.length - 1].indicatorLows || [];
+  const indicatorType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
+  const highPointLabel = indicatorType === "local-high-ladder"
+    ? "近端高点"
+    : indicatorType === "ma-rsi-band"
+      ? "减仓信号"
+      : "波浪高点";
+  const lowPointLabel = indicatorType === "local-high-ladder"
+    ? "阶梯触发"
+    : indicatorType === "ma-rsi-band"
+      ? "加仓信号"
+      : "波浪低点";
   const dateToIndex = new Map(rows.map((row, index) => [row.date, index]));
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
 
@@ -1229,6 +1723,9 @@ function drawTradePriceChart(states) {
     if (trade.reference) priceValues.push(trade.reference.price);
   });
   waveHighs.forEach((point) => {
+    priceValues.push(point.price);
+  });
+  indicatorLows.forEach((point) => {
     priceValues.push(point.price);
   });
 
@@ -1283,6 +1780,29 @@ function drawTradePriceChart(states) {
     })
     .join("");
 
+  const indicatorLowNodes = indicatorLows
+    .map((point, index) => {
+      const pointIndex = dateToIndex.get(point.date);
+      if (!Number.isInteger(pointIndex)) return "";
+
+      const x = xForIndex(pointIndex);
+      const y = scaleY(point.price);
+      const hasConfirmPoint = Number.isInteger(point.confirmRowIndex);
+      const confirmX = hasConfirmPoint ? xForIndex(point.confirmRowIndex) : x;
+      const confirmY = hasConfirmPoint ? scaleY(point.confirmPrice) : y;
+      const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 150);
+      const labelY = Math.min(Math.max(y + (index % 2 === 0 ? 18 : -36), pad.top + 4), height - pad.bottom - 34);
+
+      return `
+        ${hasConfirmPoint ? `<line class="trade-ref-line" x1="${confirmX}" y1="${confirmY}" x2="${x}" y2="${y}"></line>` : ""}
+        <circle cx="${x}" cy="${y}" r="5" fill="#344054"></circle>
+        <rect class="trade-label-bg" x="${labelX}" y="${labelY}" width="142" height="31" rx="4"></rect>
+        <text class="trade-label" x="${labelX + 6}" y="${labelY + 12}">${lowPointLabel} ${formatPrice(point.price)}</text>
+        <text class="trade-label" x="${labelX + 6}" y="${labelY + 25}">${point.date}</text>
+      `;
+    })
+    .join("");
+
   const tradeNodes = trades
     .map((trade, index) => {
       const tradeIndex = Math.min(trade.rowIndex, rows.length - 1);
@@ -1332,6 +1852,7 @@ function drawTradePriceChart(states) {
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${pricePath}"></path>
     ${waveHighNodes}
+    ${indicatorLowNodes}
     ${tradeNodes}
     ${dateTickIndexes
       .map((index) => {
@@ -1424,8 +1945,54 @@ function resetBacktest() {
   stopBacktestReplay();
   backtestStates = [];
   backtestIndex = 0;
+  activeBacktestRows = null;
+  activeBacktestRangeLabel = "";
   hasBacktestRun = false;
   renderBacktestState(null, 0, 0);
+}
+
+function selectBacktestRows(rows, config) {
+  if (!rows || rows.length === 0) {
+    return { rows: [], label: "" };
+  }
+
+  if (config.backtestWindowMode !== "random") {
+    return {
+      rows,
+      label: `${rows[0].date} 至 ${rows[rows.length - 1].date}`,
+    };
+  }
+
+  const years = config.backtestYears;
+  const lastDate = new Date(`${rows[rows.length - 1].date}T00:00:00`);
+  const latestAllowedStart = shiftYears(lastDate, -years);
+  const candidateIndexes = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => new Date(`${row.date}T00:00:00`) <= latestAllowedStart)
+    .map(({ index }) => index);
+
+  if (candidateIndexes.length === 0) {
+    throw new Error(`导入历史数据不足 ${years} 年，无法随机抽样测试。请先加载更长历史区间。`);
+  }
+
+  const startIndex = candidateIndexes[Math.floor(Math.random() * candidateIndexes.length)];
+  const startDate = new Date(`${rows[startIndex].date}T00:00:00`);
+  const targetEndDate = shiftYears(startDate, years);
+  let endIndex = startIndex;
+
+  while (endIndex + 1 < rows.length && new Date(`${rows[endIndex + 1].date}T00:00:00`) <= targetEndDate) {
+    endIndex += 1;
+  }
+
+  const selectedRows = rows.slice(startIndex, endIndex + 1);
+  if (selectedRows.length < 2) {
+    throw new Error("随机抽样窗口内可用交易日太少，无法回测。");
+  }
+
+  return {
+    rows: selectedRows,
+    label: `${selectedRows[0].date} 至 ${selectedRows[selectedRows.length - 1].date}（随机 ${years} 年）`,
+  };
 }
 
 function recomputeBacktestWithLatestConfig() {
@@ -1433,14 +2000,17 @@ function recomputeBacktestWithLatestConfig() {
 
   const config = readBacktestConfig();
   stopBacktestReplay();
-  backtestStates = buildParallelBacktestStates(lastRows, config);
+  const rowsForBacktest = activeBacktestRows || lastRows;
+  backtestStates = buildParallelBacktestStates(rowsForBacktest, config);
   backtestIndex = backtestStates.length;
   const finalState = backtestStates[backtestStates.length - 1];
   renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
   const status = config.strategyType === "local-high-ladder"
     ? "已按近端高点阶梯指标同步重算图表点位和回测交易。"
-    : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`;
-  setStatus(status);
+    : config.strategyType === "ma-rsi-band"
+      ? "已按 MA-RSI 波段参数同步重算图表信号和回测交易。"
+      : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`;
+  setStatus(activeBacktestRangeLabel ? `${status} 回测区间：${activeBacktestRangeLabel}。` : status);
 }
 
 function startBacktest() {
@@ -1450,18 +2020,29 @@ function startBacktest() {
   }
 
   const config = readBacktestConfig();
+  let selected;
+
   if (config.initialCash <= 0) {
     setStatus("初始现金必须大于 0。", true);
     return;
   }
 
+  try {
+    selected = selectBacktestRows(lastRows, config);
+  } catch (error) {
+    setStatus(error.message || "回测区间选择失败。", true);
+    return;
+  }
+
   stopBacktestReplay();
-  backtestStates = buildParallelBacktestStates(lastRows, config);
+  activeBacktestRows = selected.rows;
+  activeBacktestRangeLabel = selected.label;
+  backtestStates = buildParallelBacktestStates(activeBacktestRows, config);
   backtestIndex = 0;
   hasBacktestRun = true;
   startBacktestButton.disabled = true;
   startBacktestButton.textContent = "测试中";
-  setStatus("正在并行回放模型策略和全仓基准...");
+  setStatus(`正在并行回放模型策略和全仓基准，回测区间：${activeBacktestRangeLabel}。`);
 
   backtestTimer = setInterval(() => {
     renderBacktestState(backtestStates[backtestIndex], backtestIndex, backtestStates.length);
@@ -1471,7 +2052,7 @@ function startBacktest() {
       const finalState = backtestStates[backtestStates.length - 1];
       stopBacktestReplay();
       renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
-      setStatus(`回测完成：模型收益 ${formatPercent(finalState.returnRate)}，全仓收益 ${formatPercent(finalState.buyHold.returnRate)}；模型回撤 ${formatPercent(finalState.maxDrawdown)}，全仓回撤 ${formatPercent(finalState.buyHold.maxDrawdown)}。`);
+      setStatus(`回测完成：${activeBacktestRangeLabel}；模型收益 ${formatPercent(finalState.returnRate)}，全仓收益 ${formatPercent(finalState.buyHold.returnRate)}；模型回撤 ${formatPercent(finalState.maxDrawdown)}，全仓回撤 ${formatPercent(finalState.buyHold.maxDrawdown)}。`);
     }
   }, config.playSpeed);
 }
@@ -1519,11 +2100,15 @@ function drawChart(rows, summary) {
   const lowY = scaleY(summary.lowest.price);
   const indicatorType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
   const isLocalLadder = indicatorType === "local-high-ladder";
+  const isMaRsiBand = indicatorType === "ma-rsi-band";
   const waveThreshold = getWaveThreshold();
   const localLadderRule = readLocalLadderRule();
+  const maRsiBandRule = readMaRsiBandRule();
   const indicatorPoints = isLocalLadder
     ? calculateLocalLadderPoints(rows, localLadderRule)
-    : calculateWavePoints(rows, waveThreshold);
+    : isMaRsiBand
+      ? calculateMaRsiBandPoints(rows, maRsiBandRule)
+      : calculateWavePoints(rows, waveThreshold);
   const priceTicks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
   const dateTickIndexes = Array.from(new Set([
     0,
@@ -1545,7 +2130,9 @@ function drawChart(rows, summary) {
     const color = isHigh ? "#8a4b08" : "#344054";
     const label = isLocalLadder
       ? (isHigh ? "近端高" : "阶梯低")
-      : (isHigh ? "波浪高" : "波浪低");
+      : isMaRsiBand
+        ? (isHigh ? "减仓" : "加仓")
+        : (isHigh ? "波浪高" : "波浪低");
     const baseY = isHigh ? y - 38 : y + 18;
     const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 126);
     const labelY = Math.min(Math.max(baseY + (index % 2) * (isHigh ? -8 : 8), pad.top + 4), height - pad.bottom - 32);
@@ -1571,6 +2158,8 @@ function drawChart(rows, summary) {
   ].join("");
   const indicatorSummary = isLocalLadder
     ? `${localLadderRule.lookbackDays}日近端高点：高点 ${indicatorPoints.highs.length}，阶梯触发 ${indicatorPoints.lows.length}；回落 ${formatPercent(localLadderRule.entryDrop)} / 阶梯 ${formatPercent(localLadderRule.ladderDrop)} / 加仓 ${formatPercent(localLadderRule.buyAdd)} / 反弹卖出 ${formatPercent(localLadderRule.sellRise)}`
+    : isMaRsiBand
+      ? `MA-RSI：快 ${maRsiBandRule.fastMa} / 慢 ${maRsiBandRule.slowMa} / RSI ${maRsiBandRule.rsiDays}；加仓信号 ${indicatorPoints.lows.length}，减仓信号 ${indicatorPoints.highs.length}`
     : `波浪阈值 ${formatPercent(waveThreshold)}：高点 ${indicatorPoints.highs.length}，低点 ${indicatorPoints.lows.length}`;
 
   chart.style.width = `${width}px`;
@@ -1649,8 +2238,12 @@ function renderResult(result) {
 }
 
 async function loadData() {
+  const symbol = normalizeSymbolInput(codeInput.value);
+  codeInput.value = symbol;
+  updateSymbolPresetFromInput();
+
   const params = new URLSearchParams({
-    code: codeInput.value.trim(),
+    code: symbol,
     start: startInput.value,
     end: endInput.value,
   });
@@ -1673,14 +2266,45 @@ async function loadData() {
 }
 
 function initializeDates() {
-  const today = new Date();
-  endInput.value = formatDate(today);
-  startInput.value = formatDate(shiftYears(today, -1));
+  if (rangePresetSelect) {
+    rangePresetSelect.value = "1";
+  }
+  setDateRangeByYears(1);
+}
+
+function updateBacktestWindowUi() {
+  if (!backtestWindowModeSelect || !backtestYearsSelect) return;
+  backtestYearsSelect.disabled = backtestWindowModeSelect.value !== "random";
 }
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   loadData();
+});
+
+symbolPresetSelect.addEventListener("change", () => {
+  codeInput.value = symbolPresetSelect.value;
+});
+
+codeInput.addEventListener("input", () => {
+  codeInput.value = normalizeSymbolInput(codeInput.value);
+  updateSymbolPresetFromInput();
+});
+
+rangePresetSelect.addEventListener("change", () => {
+  applyRangePreset();
+});
+
+[startInput, endInput].forEach((input) => {
+  input.addEventListener("input", () => {
+    if (rangePresetSelect) {
+      rangePresetSelect.value = "custom";
+    }
+  });
+});
+
+backtestWindowModeSelect.addEventListener("change", () => {
+  updateBacktestWindowUi();
 });
 
 startBacktestButton.addEventListener("click", () => {
@@ -1713,9 +2337,12 @@ indicatorModelSelect.addEventListener("change", () => {
   if (presetName) {
     applyStrategyPreset(presetName);
   } else {
-    refreshIndicatorView(strategyType === "local-high-ladder"
+    const message = strategyType === "local-high-ladder"
       ? "已切换到近端高点阶梯指标。"
-      : "已切换到波浪模型。");
+      : strategyType === "ma-rsi-band"
+        ? "已切换到 MA-RSI 波段模型。"
+        : "已切换到波浪模型。";
+    refreshIndicatorView(message);
   }
 });
 
@@ -1745,6 +2372,37 @@ waveThresholdInput.addEventListener("input", () => {
   input.addEventListener("input", () => {
     if (indicatorModelSelect.value === "local-high-ladder") {
       refreshIndicatorView("已按近端高点阶梯参数刷新历史图表。");
+    }
+  });
+});
+
+[
+  maUseSlowTrendInput,
+  maFastMaInput,
+  maSlowMaInput,
+  maSlowBufferInput,
+  maBearTargetInput,
+  maBullTargetInput,
+  maUseFastBullInput,
+  maFastBullTargetInput,
+  maUseFastCutInput,
+  maFastBearTargetInput,
+  maFastCutInput,
+  maRsiDaysInput,
+  maUseRsiBuyInput,
+  maRsiBuyInput,
+  maRsiTargetInput,
+  maUseRsiSellInput,
+  maRsiSellInput,
+  maHotTargetInput,
+  maAtrDaysInput,
+  maUseAtrInput,
+  maHighAtrInput,
+  maVolTargetInput,
+].forEach((input) => {
+  input.addEventListener("input", () => {
+    if (indicatorModelSelect.value === "ma-rsi-band") {
+      refreshIndicatorView("已按 MA-RSI 波段参数刷新历史图表。");
     }
   });
 });
@@ -1784,4 +2442,5 @@ window.addEventListener("resize", () => {
 
 applyStrategyPreset("optimized", false);
 initializeDates();
+updateBacktestWindowUi();
 loadData();
