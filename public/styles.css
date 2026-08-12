@@ -255,14 +255,29 @@ button:disabled {
   gap: 6px;
 }
 
-.chart-wave-control {
-  width: 156px;
-  flex: 0 0 156px;
+.legend b {
+  font: inherit;
+}
+
+.indicator-controls {
+  display: grid;
+  grid-template-columns: 180px 156px;
+  gap: 10px;
+  align-items: end;
+  flex: 0 1 346px;
+}
+
+.indicator-controls label {
   font-size: 12px;
 }
 
-.chart-wave-control input {
+.indicator-controls input,
+.indicator-controls select {
   height: 36px;
+}
+
+.hidden {
+  display: none !important;
 }
 
 .line {
@@ -462,6 +477,25 @@ button:disabled {
 }
 
 .risk-grid input {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.local-ladder-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.local-ladder-grid label {
+  padding: 10px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.local-ladder-grid input {
   height: 36px;
   padding: 0 10px;
 }
@@ -771,8 +805,10 @@ tbody tr:last-child td {
   .summary-grid,
   .backtest-layout,
   .preset-panel,
+  .indicator-controls,
   .settings-grid,
   .risk-grid,
+  .local-ladder-grid,
   .account-strip,
   .analysis-grid {
     grid-template-columns: 1fr;
@@ -782,7 +818,7 @@ tbody tr:last-child td {
     flex-direction: column;
   }
 
-  .chart-wave-control {
+  .indicator-controls {
     width: 100%;
     flex-basis: auto;
   }

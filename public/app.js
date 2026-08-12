@@ -18,10 +18,27 @@ const tradeZoomInButton = document.querySelector("#tradeZoomInButton");
 const buyRulesContainer = document.querySelector("#buyRules");
 const sellRulesContainer = document.querySelector("#sellRules");
 const initialCashInput = document.querySelector("#initialCashInput");
+const indicatorModelSelect = document.querySelector("#indicatorModelSelect");
 const waveThresholdInput = document.querySelector("#waveThresholdInput");
 const playSpeedInput = document.querySelector("#playSpeedInput");
+const tradeFeeInput = document.querySelector("#tradeFeeInput");
 const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
 const applyPresetButton = document.querySelector("#applyPresetButton");
+const localLadderPanel = document.querySelector("#localLadderPanel");
+const waveBuyPanel = document.querySelector("#waveBuyPanel");
+const waveSellPanel = document.querySelector("#waveSellPanel");
+const indicatorHighLegend = document.querySelector("#indicatorHighLegend");
+const indicatorLowLegend = document.querySelector("#indicatorLowLegend");
+const indicatorConfirmLegend = document.querySelector("#indicatorConfirmLegend");
+const ladderLookbackInput = document.querySelector("#ladderLookbackInput");
+const ladderEntryDropInput = document.querySelector("#ladderEntryDropInput");
+const ladderStepDropInput = document.querySelector("#ladderStepDropInput");
+const ladderBuyAddInput = document.querySelector("#ladderBuyAddInput");
+const ladderMaxTargetInput = document.querySelector("#ladderMaxTargetInput");
+const ladderSellRiseInput = document.querySelector("#ladderSellRiseInput");
+const ladderSellReduceInput = document.querySelector("#ladderSellReduceInput");
+const ladderStopLossInput = document.querySelector("#ladderStopLossInput");
+const ladderStopReduceInput = document.querySelector("#ladderStopReduceInput");
 const riskEnabledInput = document.querySelector("#riskEnabledInput");
 const riskLookbackInput = document.querySelector("#riskLookbackInput");
 const riskStalledInput = document.querySelector("#riskStalledInput");
@@ -59,7 +76,9 @@ const backtestFields = {
   buyHoldPolicy: document.querySelector("#btBuyHoldPolicy"),
   excessReturn: document.querySelector("#btExcessReturn"),
   maxDrawdown: document.querySelector("#btMaxDrawdown"),
+  modelFees: document.querySelector("#btModelFees"),
   buyHoldMaxDrawdown: document.querySelector("#btBuyHoldMaxDrawdown"),
+  buyHoldFees: document.querySelector("#btBuyHoldFees"),
   drawdownDiff: document.querySelector("#btDrawdownDiff"),
   trades: document.querySelector("#btTrades"),
   shares: document.querySelector("#btShares"),
@@ -88,9 +107,24 @@ const defaultNoNewHighExitRule = {
   reduce: 100,
 };
 
+const defaultLocalLadderRule = {
+  lookbackDays: 5,
+  entryDrop: 2,
+  ladderDrop: 4,
+  buyAdd: 30,
+  maxTarget: 100,
+  sellRise: 4,
+  sellReduce: 25,
+  stopLoss: 25,
+  stopReduce: 100,
+  maxSellsPerDay: 2,
+  resetPositionBelow: 10,
+};
+
 const strategyPresets = {
   optimized: {
     label: "513100 多周期优化策略",
+    strategyType: "wave",
     waveThreshold: 15,
     buyRules: [
       { enabled: true, drop: 5, target: 40 },
@@ -115,6 +149,7 @@ const strategyPresets = {
   },
   optimized588000: {
     label: "588000 多周期优化策略",
+    strategyType: "wave",
     waveThreshold: 20,
     buyRules: [
       { enabled: true, drop: 5, target: 35 },
@@ -137,8 +172,23 @@ const strategyPresets = {
       reduce: 100,
     },
   },
+  localLadder588000: {
+    label: "588000 近端高点阶梯策略",
+    strategyType: "local-high-ladder",
+    waveThreshold: 20,
+    localLadderRule: {
+      ...defaultLocalLadderRule,
+    },
+    buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: false })),
+    sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: false })),
+    noNewHighExitRule: {
+      enabled: false,
+      ...defaultNoNewHighExitRule,
+    },
+  },
   original: {
     label: "原始分批加仓策略",
+    strategyType: "wave",
     waveThreshold: 5,
     buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: true })),
     sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: true })),
@@ -240,11 +290,83 @@ function renderRuleInputs(presetName = "optimized") {
     .join("");
 }
 
-function applyStrategyPreset(presetName, shouldAnnounce = true) {
+function readLocalLadderRule() {
+  const readNumber = (input, fallback) => {
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  };
+
+  return {
+    lookbackDays: Math.max(2, Math.round(readNumber(ladderLookbackInput, defaultLocalLadderRule.lookbackDays))),
+    entryDrop: Math.max(0, readNumber(ladderEntryDropInput, defaultLocalLadderRule.entryDrop)),
+    ladderDrop: Math.max(0.1, readNumber(ladderStepDropInput, defaultLocalLadderRule.ladderDrop)),
+    buyAdd: Math.min(100, Math.max(1, readNumber(ladderBuyAddInput, defaultLocalLadderRule.buyAdd))),
+    maxTarget: Math.min(100, Math.max(1, readNumber(ladderMaxTargetInput, defaultLocalLadderRule.maxTarget))),
+    sellRise: Math.max(0.1, readNumber(ladderSellRiseInput, defaultLocalLadderRule.sellRise)),
+    sellReduce: Math.min(100, Math.max(1, readNumber(ladderSellReduceInput, defaultLocalLadderRule.sellReduce))),
+    stopLoss: Math.max(0, readNumber(ladderStopLossInput, defaultLocalLadderRule.stopLoss)),
+    stopReduce: Math.min(100, Math.max(0, readNumber(ladderStopReduceInput, defaultLocalLadderRule.stopReduce))),
+    maxSellsPerDay: defaultLocalLadderRule.maxSellsPerDay,
+    resetPositionBelow: defaultLocalLadderRule.resetPositionBelow,
+  };
+}
+
+function applyLocalLadderRule(rule = defaultLocalLadderRule) {
+  ladderLookbackInput.value = rule.lookbackDays;
+  ladderEntryDropInput.value = rule.entryDrop;
+  ladderStepDropInput.value = rule.ladderDrop;
+  ladderBuyAddInput.value = rule.buyAdd;
+  ladderMaxTargetInput.value = rule.maxTarget;
+  ladderSellRiseInput.value = rule.sellRise;
+  ladderSellReduceInput.value = rule.sellReduce;
+  ladderStopLossInput.value = rule.stopLoss;
+  ladderStopReduceInput.value = rule.stopReduce;
+}
+
+function updateIndicatorUi() {
+  const isLocalLadder = indicatorModelSelect.value === "local-high-ladder";
+  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", isLocalLadder));
+  localLadderPanel.classList.toggle("hidden", !isLocalLadder);
+  waveBuyPanel.classList.toggle("hidden", isLocalLadder);
+  waveSellPanel.classList.toggle("hidden", isLocalLadder);
+
+  indicatorHighLegend.textContent = isLocalLadder ? "近端高点" : "波浪高点";
+  indicatorLowLegend.textContent = isLocalLadder ? "阶梯触发低点" : "波浪低点";
+  indicatorConfirmLegend.textContent = isLocalLadder ? "卖出/保护点" : "确认点";
+}
+
+function getPresetEntriesForType(strategyType) {
+  return Object.entries(strategyPresets).filter(([, preset]) => {
+    return (preset.strategyType || "wave") === strategyType;
+  });
+}
+
+function renderStrategyPresetOptions(strategyType, selectedPresetName) {
+  const presetEntries = getPresetEntriesForType(strategyType);
+  const fallbackName = presetEntries.length > 0 ? presetEntries[0][0] : "";
+  const nextSelectedName = presetEntries.some(([name]) => name === selectedPresetName)
+    ? selectedPresetName
+    : fallbackName;
+
+  strategyPresetSelect.innerHTML = presetEntries
+    .map(([name, preset]) => {
+      const selected = name === nextSelectedName ? " selected" : "";
+      return `<option value="${name}"${selected}>${preset.label}</option>`;
+    })
+    .join("");
+
+  return nextSelectedName;
+}
+
+function fillStrategyPresetControls(presetName) {
   const preset = strategyPresets[presetName] || strategyPresets.optimized;
-  if (strategyPresetSelect) strategyPresetSelect.value = presetName;
+  const strategyType = preset.strategyType || "wave";
+  if (indicatorModelSelect) indicatorModelSelect.value = strategyType;
+  if (strategyPresetSelect) renderStrategyPresetOptions(strategyType, presetName);
   waveThresholdInput.value = preset.waveThreshold;
   renderRuleInputs(presetName);
+  applyLocalLadderRule(preset.localLadderRule || defaultLocalLadderRule);
+  updateIndicatorUi();
 
   if (riskEnabledInput && preset.noNewHighExitRule) {
     riskEnabledInput.checked = Boolean(preset.noNewHighExitRule.enabled);
@@ -253,12 +375,18 @@ function applyStrategyPreset(presetName, shouldAnnounce = true) {
     riskReduceInput.value = preset.noNewHighExitRule.reduce;
   }
 
+  return preset;
+}
+
+function applyStrategyPreset(presetName, shouldAnnounce = true) {
+  const preset = fillStrategyPresetControls(presetName);
+
   if (lastRows && lastSummary) {
     drawChart(lastRows, lastSummary);
     if (hasBacktestRun) {
       recomputeBacktestWithLatestConfig();
     } else if (shouldAnnounce) {
-      setStatus(`已套用 ${preset.label}，历史波浪点已按 ${formatPercent(preset.waveThreshold)} 阈值刷新。`);
+      setStatus(`已套用 ${preset.label}，历史图表已按当前指标参数刷新。`);
     }
   } else if (shouldAnnounce) {
     setStatus(`已套用 ${preset.label}。`);
@@ -292,9 +420,12 @@ function readBacktestConfig() {
     .sort((a, b) => a.rise - b.rise);
 
   return {
+    strategyType: indicatorModelSelect ? indicatorModelSelect.value : "wave",
     initialCash: Math.max(0, Number(initialCashInput.value)),
     waveThreshold: Math.max(0.1, Number(waveThresholdInput.value)),
+    localLadderRule: readLocalLadderRule(),
     playSpeed: Math.max(10, Number(playSpeedInput.value)),
+    tradeFee: Math.max(0, Number(tradeFeeInput.value) || 0),
     buyRules,
     sellRules,
     noNewHighExitRule: {
@@ -412,6 +543,89 @@ function calculateWavePoints(rows, threshold) {
   return { highs, lows };
 }
 
+function calculateLocalLadderPoints(rows, rule) {
+  if (!rows || rows.length === 0) {
+    return { highs: [], lows: [] };
+  }
+
+  const highs = [];
+  const lows = [];
+  const seenHighs = new Set();
+  let anchorHigh = getRollingHigh(rows, 0, rule.lookbackDays);
+  let deepestLevelBought = 0;
+  let positionRatio = 0;
+  const buyLots = [];
+
+  rows.forEach((row, index) => {
+    const rollingHigh = getRollingHigh(rows, index, rule.lookbackDays);
+    const allowAnchorReset = positionRatio <= rule.resetPositionBelow || row.high >= anchorHigh.high;
+
+    if (allowAnchorReset && rollingHigh.high > anchorHigh.high) {
+      anchorHigh = rollingHigh;
+      deepestLevelBought = 0;
+    }
+
+    if (row.high > anchorHigh.high) {
+      anchorHigh = { ...row, rowIndex: index };
+      deepestLevelBought = 0;
+    }
+
+    const highKey = `${anchorHigh.date}:${anchorHigh.high}`;
+    if (!seenHighs.has(highKey)) {
+      highs.push({
+        date: anchorHigh.date,
+        price: anchorHigh.high,
+        rowIndex: anchorHigh.rowIndex,
+        version: highs.length + 1,
+      });
+      seenHighs.add(highKey);
+    }
+
+    const pullback = anchorHigh.high > 0 ? ((anchorHigh.high - row.close) / anchorHigh.high) * 100 : 0;
+    if (pullback >= rule.entryDrop) {
+      const level = 1 + Math.floor((pullback - rule.entryDrop) / rule.ladderDrop);
+      while (deepestLevelBought < level && positionRatio < rule.maxTarget - 0.5) {
+        positionRatio = Math.min(rule.maxTarget, positionRatio + rule.buyAdd);
+        buyLots.push({ price: row.close });
+        lows.push({
+          date: row.date,
+          price: row.close,
+          rowIndex: index,
+          confirmDate: anchorHigh.date,
+          confirmPrice: anchorHigh.high,
+          confirmRowIndex: anchorHigh.rowIndex,
+          confirmLabel: "锚定高点",
+          version: lows.length + 1,
+        });
+        deepestLevelBought += 1;
+      }
+    }
+
+    let sellsToday = 0;
+    while (buyLots.length > 0 && sellsToday < rule.maxSellsPerDay) {
+      const lastBuy = buyLots[buyLots.length - 1];
+      const rise = lastBuy.price > 0 ? ((row.close - lastBuy.price) / lastBuy.price) * 100 : 0;
+      if (rise < rule.sellRise) break;
+      positionRatio = Math.max(0, positionRatio - rule.sellReduce);
+      buyLots.pop();
+      sellsToday += 1;
+    }
+
+    if (rule.stopLoss > 0 && positionRatio > 0) {
+      const stopPullback = anchorHigh.high > 0 ? ((anchorHigh.high - row.close) / anchorHigh.high) * 100 : 0;
+      if (stopPullback >= rule.stopLoss) {
+        positionRatio = Math.max(0, positionRatio - rule.stopReduce);
+        if (positionRatio <= rule.resetPositionBelow) {
+          buyLots.length = 0;
+          deepestLevelBought = 0;
+        }
+      }
+    }
+  });
+
+  return { highs, lows };
+}
+
 function getAccountSnapshot(account, row, initialCash, peakEquity, trades) {
   const positionValue = account.shares * row.close;
   const equity = account.cash + positionValue;
@@ -426,6 +640,7 @@ function getAccountSnapshot(account, row, initialCash, peakEquity, trades) {
     positionValue,
     equity,
     positionRatio,
+    totalFees: account.totalFees || 0,
     returnRate: initialCash > 0 ? ((equity - initialCash) / initialCash) * 100 : 0,
     peakEquity: nextPeak,
     drawdown,
@@ -433,18 +648,20 @@ function getAccountSnapshot(account, row, initialCash, peakEquity, trades) {
   };
 }
 
-function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPercent, trades) {
+function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPercent, trades, tradeFee = 0) {
   const price = row.close;
   const equity = account.cash + account.shares * price;
   const currentValue = account.shares * price;
   const targetValue = equity * (targetPercent / 100);
-  const buyValue = Math.min(account.cash, targetValue - currentValue);
+  const availableCash = Math.max(0, account.cash - tradeFee);
+  const buyValue = Math.min(availableCash, targetValue - currentValue);
   const shares = Math.floor(buyValue / price);
 
   if (shares <= 0) return false;
 
-  account.cash -= shares * price;
+  account.cash -= shares * price + tradeFee;
   account.shares += shares;
+  account.totalFees = (account.totalFees || 0) + tradeFee;
   const positionRatio = ((account.shares * price) / (account.cash + account.shares * price)) * 100;
   const trade = {
     date: row.date,
@@ -453,6 +670,8 @@ function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPe
     label: "买入",
     price,
     shares,
+    fee: tradeFee,
+    totalFees: account.totalFees,
     positionRatio,
     reference,
     triggerPercent,
@@ -462,7 +681,7 @@ function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPe
   return trade;
 }
 
-function sellByReduction(account, row, rowIndex, reducePercent, reference, triggerPercent, trades) {
+function sellByReduction(account, row, rowIndex, reducePercent, reference, triggerPercent, trades, tradeFee = 0) {
   const price = row.close;
   const equity = account.cash + account.shares * price;
   const currentValue = account.shares * price;
@@ -474,8 +693,9 @@ function sellByReduction(account, row, rowIndex, reducePercent, reference, trigg
 
   if (shares <= 0) return false;
 
-  account.cash += shares * price;
+  account.cash += shares * price - tradeFee;
   account.shares -= shares;
+  account.totalFees = (account.totalFees || 0) + tradeFee;
   const positionRatio = ((account.shares * price) / (account.cash + account.shares * price)) * 100;
   const trade = {
     date: row.date,
@@ -484,6 +704,8 @@ function sellByReduction(account, row, rowIndex, reducePercent, reference, trigg
     label: "卖出",
     price,
     shares,
+    fee: tradeFee,
+    totalFees: account.totalFees,
     positionRatio,
     reference,
     triggerPercent,
@@ -493,18 +715,24 @@ function sellByReduction(account, row, rowIndex, reducePercent, reference, trigg
   return trade;
 }
 
+function getPositionRatio(account, row) {
+  const equity = account.cash + account.shares * row.close;
+  return equity > 0 ? ((account.shares * row.close) / equity) * 100 : 0;
+}
+
 function getPreviousHigh(rows, index, lookbackDays) {
   if (index < lookbackDays) return null;
   const previousRows = rows.slice(index - lookbackDays, index);
   return previousRows.reduce((best, item) => (item.high > best.high ? item : best), previousRows[0]);
 }
 
-function buildBacktestStates(rows, config) {
+function buildWaveBacktestStates(rows, config) {
   if (!rows || rows.length === 0) return [];
 
   const account = {
     cash: config.initialCash,
     shares: 0,
+    totalFees: 0,
   };
   const wave = createWaveTracker(rows[0], config.waveThreshold);
   const noNewHighRule = config.noNewHighExitRule || defaultNoNewHighExitRule;
@@ -557,7 +785,8 @@ function buildBacktestStates(rows, config) {
             confirmLabel: "确认低价",
           },
           drawdown,
-          trades
+          trades,
+          config.tradeFee
         );
         if (trade) {
           lastBuyTrade = trade;
@@ -589,7 +818,8 @@ function buildBacktestStates(rows, config) {
               price: lastBuyTrade.price,
             },
             riseFromLastBuy,
-            trades
+            trades,
+            config.tradeFee
           );
           triggeredSells.add(key);
         }
@@ -618,7 +848,8 @@ function buildBacktestStates(rows, config) {
               price: previousHigh.high,
             },
             noNewHighDays,
-            trades
+            trades,
+            config.tradeFee
           );
 
           if (trade) {
@@ -645,12 +876,192 @@ function buildBacktestStates(rows, config) {
   return states;
 }
 
-function buildBuyHoldStates(rows, initialCash) {
+function getRollingHigh(rows, index, lookbackDays) {
+  const start = Math.max(0, index - lookbackDays + 1);
+  let bestIndex = start;
+  for (let i = start + 1; i <= index; i += 1) {
+    if (rows[i].high > rows[bestIndex].high) bestIndex = i;
+  }
+  return {
+    ...rows[bestIndex],
+    rowIndex: bestIndex,
+  };
+}
+
+function buildLocalLadderBacktestStates(rows, config) {
+  if (!rows || rows.length === 0) return [];
+
+  const rule = config.localLadderRule || defaultLocalLadderRule;
+  const account = {
+    cash: config.initialCash,
+    shares: 0,
+    totalFees: 0,
+  };
+  const buyLots = [];
+  const trades = [];
+  const states = [];
+  const indicatorHighs = [];
+  const indicatorLows = [];
+  let anchorHigh = getRollingHigh(rows, 0, rule.lookbackDays);
+  let deepestLevelBought = 0;
+  let peakEquity = config.initialCash;
+  let maxDrawdown = 0;
+
+  rows.forEach((row, index) => {
+    const rollingHigh = getRollingHigh(rows, index, rule.lookbackDays);
+    const ratioBefore = getPositionRatio(account, row);
+    const allowAnchorReset = ratioBefore <= rule.resetPositionBelow || row.high >= anchorHigh.high;
+
+    if (allowAnchorReset && rollingHigh.high > anchorHigh.high) {
+      anchorHigh = rollingHigh;
+      deepestLevelBought = 0;
+      indicatorHighs.push({
+        date: anchorHigh.date,
+        price: anchorHigh.high,
+        rowIndex: anchorHigh.rowIndex,
+        version: indicatorHighs.length + 1,
+      });
+    }
+
+    if (row.high > anchorHigh.high) {
+      anchorHigh = { ...row, rowIndex: index };
+      deepestLevelBought = 0;
+      indicatorHighs.push({
+        date: row.date,
+        price: row.high,
+        rowIndex: index,
+        version: indicatorHighs.length + 1,
+      });
+    }
+
+    const pullback = anchorHigh.high > 0 ? ((anchorHigh.high - row.close) / anchorHigh.high) * 100 : 0;
+    if (pullback >= rule.entryDrop) {
+      const level = 1 + Math.floor((pullback - rule.entryDrop) / rule.ladderDrop);
+      while (deepestLevelBought < level) {
+        const currentRatio = getPositionRatio(account, row);
+        const target = Math.min(rule.maxTarget, currentRatio + rule.buyAdd);
+        if (target <= currentRatio + 0.01) break;
+        const trade = buyToTarget(
+          account,
+          row,
+          index,
+          target,
+          {
+            type: "local-high",
+            label: `${rule.lookbackDays}日近端高点`,
+            date: anchorHigh.date,
+            price: anchorHigh.high,
+          },
+          pullback,
+          trades,
+          config.tradeFee
+        );
+
+        if (trade) {
+          trade.reason = `较${rule.lookbackDays}日近端高点回落 ${formatPercent(pullback)}，阶梯加仓到 ${formatPercent(target)}`;
+          buyLots.push({ price: row.close, date: row.date, rowIndex: index, level: deepestLevelBought + 1 });
+          indicatorLows.push({
+            date: row.date,
+            price: row.close,
+            rowIndex: index,
+            confirmDate: anchorHigh.date,
+            confirmPrice: anchorHigh.high,
+            confirmRowIndex: anchorHigh.rowIndex,
+            confirmLabel: "锚定高点",
+            version: indicatorLows.length + 1,
+          });
+        }
+
+        deepestLevelBought += 1;
+        if (getPositionRatio(account, row) >= rule.maxTarget - 0.5) break;
+      }
+    }
+
+    if (account.shares > 0 && buyLots.length > 0) {
+      let sellsToday = 0;
+      while (buyLots.length > 0 && sellsToday < rule.maxSellsPerDay) {
+        const lastBuy = buyLots[buyLots.length - 1];
+        const rise = lastBuy.price > 0 ? ((row.close - lastBuy.price) / lastBuy.price) * 100 : 0;
+        if (rise < rule.sellRise) break;
+
+        const trade = sellByReduction(
+          account,
+          row,
+          index,
+          rule.sellReduce,
+          {
+            type: "last-buy",
+            label: "最近阶梯买入价",
+            date: lastBuy.date,
+            price: lastBuy.price,
+          },
+          rise,
+          trades,
+          config.tradeFee
+        );
+
+        if (!trade) break;
+        trade.reason = `较最近阶梯买入价上涨 ${formatPercent(rise)}，减仓 ${formatPercent(rule.sellReduce)}`;
+        buyLots.pop();
+        sellsToday += 1;
+      }
+    }
+
+    if (rule.stopLoss > 0 && account.shares > 0) {
+      const stopPullback = anchorHigh.high > 0 ? ((anchorHigh.high - row.close) / anchorHigh.high) * 100 : 0;
+      if (stopPullback >= rule.stopLoss) {
+        const trade = sellByReduction(
+          account,
+          row,
+          index,
+          rule.stopReduce,
+          {
+            type: "local-high",
+            label: "深跌保护高点",
+            date: anchorHigh.date,
+            price: anchorHigh.high,
+          },
+          stopPullback,
+          trades,
+          config.tradeFee
+        );
+
+        if (trade) {
+          trade.reason = `较近端高点回落 ${formatPercent(stopPullback)}，深跌保护平仓 ${formatPercent(rule.stopReduce)}`;
+          buyLots.length = 0;
+          deepestLevelBought = 0;
+          anchorHigh = rollingHigh;
+        }
+      }
+    }
+
+    const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+    snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = indicatorHighs.slice();
+    snapshot.indicatorLows = indicatorLows.slice();
+    states.push(snapshot);
+  });
+
+  return states;
+}
+
+function buildBacktestStates(rows, config) {
+  if (config.strategyType === "local-high-ladder") {
+    return buildLocalLadderBacktestStates(rows, config);
+  }
+  return buildWaveBacktestStates(rows, config);
+}
+
+function buildBuyHoldStates(rows, initialCash, tradeFee = 0) {
   if (!rows || rows.length === 0) return [];
 
   const firstPrice = rows[0].close;
-  const shares = firstPrice > 0 ? Math.floor(initialCash / firstPrice) : 0;
-  const cash = initialCash - shares * firstPrice;
+  const availableCash = Math.max(0, initialCash - tradeFee);
+  const shares = firstPrice > 0 ? Math.floor(availableCash / firstPrice) : 0;
+  const totalFees = shares > 0 ? tradeFee : 0;
+  const cash = initialCash - shares * firstPrice - totalFees;
   let peakEquity = initialCash;
   let maxDrawdown = 0;
 
@@ -664,6 +1075,7 @@ function buildBuyHoldStates(rows, initialCash) {
       row,
       entryDate: rows[0].date,
       entryPrice: firstPrice,
+      totalFees,
       cash,
       shares,
       equity,
@@ -676,7 +1088,7 @@ function buildBuyHoldStates(rows, initialCash) {
 
 function buildParallelBacktestStates(rows, config) {
   const modelStates = buildBacktestStates(rows, config);
-  const buyHoldStates = buildBuyHoldStates(rows, config.initialCash);
+  const buyHoldStates = buildBuyHoldStates(rows, config.initialCash, config.tradeFee);
 
   return modelStates.map((state, index) => {
     const buyHold = buyHoldStates[index];
@@ -704,13 +1116,14 @@ function renderTradeLog(trades) {
             <td>${formatPrice(trade.price)}</td>
             <td>${formatShares(trade.shares)}</td>
             <td>${formatPercent(trade.positionRatio)}</td>
+            <td>${formatMoney(trade.fee || 0)}</td>
             <td>${reference}</td>
             <td>${trade.reason}</td>
           </tr>
         `;
       })
       .join("")
-    : '<tr><td colspan="7">暂无交易</td></tr>';
+    : '<tr><td colspan="8">暂无交易</td></tr>';
 }
 
 function drawReturnComparison(states) {
@@ -807,6 +1220,7 @@ function drawTradePriceChart(states) {
   const rows = usableStates.map((state) => state.row);
   const trades = usableStates[usableStates.length - 1].trades;
   const waveHighs = usableStates[usableStates.length - 1].waveHighs || [];
+  const highPointLabel = indicatorModelSelect.value === "local-high-ladder" ? "近端高点" : "波浪高点";
   const dateToIndex = new Map(rows.map((row, index) => [row.date, index]));
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
 
@@ -859,7 +1273,7 @@ function drawTradePriceChart(states) {
         ${hasConfirmPoint ? `<line class="trade-ref-line" x1="${x}" y1="${y}" x2="${confirmX}" y2="${confirmY}"></line>` : ""}
         <circle cx="${x}" cy="${y}" r="5" fill="#8a4b08"></circle>
         <rect class="trade-label-bg" x="${labelX}" y="${labelY}" width="142" height="31" rx="4"></rect>
-        <text class="trade-label" x="${labelX + 6}" y="${labelY + 12}">波浪高点 ${formatPrice(point.price)}</text>
+        <text class="trade-label" x="${labelX + 6}" y="${labelY + 12}">${highPointLabel} ${formatPrice(point.price)}</text>
         <text class="trade-label" x="${labelX + 6}" y="${labelY + 25}">${point.date}</text>
         ${hasConfirmPoint ? `<circle cx="${confirmX}" cy="${confirmY}" r="4.5" fill="#f0a202"></circle>` : ""}
         ${hasConfirmPoint ? `<rect class="trade-label-bg" x="${confirmLabelX}" y="${confirmLabelY}" width="142" height="31" rx="4"></rect>` : ""}
@@ -939,7 +1353,9 @@ function renderBacktestState(state, index, total) {
     backtestFields.buyHoldPolicy.textContent = "历史第一天全仓买入，之后一直持有，不执行卖出。交易日志只显示模型策略交易。";
     backtestFields.excessReturn.textContent = "--";
     backtestFields.maxDrawdown.textContent = "--";
+    backtestFields.modelFees.textContent = "--";
     backtestFields.buyHoldMaxDrawdown.textContent = "--";
+    backtestFields.buyHoldFees.textContent = "--";
     backtestFields.drawdownDiff.textContent = "--";
     backtestFields.trades.textContent = "--";
     backtestFields.shares.textContent = "--";
@@ -956,10 +1372,12 @@ function renderBacktestState(state, index, total) {
   backtestFields.position.textContent = formatPercent(state.positionRatio);
   backtestFields.returnRate.textContent = formatPercent(state.returnRate);
   backtestFields.buyHoldReturn.textContent = formatPercent(state.buyHold.returnRate);
-  backtestFields.buyHoldPolicy.textContent = `${state.buyHold.entryDate} 以收盘价 ${formatPrice(state.buyHold.entryPrice)} 全仓买入 ${formatShares(state.buyHold.shares)} 份，之后一直持有，不执行卖出。`;
+  backtestFields.buyHoldPolicy.textContent = `${state.buyHold.entryDate} 以收盘价 ${formatPrice(state.buyHold.entryPrice)} 全仓买入 ${formatShares(state.buyHold.shares)} 份，扣交易费 ${formatMoney(state.buyHold.totalFees || 0)} 元，之后一直持有，不执行卖出。`;
   backtestFields.excessReturn.textContent = formatPercent(state.excessReturn);
   backtestFields.maxDrawdown.textContent = formatPercent(state.maxDrawdown);
+  backtestFields.modelFees.textContent = formatMoney(state.totalFees || 0);
   backtestFields.buyHoldMaxDrawdown.textContent = formatPercent(state.buyHold.maxDrawdown);
+  backtestFields.buyHoldFees.textContent = formatMoney(state.buyHold.totalFees || 0);
   backtestFields.drawdownDiff.textContent = formatPercent(state.drawdownDiff);
   backtestFields.trades.textContent = String(state.trades.length);
   backtestFields.shares.textContent = formatShares(state.shares);
@@ -1019,7 +1437,10 @@ function recomputeBacktestWithLatestConfig() {
   backtestIndex = backtestStates.length;
   const finalState = backtestStates[backtestStates.length - 1];
   renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
-  setStatus(`已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`);
+  const status = config.strategyType === "local-high-ladder"
+    ? "已按近端高点阶梯指标同步重算图表点位和回测交易。"
+    : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`;
+  setStatus(status);
 }
 
 function startBacktest() {
@@ -1096,8 +1517,13 @@ function drawChart(rows, summary) {
   const highY = scaleY(summary.highest.price);
   const lowX = pointX(lowIndex, rows.length, pad.left, innerWidth);
   const lowY = scaleY(summary.lowest.price);
+  const indicatorType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
+  const isLocalLadder = indicatorType === "local-high-ladder";
   const waveThreshold = getWaveThreshold();
-  const wavePoints = calculateWavePoints(rows, waveThreshold);
+  const localLadderRule = readLocalLadderRule();
+  const indicatorPoints = isLocalLadder
+    ? calculateLocalLadderPoints(rows, localLadderRule)
+    : calculateWavePoints(rows, waveThreshold);
   const priceTicks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
   const dateTickIndexes = Array.from(new Set([
     0,
@@ -1107,7 +1533,7 @@ function drawChart(rows, summary) {
     rows.length - 1,
   ]));
 
-  const renderWavePoint = (point, type, index) => {
+  const renderIndicatorPoint = (point, type, index) => {
     if (!Number.isInteger(point.rowIndex)) return "";
 
     const x = pointX(point.rowIndex, rows.length, pad.left, innerWidth);
@@ -1117,7 +1543,9 @@ function drawChart(rows, summary) {
     const confirmY = hasConfirmPoint ? scaleY(point.confirmPrice) : y;
     const isHigh = type === "high";
     const color = isHigh ? "#8a4b08" : "#344054";
-    const label = isHigh ? "波浪高" : "波浪低";
+    const label = isLocalLadder
+      ? (isHigh ? "近端高" : "阶梯低")
+      : (isHigh ? "波浪高" : "波浪低");
     const baseY = isHigh ? y - 38 : y + 18;
     const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 126);
     const labelY = Math.min(Math.max(baseY + (index % 2) * (isHigh ? -8 : 8), pad.top + 4), height - pad.bottom - 32);
@@ -1137,10 +1565,13 @@ function drawChart(rows, summary) {
     `;
   };
 
-  const wavePointNodes = [
-    ...wavePoints.highs.map((point, index) => renderWavePoint(point, "high", index)),
-    ...wavePoints.lows.map((point, index) => renderWavePoint(point, "low", index)),
+  const indicatorPointNodes = [
+    ...indicatorPoints.highs.map((point, index) => renderIndicatorPoint(point, "high", index)),
+    ...indicatorPoints.lows.map((point, index) => renderIndicatorPoint(point, "low", index)),
   ].join("");
+  const indicatorSummary = isLocalLadder
+    ? `${localLadderRule.lookbackDays}日近端高点：高点 ${indicatorPoints.highs.length}，阶梯触发 ${indicatorPoints.lows.length}；回落 ${formatPercent(localLadderRule.entryDrop)} / 阶梯 ${formatPercent(localLadderRule.ladderDrop)} / 加仓 ${formatPercent(localLadderRule.buyAdd)} / 反弹卖出 ${formatPercent(localLadderRule.sellRise)}`
+    : `波浪阈值 ${formatPercent(waveThreshold)}：高点 ${indicatorPoints.highs.length}，低点 ${indicatorPoints.lows.length}`;
 
   chart.style.width = `${width}px`;
   chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -1158,7 +1589,7 @@ function drawChart(rows, summary) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${linePath}"></path>
-    ${wavePointNodes}
+    ${indicatorPointNodes}
     <circle cx="${highX}" cy="${highY}" r="5.5" fill="#c2413b"></circle>
     <text class="point-label" x="${Math.min(highX + 8, width - 190)}" y="${Math.max(highY - 10, 18)}">最高 ${formatPrice(summary.highest.price)}</text>
     <circle cx="${lowX}" cy="${lowY}" r="5.5" fill="#227a4f"></circle>
@@ -1169,7 +1600,7 @@ function drawChart(rows, summary) {
         return `<text class="tick-label" x="${x}" y="${height - 16}" text-anchor="middle">${rows[index].date.slice(5)}</text>`;
       })
       .join("")}
-    <text class="tick-label" x="${pad.left}" y="${pad.top - 8}">波浪阈值 ${formatPercent(waveThreshold)}：高点 ${wavePoints.highs.length}，低点 ${wavePoints.lows.length}</text>
+    <text class="tick-label" x="${pad.left}" y="${pad.top - 8}">${indicatorSummary}</text>
   `;
 }
 
@@ -1209,6 +1640,8 @@ function renderResult(result) {
   fields.chartTitle.textContent = displayName;
   fields.chartSubtitle.textContent = `${startInput.value} 至 ${endInput.value}`;
 
+  const wavePresetName = renderStrategyPresetOptions("wave", strategyPresetSelect.value);
+  fillStrategyPresetControls(wavePresetName || "optimized");
   drawChart(rows, summary);
   renderTable(rows);
   resetBacktest();
@@ -1258,7 +1691,36 @@ applyPresetButton.addEventListener("click", () => {
   applyStrategyPreset(strategyPresetSelect.value);
 });
 
+strategyPresetSelect.addEventListener("change", () => {
+  applyStrategyPreset(strategyPresetSelect.value);
+});
+
+function refreshIndicatorView(message) {
+  updateIndicatorUi();
+  if (lastRows && lastSummary) {
+    drawChart(lastRows, lastSummary);
+    if (hasBacktestRun) {
+      recomputeBacktestWithLatestConfig();
+    } else {
+      setStatus(message);
+    }
+  }
+}
+
+indicatorModelSelect.addEventListener("change", () => {
+  const strategyType = indicatorModelSelect.value;
+  const presetName = renderStrategyPresetOptions(strategyType);
+  if (presetName) {
+    applyStrategyPreset(presetName);
+  } else {
+    refreshIndicatorView(strategyType === "local-high-ladder"
+      ? "已切换到近端高点阶梯指标。"
+      : "已切换到波浪模型。");
+  }
+});
+
 waveThresholdInput.addEventListener("input", () => {
+  if (indicatorModelSelect.value !== "wave") return;
   if (lastRows && lastSummary) {
     drawChart(lastRows, lastSummary);
     if (hasBacktestRun) {
@@ -1267,6 +1729,24 @@ waveThresholdInput.addEventListener("input", () => {
       setStatus(`已按 ${formatPercent(getWaveThreshold())} 波动阈值重新计算历史波浪高低点。`);
     }
   }
+});
+
+[
+  ladderLookbackInput,
+  ladderEntryDropInput,
+  ladderStepDropInput,
+  ladderBuyAddInput,
+  ladderMaxTargetInput,
+  ladderSellRiseInput,
+  ladderSellReduceInput,
+  ladderStopLossInput,
+  ladderStopReduceInput,
+].forEach((input) => {
+  input.addEventListener("input", () => {
+    if (indicatorModelSelect.value === "local-high-ladder") {
+      refreshIndicatorView("已按近端高点阶梯参数刷新历史图表。");
+    }
+  });
 });
 
 priceZoomOutButton.addEventListener("click", () => {

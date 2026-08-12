@@ -67,10 +67,19 @@
             <h2 id="chartTitle">513100</h2>
             <p id="chartSubtitle">最近一年日线</p>
           </div>
-          <label class="chart-wave-control">
-            波浪确认波动 %
-            <input id="waveThresholdInput" type="number" min="1" max="30" step="0.5" value="5">
-          </label>
+          <div class="indicator-controls">
+            <label>
+              指标模型
+              <select id="indicatorModelSelect">
+                <option value="wave">波浪模型</option>
+                <option value="local-high-ladder">近端高点阶梯指标</option>
+              </select>
+            </label>
+            <label class="wave-param">
+              波浪确认波动 %
+              <input id="waveThresholdInput" type="number" min="1" max="30" step="0.5" value="5">
+            </label>
+          </div>
           <div class="chart-tools" aria-label="历史价格图缩放">
             <button id="priceZoomOutButton" type="button">缩小</button>
             <button id="priceZoomResetButton" type="button">重置</button>
@@ -80,9 +89,9 @@
             <span><i class="line"></i>收盘价</span>
             <span><i class="dot high-dot"></i>最高点</span>
             <span><i class="dot low-dot"></i>最低点</span>
-            <span><i class="dot wave-high-dot"></i>波浪高点</span>
-            <span><i class="dot wave-low-dot"></i>波浪低点</span>
-            <span><i class="dot confirm-dot"></i>确认点</span>
+            <span><i class="dot wave-high-dot"></i><b id="indicatorHighLegend">波浪高点</b></span>
+            <span><i class="dot wave-low-dot"></i><b id="indicatorLowLegend">波浪低点</b></span>
+            <span><i class="dot confirm-dot"></i><b id="indicatorConfirmLegend">确认点</b></span>
           </div>
         </div>
         <div class="chart-wrap">
@@ -104,11 +113,7 @@
             <div class="preset-panel">
               <label>
                 策略预设
-                <select id="strategyPresetSelect">
-                  <option value="optimized">513100 多周期优化策略</option>
-                  <option value="optimized588000">588000 多周期优化策略</option>
-                  <option value="original">原始分批加仓策略</option>
-                </select>
+                <select id="strategyPresetSelect"></select>
               </label>
               <button id="applyPresetButton" type="button">套用</button>
             </div>
@@ -122,9 +127,58 @@
                 交易速度
                 <input id="playSpeedInput" type="number" min="10" max="1000" step="10" value="80">
               </label>
+              <label>
+                每笔交易费
+                <input id="tradeFeeInput" type="number" min="0" step="0.01" value="5">
+              </label>
             </div>
 
-            <div class="rule-panel">
+            <div id="localLadderPanel" class="rule-panel hidden">
+              <div class="rule-head">
+                <h3>近端高点阶梯参数</h3>
+                <span>按近端高点回落分批买入，按最近买入价反弹分批卖出</span>
+              </div>
+              <div class="local-ladder-grid">
+                <label>
+                  近端高点天数
+                  <input id="ladderLookbackInput" type="number" min="2" max="60" step="1" value="5">
+                </label>
+                <label>
+                  首次回落 %
+                  <input id="ladderEntryDropInput" type="number" min="0" max="50" step="0.5" value="2">
+                </label>
+                <label>
+                  加仓阶梯 %
+                  <input id="ladderStepDropInput" type="number" min="0.5" max="50" step="0.5" value="4">
+                </label>
+                <label>
+                  每次加仓 %
+                  <input id="ladderBuyAddInput" type="number" min="1" max="100" step="1" value="30">
+                </label>
+                <label>
+                  最高仓位 %
+                  <input id="ladderMaxTargetInput" type="number" min="1" max="100" step="1" value="100">
+                </label>
+                <label>
+                  反弹卖出 %
+                  <input id="ladderSellRiseInput" type="number" min="0.5" max="50" step="0.5" value="4">
+                </label>
+                <label>
+                  每次减仓 %
+                  <input id="ladderSellReduceInput" type="number" min="1" max="100" step="1" value="25">
+                </label>
+                <label>
+                  深跌保护 %
+                  <input id="ladderStopLossInput" type="number" min="0" max="90" step="0.5" value="25">
+                </label>
+                <label>
+                  保护平仓 %
+                  <input id="ladderStopReduceInput" type="number" min="0" max="100" step="1" value="100">
+                </label>
+              </div>
+            </div>
+
+            <div id="waveBuyPanel" class="rule-panel">
               <div class="rule-head">
                 <h3>买入规则</h3>
                 <span>回撤达到阈值时调仓到目标仓位</span>
@@ -132,7 +186,7 @@
               <div id="buyRules" class="rule-grid"></div>
             </div>
 
-            <div class="rule-panel">
+            <div id="waveSellPanel" class="rule-panel">
               <div class="rule-head">
                 <h3>卖出规则</h3>
                 <span>较最近一次模型买入价上涨达到阈值时减仓</span>
@@ -207,8 +261,16 @@
                 <strong id="btMaxDrawdown">--</strong>
               </article>
               <article>
+                <span>模型交易费用</span>
+                <strong id="btModelFees">--</strong>
+              </article>
+              <article>
                 <span>全仓最大回撤</span>
                 <strong id="btBuyHoldMaxDrawdown">--</strong>
+              </article>
+              <article>
+                <span>全仓交易费用</span>
+                <strong id="btBuyHoldFees">--</strong>
               </article>
               <article>
                 <span>回撤差异</span>
@@ -247,6 +309,7 @@
                     <th>价格</th>
                     <th>数量</th>
                     <th>仓位</th>
+                    <th>费用</th>
                     <th>参考点</th>
                     <th>说明</th>
                   </tr>
@@ -269,7 +332,7 @@
               <span><i class="line"></i>收盘价</span>
               <span><i class="dot buy-dot"></i>买入</span>
               <span><i class="dot sell-dot"></i>卖出</span>
-              <span><i class="dot wave-high-dot"></i>波浪高点</span>
+              <span><i class="dot wave-high-dot"></i>模型高点</span>
               <span><i class="dot ref-high-dot"></i>参考高点</span>
               <span><i class="dot ref-low-dot"></i>卖出参考点</span>
             </div>
