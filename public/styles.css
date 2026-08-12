@@ -177,6 +177,57 @@ button:disabled {
   margin-bottom: 16px;
 }
 
+.company-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2.2fr);
+  gap: 14px;
+  align-items: stretch;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.company-card span,
+.company-card dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.company-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.company-card dl {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.company-card dl div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.company-card dd {
+  overflow: hidden;
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .metric {
   min-height: 112px;
   padding: 18px;
@@ -482,14 +533,16 @@ button:disabled {
 }
 
 .local-ladder-grid,
-.ma-rsi-grid {
+.ma-rsi-grid,
+.order-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
 .local-ladder-grid label,
-.ma-rsi-grid label {
+.ma-rsi-grid label,
+.order-grid label {
   padding: 10px;
   border: 1px solid #e5ebf3;
   border-radius: 8px;
@@ -498,7 +551,8 @@ button:disabled {
 }
 
 .local-ladder-grid input,
-.ma-rsi-grid input {
+.ma-rsi-grid input,
+.order-grid input {
   height: 36px;
   padding: 0 10px;
 }
@@ -514,6 +568,68 @@ button:disabled {
   height: 16px;
   padding: 0;
   accent-color: var(--accent);
+}
+
+.model-compare-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.current-config-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+  font-size: 12px;
+}
+
+.current-config-option input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.model-compare-options label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.model-compare-options label.selected {
+  border-color: var(--accent);
+  background: #eef8fa;
+}
+
+.model-compare-options input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.model-compare-options span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-compare-options small {
+  color: var(--muted);
+  font-weight: 700;
 }
 
 .condition-note {
@@ -818,6 +934,8 @@ tbody tr:last-child td {
 @media (max-width: 880px) {
   .toolbar,
   .query-form,
+  .company-card,
+  .company-card dl,
   .summary-grid,
   .backtest-layout,
   .preset-panel,
@@ -826,6 +944,8 @@ tbody tr:last-child td {
   .risk-grid,
   .local-ladder-grid,
   .ma-rsi-grid,
+  .order-grid,
+  .model-compare-options,
   .account-strip,
   .analysis-grid {
     grid-template-columns: 1fr;

@@ -35,6 +35,7 @@
           <label>
             历史区间
             <select id="rangePresetSelect">
+              <option value="4w">最近 4 周</option>
               <option value="1">最近 1 年</option>
               <option value="3">最近 3 年</option>
               <option value="5">最近 5 年</option>
@@ -57,6 +58,35 @@
 
       <section class="status-band" aria-live="polite">
         <div id="statusText">正在准备查询条件...</div>
+      </section>
+
+      <section class="company-card" aria-label="标的信息">
+        <div>
+          <span>标的信息</span>
+          <strong id="companyName">--</strong>
+        </div>
+        <dl>
+          <div>
+            <dt>代码</dt>
+            <dd id="companyCode">--</dd>
+          </div>
+          <div>
+            <dt>市场</dt>
+            <dd id="companyMarket">--</dd>
+          </div>
+          <div>
+            <dt>交易所</dt>
+            <dd id="companyExchange">--</dd>
+          </div>
+          <div>
+            <dt>币种</dt>
+            <dd id="companyCurrency">--</dd>
+          </div>
+          <div>
+            <dt>数据源</dt>
+            <dd id="companySource">--</dd>
+          </div>
+        </dl>
       </section>
 
       <section class="summary-grid" aria-label="高低点摘要">
@@ -95,6 +125,7 @@
                 <option value="wave">波浪模型</option>
                 <option value="local-high-ladder">近端高点阶梯指标</option>
                 <option value="ma-rsi-band">MA-RSI 波段模型</option>
+                <option value="order-grid">近端高点订单网格模型</option>
               </select>
             </label>
             <label class="wave-param">
@@ -138,6 +169,18 @@
                 <select id="strategyPresetSelect"></select>
               </label>
               <button id="applyPresetButton" type="button">套用</button>
+            </div>
+
+            <div class="rule-panel">
+              <div class="rule-head">
+                <h3>多模型对比</h3>
+                <span>每个模型使用独立模拟账户；勾选启用参与并行回测，点击预设仅显示该模型参数</span>
+              </div>
+              <label class="current-config-option">
+                <input id="compareCurrentConfigInput" type="checkbox">
+                <span>启用当前界面模型和参数</span>
+              </label>
+              <div id="modelCompareOptions" class="model-compare-options"></div>
             </div>
 
             <div class="settings-grid">
@@ -314,6 +357,39 @@
               </div>
             </div>
 
+            <div id="orderGridPanel" class="rule-panel hidden">
+              <div class="rule-head">
+                <h3>近端高点订单网格参数</h3>
+                <span>空仓时按近端高点回撤建仓，之后按每笔订单价格独立加仓和止盈</span>
+              </div>
+              <div class="order-grid">
+                <label>
+                  近端高点天数
+                  <input id="orderLookbackInput" type="number" min="2" max="60" step="1" value="3">
+                </label>
+                <label>
+                  首次回撤 %
+                  <input id="orderEntryDropInput" type="number" min="0" max="50" step="0.5" value="2">
+                </label>
+                <label>
+                  每单资金 %
+                  <input id="orderCapitalInput" type="number" min="1" max="100" step="1" value="20">
+                </label>
+                <label>
+                  追加下跌 %
+                  <input id="orderAddDropInput" type="number" min="0.1" max="50" step="0.5" value="2">
+                </label>
+                <label>
+                  单笔止盈 %
+                  <input id="orderTakeProfitInput" type="number" min="0.1" max="50" step="0.5" value="2">
+                </label>
+                <label>
+                  最大订单数
+                  <input id="orderMaxLotsInput" type="number" min="1" max="20" step="1" value="5">
+                </label>
+              </div>
+            </div>
+
             <div id="waveBuyPanel" class="rule-panel">
               <div class="rule-head">
                 <h3>买入规则</h3>
@@ -436,18 +512,45 @@
             </div>
 
             <div class="log-wrap">
+              <div class="log-title">多模型表现表</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>类型</th>
+                    <th>最终资产</th>
+                    <th>现金</th>
+                    <th>仓位</th>
+                    <th>收益</th>
+                    <th>全仓收益</th>
+                    <th>超额</th>
+                    <th>最大回撤</th>
+                    <th>回撤差异</th>
+                    <th>费用</th>
+                    <th>交易次数</th>
+                    <th>结论</th>
+                  </tr>
+                </thead>
+                <tbody id="modelCompareTable"></tbody>
+              </table>
+            </div>
+
+            <div class="log-wrap">
               <div class="log-title">模型策略交易记录</div>
               <table>
                 <thead>
                   <tr>
                     <th>日期</th>
+                    <th>模型</th>
                     <th>操作</th>
                     <th>价格</th>
                     <th>数量</th>
                     <th>仓位</th>
+                    <th>账户现金</th>
+                    <th>账户总资产</th>
                     <th>费用</th>
                     <th>参考点</th>
-                    <th>说明</th>
+                    <th>触发条件</th>
                   </tr>
                 </thead>
                 <tbody id="tradeLog"></tbody>

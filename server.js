@@ -61,6 +61,13 @@ function inferMarket(code) {
   return "1";
 }
 
+function getMarketName(code, market) {
+  if (market === "US") return "US";
+  if (/^[48]/.test(code)) return "北京证券交易所";
+  if (market === "1") return "上海证券交易所";
+  return "深圳证券交易所";
+}
+
 function parseEastMoneyKlineRow(row) {
   const parts = row.split(",");
   return {
@@ -253,6 +260,15 @@ async function fetchEastMoneyKlines({ code, market, start, end }) {
   return {
     source: "EastMoney",
     name: data.name || "",
+    info: {
+      code,
+      name: data.name || "",
+      market,
+      marketName: getMarketName(code, market),
+      exchangeName: getMarketName(code, market),
+      currency: "CNY",
+      instrumentType: "EQUITY/FUND",
+    },
     rows,
   };
 }
@@ -276,9 +292,21 @@ async function fetchYahooKlines({ code, market, start, end }) {
   }
 
   const result = payload.chart.result[0];
+  const meta = result.meta || {};
   return {
     source: "Yahoo Finance",
-    name: (result.meta && result.meta.shortName) || symbol,
+    name: meta.longName || meta.shortName || symbol,
+    info: {
+      code,
+      symbol,
+      name: meta.longName || meta.shortName || symbol,
+      market,
+      marketName: "US",
+      exchangeName: meta.fullExchangeName || meta.exchangeName || meta.exchange || "--",
+      currency: meta.currency || "--",
+      instrumentType: meta.instrumentType || "--",
+      timezone: meta.timezone || meta.exchangeTimezoneName || "",
+    },
     rows,
   };
 }
@@ -302,6 +330,14 @@ async function fetchKlines({ code, start, end }) {
     code,
     market,
     name: result.name,
+    info: {
+      code,
+      name: result.name,
+      market,
+      marketName: getMarketName(code, market),
+      source: result.source,
+      ...(result.info || {}),
+    },
     summary: summarize({ code, market, name: result.name }, result.name, result.rows),
     rows: result.rows,
   };
