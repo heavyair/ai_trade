@@ -6,6 +6,8 @@ const startInput = document.querySelector("#startInput");
 const endInput = document.querySelector("#endInput");
 const statusBand = document.querySelector(".status-band");
 const statusText = document.querySelector("#statusText");
+const wizardButtons = Array.from(document.querySelectorAll("[data-wizard-target]"));
+const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
 const chart = document.querySelector("#priceChart");
 const returnCompareChart = document.querySelector("#returnCompareChart");
 const tradePriceChart = document.querySelector("#tradePriceChart");
@@ -31,6 +33,22 @@ const applyPresetButton = document.querySelector("#applyPresetButton");
 const compareCurrentConfigInput = document.querySelector("#compareCurrentConfigInput");
 const modelCompareOptions = document.querySelector("#modelCompareOptions");
 const modelCompareTable = document.querySelector("#modelCompareTable");
+const rankingPresetList = document.querySelector("#rankingPresetList");
+const optimizeSelectedModelButton = document.querySelector("#optimizeSelectedModelButton");
+const presetParamDialog = document.querySelector("#presetParamDialog");
+const closePresetParamButton = document.querySelector("#closePresetParamButton");
+const savePresetParamButton = document.querySelector("#savePresetParamButton");
+const presetParamTitle = document.querySelector("#presetParamTitle");
+const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
+const presetParamEditor = document.querySelector("#presetParamEditor");
+const customModelForm = document.querySelector("#customModelForm");
+const customModelPrompt = document.querySelector("#customModelPrompt");
+const customModelCreatorInput = document.querySelector("#customModelCreatorInput");
+const customModelLabelInput = document.querySelector("#customModelLabelInput");
+const generateModelCodeButton = document.querySelector("#generateModelCodeButton");
+const saveGeneratedModelButton = document.querySelector("#saveGeneratedModelButton");
+const generatedModelCode = document.querySelector("#generatedModelCode");
+const tradeDetailPanel = document.querySelector("#tradeDetailPanel");
 const localLadderPanel = document.querySelector("#localLadderPanel");
 const maRsiBandPanel = document.querySelector("#maRsiBandPanel");
 const orderGridPanel = document.querySelector("#orderGridPanel");
@@ -91,9 +109,15 @@ let comparisonResults = [];
 let hasBacktestRun = false;
 let priceChartZoom = 1;
 let tradePriceZoom = 1;
+let generatedPresetDraft = null;
+let lastRenderedTrades = [];
+let selectedTradeForChart = null;
+let selectedTradeChartStates = [];
+let editingPresetName = null;
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
+const customPresetStorageKey = "aiTradeCustomStrategyPresets";
 let recentSymbolPresets = [];
 
 const fields = {
@@ -314,6 +338,143 @@ const strategyPresets = {
   },
 };
 
+const builtinPresetMetadata = {
+  optimized: {
+    targetSymbol: "513100",
+    provedPeriod: "1/3/5/8年",
+    creator: "Codex",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+  optimized588000: {
+    targetSymbol: "588000",
+    provedPeriod: "1/3/5/8年",
+    creator: "Codex",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+  localLadder588000: {
+    targetSymbol: "588000",
+    provedPeriod: "1/3/5/8年",
+    creator: "Codex",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+  maRsiBand513100: {
+    targetSymbol: "513100",
+    provedPeriod: "1/3/5/8年",
+    creator: "Codex",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+  orderGridBase: {
+    targetSymbol: "通用",
+    provedPeriod: "手动验证",
+    creator: "Codex",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+  original: {
+    targetSymbol: "通用",
+    provedPeriod: "原始规则",
+    creator: "user",
+    createdAt: "2026-08-12",
+    updatedAt: "2026-08-12",
+  },
+};
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function todayText() {
+  return formatDate(new Date());
+}
+
+function getPresetMetadata(name, preset) {
+  return {
+    targetSymbol: normalizeSymbolInput(codeInput.value) || "通用",
+    provedPeriod: activeBacktestRangeLabel || `${startInput.value || "?"}至${endInput.value || "?"}`,
+    creator: "user",
+    createdAt: todayText(),
+    updatedAt: todayText(),
+    ...(builtinPresetMetadata[name] || {}),
+    ...(preset.meta || {}),
+  };
+}
+
+function getPresetResearchName(name, preset) {
+  const meta = getPresetMetadata(name, preset);
+  return `${getStrategyTypeLabel(preset.strategyType || "wave")}*${meta.targetSymbol}*${meta.provedPeriod}*${meta.creator}*${meta.createdAt}_${meta.updatedAt}`;
+}
+
+function sanitizeStoredPreset(name, preset) {
+  if (!preset || typeof preset !== "object") return null;
+  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(preset.strategyType)
+    ? preset.strategyType
+    : "wave";
+  return {
+    label: String(preset.label || name).slice(0, 80),
+    strategyType,
+    waveThreshold: Math.max(0.1, Number(preset.waveThreshold || 5)),
+    buyRules: cloneRules(preset.buyRules, defaultBuyRules),
+    sellRules: cloneRules(preset.sellRules, defaultSellRules),
+    noNewHighExitRule: {
+      enabled: Boolean(preset.noNewHighExitRule && preset.noNewHighExitRule.enabled),
+      ...defaultNoNewHighExitRule,
+      ...(preset.noNewHighExitRule || {}),
+    },
+    localLadderRule: {
+      ...defaultLocalLadderRule,
+      ...(preset.localLadderRule || {}),
+    },
+    maRsiBandRule: {
+      ...defaultMaRsiBandRule,
+      ...(preset.maRsiBandRule || {}),
+    },
+    orderGridRule: {
+      ...defaultOrderGridRule,
+      ...(preset.orderGridRule || {}),
+    },
+    meta: {
+      targetSymbol: String(preset.meta && preset.meta.targetSymbol || "通用").slice(0, 24),
+      provedPeriod: String(preset.meta && preset.meta.provedPeriod || "本地保存").slice(0, 40),
+      creator: String(preset.meta && preset.meta.creator || "user").slice(0, 32),
+      createdAt: String(preset.meta && preset.meta.createdAt || todayText()).slice(0, 16),
+      updatedAt: String(preset.meta && preset.meta.updatedAt || todayText()).slice(0, 16),
+    },
+  };
+}
+
+function loadCustomStrategyPresets() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(customPresetStorageKey) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.entries(parsed).reduce((next, [name, preset]) => {
+      const key = String(name || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+      const safePreset = sanitizeStoredPreset(key, preset);
+      if (key && safePreset) next[key] = safePreset;
+      return next;
+    }, {});
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveCustomStrategyPresets() {
+  const customPresets = Object.fromEntries(
+    Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
+  );
+  localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
+}
+
+Object.assign(strategyPresets, loadCustomStrategyPresets());
+
 function formatDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -430,6 +591,37 @@ function setStatus(message, isError = false) {
 
 function setLoading(isLoading) {
   form.querySelector("button").disabled = isLoading;
+}
+
+function setWizardPage(pageName) {
+  const nextPage = pageName || "simulation";
+  wizardButtons.forEach((button) => {
+    const isActive = button.dataset.wizardTarget === nextPage;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+  wizardPages.forEach((page) => {
+    page.classList.toggle("active", page.dataset.wizardPage === nextPage);
+  });
+
+  if (nextPage === "ranking") {
+    renderModelRanking();
+  }
+
+  window.requestAnimationFrame(() => {
+    if (lastRows && lastSummary) {
+      drawChart(lastRows, lastSummary);
+    }
+    if (backtestStates.length > 0) {
+      redrawVisibleBacktestCharts();
+    }
+  });
+}
+
+function resetGeneratedModelDraft() {
+  generatedPresetDraft = null;
+  if (generatedModelCode) generatedModelCode.textContent = "等待生成...";
+  if (saveGeneratedModelButton) saveGeneratedModelButton.disabled = true;
 }
 
 function renderRuleInputs(presetName = "optimized") {
@@ -686,18 +878,26 @@ function createConfigFromPreset(presetName, baseConfig) {
 
 function renderModelCompareOptions() {
   if (!modelCompareOptions) return;
+  const presetEntries = Object.entries(strategyPresets);
 
-  modelCompareOptions.innerHTML = Object.entries(strategyPresets)
+  modelCompareOptions.innerHTML = presetEntries
     .map(([name, preset]) => {
       return `
-        <label data-preset-name="${name}">
-          <input class="model-compare-enabled" type="checkbox" value="${name}">
-          <span>${preset.label}</span>
-          <small>${getStrategyTypeLabel(preset.strategyType || "wave")}</small>
-        </label>
+        <div class="model-preset-card" data-preset-name="${escapeHtml(name)}">
+          <label>
+            <input class="model-compare-enabled" type="checkbox" value="${escapeHtml(name)}" checked>
+            <span>${escapeHtml(preset.label)}</span>
+            <small>${escapeHtml(getPresetResearchName(name, preset))}</small>
+          </label>
+          <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
+        </div>
       `;
     })
     .join("");
+
+  if (presetEntries.length === 0) {
+    modelCompareOptions.innerHTML = '<div class="ranking-empty">还没有预存模型。</div>';
+  }
 }
 
 function getSelectedComparisonPresetNames() {
@@ -707,13 +907,13 @@ function getSelectedComparisonPresetNames() {
 }
 
 function isCurrentConfigComparisonEnabled() {
-  return compareCurrentConfigInput ? compareCurrentConfigInput.checked : true;
+  return false;
 }
 
 function markSelectedComparePreset(presetName) {
   if (!modelCompareOptions) return;
-  modelCompareOptions.querySelectorAll("label").forEach((label) => {
-    label.classList.toggle("selected", label.dataset.presetName === presetName);
+  modelCompareOptions.querySelectorAll("[data-preset-name]").forEach((card) => {
+    card.classList.toggle("selected", card.dataset.presetName === presetName);
   });
 }
 
@@ -727,7 +927,7 @@ function renderStrategyPresetOptions(strategyType, selectedPresetName) {
   strategyPresetSelect.innerHTML = presetEntries
     .map(([name, preset]) => {
       const selected = name === nextSelectedName ? " selected" : "";
-      return `<option value="${name}"${selected}>${preset.label}</option>`;
+      return `<option value="${escapeHtml(name)}"${selected}>${escapeHtml(preset.label)}</option>`;
     })
     .join("");
 
@@ -759,6 +959,7 @@ function fillStrategyPresetControls(presetName) {
 function applyStrategyPreset(presetName, shouldAnnounce = true) {
   const preset = fillStrategyPresetControls(presetName);
   markSelectedComparePreset(presetName);
+  renderModelRanking();
 
   if (lastRows && lastSummary) {
     drawChart(lastRows, lastSummary);
@@ -2132,6 +2333,7 @@ function buildModelComparisonResults(rows, currentConfig) {
       if (!finalState || !finalState.buyHold) return null;
       return {
         ...entry,
+        states,
         finalState,
       };
     })
@@ -2172,9 +2374,9 @@ function renderModelComparisonTable(results) {
     .map((result) => {
       const state = result.finalState;
       return `
-        <tr>
-          <td>${result.label}</td>
-          <td>${getStrategyTypeLabel(result.strategyType)}</td>
+        <tr data-result-name="${escapeHtml(result.name)}">
+          <td>${escapeHtml(result.label)}</td>
+          <td>${escapeHtml(getStrategyTypeLabel(result.strategyType))}</td>
           <td>${formatMoney(state.equity)}</td>
           <td>${formatMoney(state.cash)}</td>
           <td>${formatPercent(state.positionRatio)}</td>
@@ -2195,35 +2397,581 @@ function renderModelComparisonTable(results) {
 function updateModelComparisonTable(rows, currentConfig) {
   const results = buildModelComparisonResults(rows, currentConfig);
   renderModelComparisonTable(results);
+  renderModelRanking();
   return results;
+}
+
+function buildPresetPerformance(presetName) {
+  if (!hasBacktestRun || !activeBacktestRows || activeBacktestRows.length === 0) return null;
+  const baseConfig = readBacktestConfig();
+  const states = buildParallelBacktestStates(activeBacktestRows, createConfigFromPreset(presetName, baseConfig));
+  const finalState = states[states.length - 1];
+  return finalState ? { states, finalState } : null;
+}
+
+function getPresetPerformanceSummary(presetName) {
+  const fromComparison = comparisonResults.find((result) => result.name === presetName);
+  if (fromComparison) {
+    return {
+      states: fromComparison.states,
+      finalState: fromComparison.finalState,
+    };
+  }
+  return buildPresetPerformance(presetName);
+}
+
+function renderModelRanking() {
+  if (!rankingPresetList) return;
+  const presetEntries = Object.entries(strategyPresets)
+    .map(([name, preset]) => ({
+      name,
+      preset,
+      performance: getPresetPerformanceSummary(name),
+    }))
+    .sort((a, b) => {
+      const aReturn = a.performance ? a.performance.finalState.returnRate : -Infinity;
+      const bReturn = b.performance ? b.performance.finalState.returnRate : -Infinity;
+      return bReturn - aReturn;
+    });
+
+  if (presetEntries.length === 0) {
+    rankingPresetList.innerHTML = '<div class="ranking-empty">这个模型还没有预存参数集合。</div>';
+    return;
+  }
+
+  rankingPresetList.innerHTML = presetEntries
+    .map(({ name, preset, performance }, index) => {
+      const state = performance && performance.finalState;
+      const selected = strategyPresetSelect && strategyPresetSelect.value === name ? " selected" : "";
+      const researchName = getPresetResearchName(name, preset);
+      const parameterText = summarizePresetParameters(preset);
+      const metrics = state
+        ? `
+          <span>收益 ${formatPercent(state.returnRate)}</span>
+          <span>全仓 ${formatPercent(state.buyHold.returnRate)}</span>
+          <span>超额 ${formatPercent(state.excessReturn)}</span>
+          <span>回撤 ${formatPercent(state.maxDrawdown)}</span>
+          <span>费用 ${formatMoney(state.totalFees || 0)}</span>
+          <span>交易 ${state.trades.length}</span>
+        `
+        : "<span>等待回测</span>";
+      return `
+        <button class="ranking-card${selected}" type="button" data-preset-name="${escapeHtml(name)}">
+          <strong>#${index + 1} ${escapeHtml(preset.label)}</strong>
+          <em>${escapeHtml(researchName)}</em>
+          <span class="ranking-params">${escapeHtml(parameterText)}</span>
+          <span class="ranking-metrics">${metrics}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function summarizePresetParameters(preset) {
+  const type = preset.strategyType || "wave";
+  if (type === "order-grid") {
+    const rule = { ...defaultOrderGridRule, ...(preset.orderGridRule || {}) };
+    return `近端${rule.lookbackDays}天，高点回撤${rule.entryDrop}%，每单${rule.orderCapitalPercent}%，追加${rule.addDrop}%，止盈${rule.takeProfit}%，最多${rule.maxLots}单`;
+  }
+  if (type === "local-high-ladder") {
+    const rule = { ...defaultLocalLadderRule, ...(preset.localLadderRule || {}) };
+    return `近端${rule.lookbackDays}天，首次回落${rule.entryDrop}%，阶梯${rule.ladderDrop}%，加仓${rule.buyAdd}%，反弹卖${rule.sellRise}%`;
+  }
+  if (type === "ma-rsi-band") {
+    const rule = { ...defaultMaRsiBandRule, ...(preset.maRsiBandRule || {}) };
+    return `快线${rule.fastMa}，慢线${rule.slowMa}，RSI买${rule.rsiBuy}，RSI卖${rule.rsiSell}，ATR${rule.atrDays}`;
+  }
+  const buyText = cloneRules(preset.buyRules, defaultBuyRules)
+    .filter((rule) => rule.enabled !== false)
+    .map((rule) => `跌${rule.drop}%到${rule.target}%`)
+    .join(" / ") || "无买入规则";
+  const sellText = cloneRules(preset.sellRules, defaultSellRules)
+    .filter((rule) => rule.enabled !== false)
+    .map((rule) => `涨${rule.rise}%卖${rule.reduce}%`)
+    .join(" / ") || "无卖出规则";
+  return `波动阈值${preset.waveThreshold || 5}%；${buyText}；${sellText}`;
+}
+
+function isUserEditablePreset(name) {
+  return String(name || "").startsWith("custom_") || String(name || "").startsWith("auto_");
+}
+
+function getSerializablePreset(preset) {
+  return {
+    label: preset.label,
+    strategyType: preset.strategyType || "wave",
+    waveThreshold: preset.waveThreshold || 5,
+    localLadderRule: preset.localLadderRule || undefined,
+    maRsiBandRule: preset.maRsiBandRule || undefined,
+    orderGridRule: preset.orderGridRule || undefined,
+    buyRules: preset.buyRules || undefined,
+    sellRules: preset.sellRules || undefined,
+    noNewHighExitRule: preset.noNewHighExitRule || undefined,
+    meta: preset.meta || undefined,
+  };
+}
+
+function openPresetParamEditor(presetName) {
+  const preset = strategyPresets[presetName];
+  if (!preset || !presetParamDialog || !presetParamEditor) return;
+  editingPresetName = presetName;
+  if (presetParamTitle) presetParamTitle.textContent = `${preset.label} 参数`;
+  if (presetParamSubtitle) presetParamSubtitle.textContent = isUserEditablePreset(presetName)
+    ? "这个本地预设会直接保存修改。"
+    : "这是内置预设，保存时会创建一个本地副本。";
+  presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
+  if (typeof presetParamDialog.showModal === "function") {
+    presetParamDialog.showModal();
+  } else {
+    presetParamDialog.setAttribute("open", "open");
+  }
+}
+
+function saveEditedPresetParameters() {
+  if (!editingPresetName || !presetParamEditor) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(presetParamEditor.value);
+  } catch (error) {
+    setStatus("参数 JSON 格式不正确，无法保存。", true);
+    return;
+  }
+
+  const existing = strategyPresets[editingPresetName];
+  const now = todayText();
+  const nextPreset = sanitizeStoredPreset(editingPresetName, {
+    ...existing,
+    ...parsed,
+    meta: {
+      ...(existing && existing.meta ? existing.meta : {}),
+      ...(parsed.meta || {}),
+      updatedAt: now,
+    },
+  });
+  if (!nextPreset) {
+    setStatus("参数内容无效，无法保存。", true);
+    return;
+  }
+
+  let savedName = editingPresetName;
+  if (isUserEditablePreset(editingPresetName)) {
+    strategyPresets[editingPresetName] = nextPreset;
+  } else {
+    savedName = `custom_${Date.now()}`;
+    strategyPresets[savedName] = {
+      ...nextPreset,
+      label: `${nextPreset.label} 本地修改`,
+      meta: {
+        ...nextPreset.meta,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  saveCustomStrategyPresets();
+  renderModelCompareOptions();
+  renderModelRanking();
+  fillStrategyPresetControls(savedName);
+  markSelectedComparePreset(savedName);
+  const checkbox = Array.from(document.querySelectorAll(".model-compare-enabled"))
+    .find((input) => input.value === savedName);
+  if (checkbox) checkbox.checked = true;
+  if (presetParamDialog && presetParamDialog.open) presetParamDialog.close();
+  editingPresetName = null;
+
+  if (lastRows && lastRows.length > 0) {
+    startBacktest();
+  } else {
+    setStatus(`已保存 ${strategyPresets[savedName].label}。`);
+  }
+}
+
+function numberNear(text, patterns, fallback) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const value = Number(match[1]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return fallback;
+}
+
+function inferStrategyTypeFromText(text) {
+  if (/订单|单子|每笔|每单|网格/.test(text)) return "order-grid";
+  if (/RSI|rsi|均线|MA|ma|ATR|atr/.test(text)) return "ma-rsi-band";
+  if (/近端|最近\d*天.*高点|阶梯/.test(text)) return "local-high-ladder";
+  return "wave";
+}
+
+function createPresetFromConfig(label, config, meta = {}) {
+  return {
+    label,
+    strategyType: config.strategyType,
+    waveThreshold: config.waveThreshold,
+    buyRules: cloneRules(config.buyRules, defaultBuyRules).map((rule) => ({ ...rule, enabled: true })),
+    sellRules: cloneRules(config.sellRules, defaultSellRules).map((rule) => ({ ...rule, enabled: true })),
+    noNewHighExitRule: {
+      enabled: Boolean(config.noNewHighExitRule && config.noNewHighExitRule.enabled),
+      ...defaultNoNewHighExitRule,
+      ...(config.noNewHighExitRule || {}),
+    },
+    localLadderRule: {
+      ...defaultLocalLadderRule,
+      ...(config.localLadderRule || {}),
+    },
+    maRsiBandRule: {
+      ...defaultMaRsiBandRule,
+      ...(config.maRsiBandRule || {}),
+    },
+    orderGridRule: {
+      ...defaultOrderGridRule,
+      ...(config.orderGridRule || {}),
+    },
+    meta,
+  };
+}
+
+function createSafePresetDraft(description) {
+  const text = String(description || "").trim();
+  const strategyType = inferStrategyTypeFromText(text);
+  const symbol = normalizeSymbolInput(codeInput.value) || "通用";
+  const now = todayText();
+  const creator = String(customModelCreatorInput && customModelCreatorInput.value || "user").trim().slice(0, 32) || "user";
+  const label = String(customModelLabelInput && customModelLabelInput.value || "").trim()
+    || `${symbol} ${getStrategyTypeLabel(strategyType)} 自定义策略`;
+  const baseConfig = readBacktestConfig();
+  const config = {
+    ...baseConfig,
+    strategyType,
+    buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: false })),
+    sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: false })),
+    noNewHighExitRule: {
+      enabled: false,
+      ...defaultNoNewHighExitRule,
+    },
+  };
+
+  if (strategyType === "order-grid") {
+    const lookbackDays = numberNear(text, [/最近\s*(\d+)\s*天/, /(\d+)\s*日高点/], defaultOrderGridRule.lookbackDays);
+    const entryDrop = numberNear(text, [/回撤\s*(\d+(?:\.\d+)?)\s*%/, /回落\s*(\d+(?:\.\d+)?)\s*%/], defaultOrderGridRule.entryDrop);
+    const orderCapitalPercent = numberNear(text, [/买入\s*(\d+(?:\.\d+)?)\s*%/, /每(?:笔|单).*?(\d+(?:\.\d+)?)\s*%/, /建仓\s*(\d+(?:\.\d+)?)\s*%/], defaultOrderGridRule.orderCapitalPercent);
+    const addDrop = numberNear(text, [/每次下跌\s*(\d+(?:\.\d+)?)\s*%/, /每下跌\s*(\d+(?:\.\d+)?)\s*%/, /追加下跌\s*(\d+(?:\.\d+)?)\s*%/], defaultOrderGridRule.addDrop);
+    const takeProfit = numberNear(text, [/上涨(?:超过)?\s*(\d+(?:\.\d+)?)\s*%/, /止盈\s*(\d+(?:\.\d+)?)\s*%/], defaultOrderGridRule.takeProfit);
+    config.orderGridRule = {
+      ...defaultOrderGridRule,
+      lookbackDays: Math.min(60, Math.max(2, Math.round(lookbackDays))),
+      entryDrop: Math.min(50, Math.max(0.1, entryDrop)),
+      orderCapitalPercent: Math.min(100, Math.max(1, orderCapitalPercent)),
+      addDrop: Math.min(50, Math.max(0.1, addDrop)),
+      takeProfit: Math.min(50, Math.max(0.1, takeProfit)),
+      maxLots: Math.min(20, Math.max(1, Math.ceil(100 / Math.max(1, orderCapitalPercent)))),
+    };
+  } else if (strategyType === "local-high-ladder") {
+    const lookbackDays = numberNear(text, [/最近\s*(\d+)\s*天/, /(\d+)\s*日高点/], defaultLocalLadderRule.lookbackDays);
+    const entryDrop = numberNear(text, [/回撤\s*(\d+(?:\.\d+)?)\s*%/, /回落\s*(\d+(?:\.\d+)?)\s*%/], defaultLocalLadderRule.entryDrop);
+    const ladderDrop = numberNear(text, [/每次下跌\s*(\d+(?:\.\d+)?)\s*%/, /每下跌\s*(\d+(?:\.\d+)?)\s*%/], defaultLocalLadderRule.ladderDrop);
+    const buyAdd = numberNear(text, [/加仓\s*(\d+(?:\.\d+)?)\s*%/, /买入\s*(\d+(?:\.\d+)?)\s*%/], defaultLocalLadderRule.buyAdd);
+    const sellRise = numberNear(text, [/上涨(?:超过)?\s*(\d+(?:\.\d+)?)\s*%/, /反弹\s*(\d+(?:\.\d+)?)\s*%/], defaultLocalLadderRule.sellRise);
+    config.localLadderRule = {
+      ...defaultLocalLadderRule,
+      lookbackDays: Math.min(60, Math.max(2, Math.round(lookbackDays))),
+      entryDrop: Math.min(50, Math.max(0.1, entryDrop)),
+      ladderDrop: Math.min(50, Math.max(0.1, ladderDrop)),
+      buyAdd: Math.min(100, Math.max(1, buyAdd)),
+      sellRise: Math.min(50, Math.max(0.1, sellRise)),
+    };
+  } else if (strategyType === "ma-rsi-band") {
+    config.maRsiBandRule = {
+      ...defaultMaRsiBandRule,
+      rsiBuy: numberNear(text, [/RSI.*?买入.*?(\d+(?:\.\d+)?)/i, /低于\s*(\d+(?:\.\d+)?).*?买入/], defaultMaRsiBandRule.rsiBuy),
+      rsiSell: numberNear(text, [/RSI.*?卖出.*?(\d+(?:\.\d+)?)/i, /高于\s*(\d+(?:\.\d+)?).*?卖出/], defaultMaRsiBandRule.rsiSell),
+      fastMa: numberNear(text, [/快均线\s*(\d+)/, /MA\s*(\d+)/i], defaultMaRsiBandRule.fastMa),
+      slowMa: numberNear(text, [/慢均线\s*(\d+)/], defaultMaRsiBandRule.slowMa),
+    };
+  } else {
+    const threshold = numberNear(text, [/波动\s*(\d+(?:\.\d+)?)\s*%/, /阈值\s*(\d+(?:\.\d+)?)\s*%/], defaultBuyRules[0].drop);
+    const firstDrop = numberNear(text, [/回撤\s*(\d+(?:\.\d+)?)\s*%/, /下跌\s*(\d+(?:\.\d+)?)\s*%/], defaultBuyRules[0].drop);
+    const target = numberNear(text, [/加仓到\s*(\d+(?:\.\d+)?)\s*%/, /建仓\s*(\d+(?:\.\d+)?)\s*%/], 30);
+    const sellRise = numberNear(text, [/上涨(?:超过)?\s*(\d+(?:\.\d+)?)\s*%/], defaultSellRules[0].rise);
+    const reduce = numberNear(text, [/减仓\s*(\d+(?:\.\d+)?)\s*%/, /卖出\s*(\d+(?:\.\d+)?)\s*%/], defaultSellRules[0].reduce);
+    config.waveThreshold = Math.max(0.1, threshold);
+    config.buyRules = [{ enabled: true, drop: firstDrop, target: Math.min(100, Math.max(0, target)) }];
+    config.sellRules = [{ enabled: true, rise: sellRise, reduce: Math.min(100, Math.max(0, reduce)) }];
+  }
+
+  const meta = {
+    targetSymbol: symbol,
+    provedPeriod: activeBacktestRangeLabel || `${startInput.value || "?"}至${endInput.value || "?"}`,
+    creator,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const preset = createPresetFromConfig(label, config, meta);
+  const code = `// Safe client-side strategy preset. No eval / Function is used.
+const modelPreset = ${JSON.stringify(preset, null, 2)};`;
+  return { preset, code };
+}
+
+function saveGeneratedPreset(preset) {
+  const keyPrefix = preset.meta && preset.meta.creator === "auto" ? "auto" : "custom";
+  const presetName = `${keyPrefix}_${Date.now()}`;
+  strategyPresets[presetName] = sanitizeStoredPreset(presetName, preset);
+  saveCustomStrategyPresets();
+  renderModelCompareOptions();
+  renderStrategyPresetOptions(strategyPresets[presetName].strategyType, presetName);
+  applyStrategyPreset(presetName);
+  renderModelRanking();
+  return presetName;
+}
+
+function buildOptimizationCandidates(basePreset, strategyType) {
+  const base = {
+    ...readBacktestConfig(),
+    strategyType,
+  };
+  const candidates = [];
+  const push = (config) => candidates.push(config);
+
+  if (strategyType === "order-grid") {
+    [2, 3, 5].forEach((lookbackDays) => {
+      [1.5, 2, 3].forEach((entryDrop) => {
+        [1, 2, 3].forEach((addDrop) => {
+          [1.5, 2, 3, 4].forEach((takeProfit) => {
+            [10, 20, 25].forEach((orderCapitalPercent) => {
+              push({
+                ...base,
+                orderGridRule: {
+                  ...defaultOrderGridRule,
+                  lookbackDays,
+                  entryDrop,
+                  addDrop,
+                  takeProfit,
+                  orderCapitalPercent,
+                  maxLots: Math.ceil(100 / orderCapitalPercent),
+                },
+              });
+            });
+          });
+        });
+      });
+    });
+  } else if (strategyType === "local-high-ladder") {
+    [3, 5, 8].forEach((lookbackDays) => {
+      [1.5, 2, 3].forEach((entryDrop) => {
+        [2, 3, 4].forEach((ladderDrop) => {
+          [20, 30, 40].forEach((buyAdd) => {
+            [2, 3, 4].forEach((sellRise) => {
+              push({
+                ...base,
+                localLadderRule: {
+                  ...defaultLocalLadderRule,
+                  lookbackDays,
+                  entryDrop,
+                  ladderDrop,
+                  buyAdd,
+                  sellRise,
+                  sellReduce: buyAdd,
+                  maxTarget: 100,
+                },
+              });
+            });
+          });
+        });
+      });
+    });
+  } else if (strategyType === "ma-rsi-band") {
+    [20, 40, 60].forEach((fastMa) => {
+      [80, 120, 180].forEach((slowMa) => {
+        [30, 35, 40].forEach((rsiBuy) => {
+          [65, 70, 75].forEach((rsiSell) => {
+            push({
+              ...base,
+              maRsiBandRule: {
+                ...defaultMaRsiBandRule,
+                fastMa,
+                slowMa,
+                rsiBuy,
+                rsiSell,
+              },
+            });
+          });
+        });
+      });
+    });
+  } else {
+    [5, 10, 15, 20].forEach((waveThreshold) => {
+      [20, 30, 40].forEach((firstTarget) => {
+        [50, 60, 70].forEach((secondTarget) => {
+          [15, 30, 50].forEach((sellRise) => {
+            push({
+              ...base,
+              waveThreshold,
+              buyRules: [
+                { enabled: true, drop: 5, target: firstTarget },
+                { enabled: true, drop: 10, target: secondTarget },
+                { enabled: true, drop: 15, target: 100 },
+              ],
+              sellRules: [
+                { enabled: true, rise: sellRise, reduce: 50 },
+                { enabled: true, rise: sellRise * 2, reduce: 100 },
+              ],
+              noNewHighExitRule: {
+                enabled: false,
+                ...defaultNoNewHighExitRule,
+              },
+            });
+          });
+        });
+      });
+    });
+  }
+
+  if (basePreset) {
+    candidates.unshift(createConfigFromPreset(basePreset, base));
+  }
+  return candidates;
+}
+
+function optimizeSelectedModel() {
+  if (!lastRows || lastRows.length === 0) {
+    setStatus("请先加载历史行情，再进行参数优化。", true);
+    return;
+  }
+  const rowsForTest = activeBacktestRows || lastRows;
+  const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
+  const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
+  const candidates = buildOptimizationCandidates(selectedPreset, selectedType);
+  let best = null;
+
+  candidates.forEach((config) => {
+    const states = buildParallelBacktestStates(rowsForTest, config);
+    const finalState = states[states.length - 1];
+    if (!finalState) return;
+    const score = finalState.returnRate - finalState.maxDrawdown * 0.25;
+    if (!best || score > best.score) {
+      best = { config, states, finalState, score };
+    }
+  });
+
+  if (!best) {
+    setStatus("没有找到可用的优化结果。", true);
+    return;
+  }
+
+  const now = todayText();
+  const label = `${normalizeSymbolInput(codeInput.value) || "通用"} ${getStrategyTypeLabel(selectedType)} 自动优化`;
+  const preset = createPresetFromConfig(label, best.config, {
+    targetSymbol: normalizeSymbolInput(codeInput.value) || "通用",
+    provedPeriod: activeBacktestRangeLabel || `${rowsForTest[0].date}至${rowsForTest[rowsForTest.length - 1].date}`,
+    creator: "auto",
+    createdAt: now,
+    updatedAt: now,
+  });
+  const presetName = saveGeneratedPreset(preset);
+  comparisonResults = updateModelComparisonTable(rowsForTest, best.config);
+  renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(best.config));
+  setStatus(`已生成优化预设 ${strategyPresets[presetName].label}：收益 ${formatPercent(best.finalState.returnRate)}，最大回撤 ${formatPercent(best.finalState.maxDrawdown)}。`);
 }
 
 function renderTradeLog(trades, fallbackModelLabel = "当前模型") {
   const recentTrades = trades.slice(-80).reverse();
+  lastRenderedTrades = recentTrades;
   backtestFields.tradeLog.innerHTML = recentTrades.length
     ? recentTrades
-      .map((trade) => {
+      .map((trade, index) => {
         const reference = trade.reference
           ? `${trade.reference.label} ${trade.reference.date} ${formatPrice(trade.reference.price)}`
           : "--";
         return `
-          <tr class="${trade.side}">
-            <td>${trade.date}</td>
-            <td>${trade.modelLabel || fallbackModelLabel}</td>
-            <td>${trade.label}</td>
+          <tr class="${trade.side}" data-trade-index="${index}">
+            <td>${escapeHtml(trade.date)}</td>
+            <td>${escapeHtml(trade.modelLabel || fallbackModelLabel)}</td>
+            <td>${escapeHtml(trade.label)}</td>
             <td>${formatPrice(trade.price)}</td>
             <td>${formatShares(trade.shares)}</td>
             <td>${formatPercent(trade.positionRatio)}</td>
             <td>${formatMoney(Number.isFinite(trade.accountCash) ? trade.accountCash : 0)}</td>
             <td>${formatMoney(Number.isFinite(trade.accountEquity) ? trade.accountEquity : 0)}</td>
             <td>${formatMoney(trade.fee || 0)}</td>
-            <td>${reference}</td>
-            <td>${trade.reason}</td>
+            <td>${escapeHtml(reference)}</td>
+            <td>${escapeHtml(trade.reason)}</td>
           </tr>
         `;
       })
       .join("")
     : '<tr><td colspan="11">暂无交易</td></tr>';
+}
+
+function renderTradeDetail(trade) {
+  if (!tradeDetailPanel) return;
+  if (!trade) {
+    tradeDetailPanel.innerHTML = `
+      <strong>交易详情</strong>
+      <span>点击交易记录后，会显示触发条件并把下方价格图放大到对应区间。</span>
+    `;
+    return;
+  }
+  const reference = trade.reference
+    ? `${trade.reference.label}：${trade.reference.date}，价格 ${formatPrice(trade.reference.price)}`
+    : "无参考点";
+  tradeDetailPanel.innerHTML = `
+    <strong>${escapeHtml(trade.modelLabel || "当前模型")} / ${escapeHtml(trade.label)} / ${escapeHtml(trade.date)}</strong>
+    <dl>
+      <div><dt>成交价</dt><dd>${formatPrice(trade.price)}</dd></div>
+      <div><dt>数量</dt><dd>${formatShares(trade.shares)}</dd></div>
+      <div><dt>仓位</dt><dd>${formatPercent(trade.positionRatio)}</dd></div>
+      <div><dt>现金</dt><dd>${formatMoney(Number.isFinite(trade.accountCash) ? trade.accountCash : 0)}</dd></div>
+      <div><dt>总资产</dt><dd>${formatMoney(Number.isFinite(trade.accountEquity) ? trade.accountEquity : 0)}</dd></div>
+      <div><dt>费用</dt><dd>${formatMoney(trade.fee || 0)}</dd></div>
+    </dl>
+    <p>${escapeHtml(trade.reason || "--")}</p>
+    <span>${escapeHtml(reference)}</span>
+  `;
+}
+
+function findComparisonResultForTrade(trade) {
+  if (!trade || !trade.modelLabel) return null;
+  return comparisonResults.find((result) => result.label === trade.modelLabel) || null;
+}
+
+function focusTradeOnChart(trade) {
+  if (!trade || !activeBacktestRows || activeBacktestRows.length === 0) return;
+  const result = findComparisonResultForTrade(trade);
+  tradePriceZoom = Math.max(tradePriceZoom, 8);
+  const chartStates = result && result.states && result.states.length > 0
+    ? result.states
+    : getVisibleBacktestStates();
+  selectedTradeForChart = trade;
+  selectedTradeChartStates = chartStates;
+  drawTradePriceChart(chartStates, { selectedTrade: trade });
+
+  window.requestAnimationFrame(() => {
+    const wrap = tradePriceChart ? tradePriceChart.parentElement : null;
+    if (!wrap) return;
+    const rows = result && result.states ? result.states.map((state) => state.row) : getVisibleBacktestStates().map((state) => state.row);
+    const count = Math.max(1, rows.length - 1);
+    const rowIndex = Math.max(0, Math.min(Number(trade.rowIndex) || 0, count));
+    const ratio = rowIndex / count;
+    wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) * ratio - wrap.clientWidth * 0.35);
+  });
+}
+
+function renderModelResultCharts(result) {
+  if (!result || !result.states || result.states.length === 0) return;
+  selectedTradeForChart = null;
+  selectedTradeChartStates = [];
+  drawReturnComparison(result.states);
+  drawTradePriceChart([]);
+  setStatus(`已渲染 ${result.label} 的收益曲线。请选择一条交易记录查看对应价格、参考高低点和趋势。`);
+}
+
+function selectTradeLogRow(row) {
+  if (!backtestFields.tradeLog) return;
+  backtestFields.tradeLog.querySelectorAll("tr").forEach((item) => {
+    item.classList.toggle("selected", item === row);
+  });
 }
 
 function drawReturnComparison(states) {
@@ -2240,7 +2988,7 @@ function drawReturnComparison(states) {
   if (usableStates.length === 0) {
     returnCompareChart.innerHTML = `
       <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
-      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">等待回测数据</text>
+      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">点击模型表现表后显示收益曲线</text>
     `;
     return;
   }
@@ -2294,7 +3042,92 @@ function drawReturnComparison(states) {
   `;
 }
 
-function drawTradePriceChart(states) {
+function uniqueChartPoints(points) {
+  const seen = new Set();
+  return points.filter((point) => {
+    if (!point || !point.date || !Number.isFinite(point.price)) return false;
+    const key = `${point.date}:${Number(point.price).toFixed(6)}:${point.type || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getNearestPointBefore(points, rowIndex) {
+  return (points || [])
+    .filter((point) => Number.isInteger(point.rowIndex) && point.rowIndex <= rowIndex)
+    .sort((a, b) => b.rowIndex - a.rowIndex)[0] || null;
+}
+
+function getExactReferencePoint(points, reference) {
+  if (!reference) return null;
+  return (points || []).find((point) => {
+    return point.date === reference.date && Math.abs(Number(point.price) - Number(reference.price)) < 0.000001;
+  }) || null;
+}
+
+function createReferenceChartPoint(reference, rows) {
+  if (!reference || !reference.date || !Number.isFinite(reference.price)) return null;
+  const rowIndex = rows.findIndex((row) => row.date === reference.date);
+  return {
+    type: reference.type || "reference",
+    date: reference.date,
+    price: reference.price,
+    rowIndex,
+    confirmDate: reference.confirmDate,
+    confirmPrice: reference.confirmPrice,
+    confirmRowIndex: reference.confirmDate ? rows.findIndex((row) => row.date === reference.confirmDate) : undefined,
+    confirmLabel: reference.confirmLabel || "确认点",
+    version: 0,
+  };
+}
+
+function buildSelectedTradeContext(rows, finalState, trade) {
+  const tradeIndex = Math.max(0, Math.min(Number(trade.rowIndex) || 0, rows.length - 1));
+  const reference = trade.reference || null;
+  const allHighs = finalState.waveHighs || [];
+  const allLows = finalState.indicatorLows || [];
+  const exactHigh = getExactReferencePoint(allHighs, reference);
+  const exactLow = getExactReferencePoint(allLows, reference);
+  const recentHigh = getNearestPointBefore(allHighs, tradeIndex);
+  const recentLow = getNearestPointBefore(allLows, tradeIndex);
+  const fallbackReference = createReferenceChartPoint(reference, rows);
+  const referenceIsHigh = reference && (reference.type === "high" || reference.type === "rolling-high");
+  const highs = uniqueChartPoints([
+    exactHigh,
+    referenceIsHigh ? fallbackReference : null,
+    recentHigh,
+  ]);
+  const lows = uniqueChartPoints([
+    exactLow,
+    referenceIsHigh ? null : fallbackReference,
+    recentLow,
+  ]);
+  const lookbackIndex = Math.max(0, tradeIndex - 20);
+  const lookbackRow = rows[lookbackIndex];
+  const tradeRow = rows[tradeIndex] || rows[rows.length - 1];
+  const trendPercent = lookbackRow && lookbackRow.close > 0
+    ? ((tradeRow.close - lookbackRow.close) / lookbackRow.close) * 100
+    : 0;
+  const referenceMove = reference && reference.price > 0
+    ? ((trade.price - reference.price) / reference.price) * 100
+    : null;
+  const referenceText = reference
+    ? `${reference.label} ${reference.date} ${formatPrice(reference.price)}`
+    : "无参考点";
+  const triggerText = Number.isFinite(trade.triggerPercent)
+    ? `触发值 ${formatPercent(trade.triggerPercent)}`
+    : "触发值 --";
+
+  return {
+    highs,
+    lows,
+    summaryLine: `${trade.label} ${trade.date} ${formatPrice(trade.price)}；${referenceText}；${triggerText}`,
+    trendLine: `近20日趋势 ${formatPercent(trendPercent)}${referenceMove == null ? "" : `；相对参考点 ${formatPercent(referenceMove)}`}`,
+  };
+}
+
+function drawTradePriceChart(states, options = {}) {
   const usableStates = states.filter((state) => state && state.row);
   const rect = tradePriceChart.parentElement
     ? tradePriceChart.parentElement.getBoundingClientRect()
@@ -2312,15 +3145,18 @@ function drawTradePriceChart(states) {
   if (usableStates.length === 0) {
     tradePriceChart.innerHTML = `
       <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
-      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">等待回测数据</text>
+      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">点击模型或交易记录后显示价格曲线</text>
     `;
     return;
   }
 
   const rows = usableStates.map((state) => state.row);
-  const trades = usableStates[usableStates.length - 1].trades;
-  const waveHighs = usableStates[usableStates.length - 1].waveHighs || [];
-  const indicatorLows = usableStates[usableStates.length - 1].indicatorLows || [];
+  const finalState = usableStates[usableStates.length - 1];
+  const selectedTrade = options.selectedTrade || null;
+  const tradeContext = selectedTrade ? buildSelectedTradeContext(rows, finalState, selectedTrade) : null;
+  const trades = selectedTrade ? [selectedTrade] : [];
+  const waveHighs = tradeContext ? tradeContext.highs : [];
+  const indicatorLows = tradeContext ? tradeContext.lows : [];
   const indicatorType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
   const highPointLabel = indicatorType === "local-high-ladder"
     ? "近端高点"
@@ -2348,6 +3184,7 @@ function drawTradePriceChart(states) {
   });
   indicatorLows.forEach((point) => {
     priceValues.push(point.price);
+    if (point.confirmPrice) priceValues.push(point.confirmPrice);
   });
 
   const max = Math.max(...priceValues);
@@ -2472,6 +3309,11 @@ function drawTradePriceChart(states) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${pricePath}"></path>
+    ${tradeContext ? `
+      <rect class="trade-label-bg" x="${pad.left + 8}" y="${pad.top + 6}" width="${Math.min(520, width - pad.left - pad.right - 16)}" height="48" rx="4"></rect>
+      <text class="trade-label" x="${pad.left + 18}" y="${pad.top + 24}">${escapeHtml(tradeContext.summaryLine)}</text>
+      <text class="trade-label" x="${pad.left + 18}" y="${pad.top + 40}">${escapeHtml(tradeContext.trendLine)}</text>
+    ` : ""}
     ${waveHighNodes}
     ${indicatorLowNodes}
     ${tradeNodes}
@@ -2484,7 +3326,8 @@ function drawTradePriceChart(states) {
   `;
 }
 
-function renderBacktestState(state, index, total) {
+function renderBacktestState(state, index, total, options = {}) {
+  const shouldDrawCharts = options.drawCharts !== false;
   if (!state) {
     backtestFields.date.textContent = "--";
     backtestFields.equity.textContent = "--";
@@ -2503,8 +3346,10 @@ function renderBacktestState(state, index, total) {
     backtestFields.shares.textContent = "--";
     backtestFields.progress.style.width = "0%";
     renderTradeLog([]);
-    drawReturnComparison([]);
-    drawTradePriceChart([]);
+    if (shouldDrawCharts) {
+      drawReturnComparison([]);
+      drawTradePriceChart([]);
+    }
     return;
   }
 
@@ -2532,8 +3377,10 @@ function renderBacktestState(state, index, total) {
   } else {
     renderTradeLog([]);
   }
-  drawReturnComparison(backtestStates.slice(0, index + 1));
-  drawTradePriceChart(backtestStates.slice(0, index + 1));
+  if (shouldDrawCharts) {
+    drawReturnComparison(backtestStates.slice(0, index + 1));
+    drawTradePriceChart(backtestStates.slice(0, index + 1));
+  }
 }
 
 function getVisibleBacktestStates() {
@@ -2545,7 +3392,11 @@ function getVisibleBacktestStates() {
 function redrawVisibleBacktestCharts() {
   const visibleStates = getVisibleBacktestStates();
   drawReturnComparison(visibleStates);
-  drawTradePriceChart(visibleStates);
+  if (selectedTradeForChart && selectedTradeChartStates.length > 0) {
+    drawTradePriceChart(selectedTradeChartStates, { selectedTrade: selectedTradeForChart });
+  } else {
+    drawTradePriceChart([]);
+  }
 }
 
 function setTradePriceZoom(nextZoom) {
@@ -2566,7 +3417,7 @@ function stopBacktestReplay() {
     backtestTimer = null;
   }
   startBacktestButton.disabled = false;
-  startBacktestButton.textContent = "开始测试";
+  startBacktestButton.textContent = "开始模拟";
 }
 
 function resetBacktest() {
@@ -2577,8 +3428,12 @@ function resetBacktest() {
   activeBacktestRangeLabel = "";
   comparisonResults = [];
   hasBacktestRun = false;
+  selectedTradeForChart = null;
+  selectedTradeChartStates = [];
   renderBacktestState(null, 0, 0);
   renderModelComparisonTable([]);
+  renderTradeDetail(null);
+  renderModelRanking();
 }
 
 function selectBacktestRows(rows, config) {
@@ -2634,22 +3489,34 @@ function recomputeBacktestWithLatestConfig() {
   backtestStates = buildParallelBacktestStates(rowsForBacktest, config);
   backtestIndex = backtestStates.length;
   const finalState = backtestStates[backtestStates.length - 1];
-  renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
+  renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length, { drawCharts: false });
   comparisonResults = updateModelComparisonTable(rowsForBacktest, config);
   renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
+  selectedTradeForChart = null;
+  selectedTradeChartStates = [];
+  drawReturnComparison([]);
+  drawTradePriceChart([]);
+  renderTradeDetail(null);
   const status = config.strategyType === "local-high-ladder"
-    ? "已按近端高点阶梯指标同步重算图表点位和回测交易。"
+    ? "已按近端高点阶梯指标同步重算表现和回测交易。"
     : config.strategyType === "ma-rsi-band"
-      ? "已按 MA-RSI 波段参数同步重算图表信号和回测交易。"
+      ? "已按 MA-RSI 波段参数同步重算表现和回测交易。"
       : config.strategyType === "order-grid"
-        ? "已按近端高点订单网格参数同步重算图表信号和回测交易。"
-      : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算历史波浪点和回测交易。`;
+        ? "已按近端高点订单网格参数同步重算表现和回测交易。"
+      : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算表现和回测交易。`;
   setStatus(activeBacktestRangeLabel ? `${status} 回测区间：${activeBacktestRangeLabel}。` : status);
 }
 
 function startBacktest() {
   if (!lastRows || lastRows.length === 0) {
     setStatus("请先查询行情数据，再开始回测。", true);
+    return;
+  }
+
+  if (getSelectedComparisonPresetNames().length === 0) {
+    renderModelComparisonTable([]);
+    renderTradeLog([]);
+    setStatus("请至少选择一个预存模型进行历史模拟。", true);
     return;
   }
 
@@ -2674,23 +3541,22 @@ function startBacktest() {
   backtestStates = buildParallelBacktestStates(activeBacktestRows, config);
   comparisonResults = updateModelComparisonTable(activeBacktestRows, config);
   renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
-  backtestIndex = 0;
+  selectedTradeForChart = null;
+  selectedTradeChartStates = [];
+  backtestIndex = backtestStates.length;
   hasBacktestRun = true;
-  startBacktestButton.disabled = true;
-  startBacktestButton.textContent = "测试中";
-  setStatus(`正在并行回放模型策略和全仓基准，回测区间：${activeBacktestRangeLabel}。`);
-
-  backtestTimer = setInterval(() => {
-    renderBacktestState(backtestStates[backtestIndex], backtestIndex, backtestStates.length);
-    backtestIndex += 1;
-
-    if (backtestIndex >= backtestStates.length) {
-      const finalState = backtestStates[backtestStates.length - 1];
-      stopBacktestReplay();
-      renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length);
-      setStatus(`回测完成：${activeBacktestRangeLabel}；模型收益 ${formatPercent(finalState.returnRate)}，全仓收益 ${formatPercent(finalState.buyHold.returnRate)}；模型回撤 ${formatPercent(finalState.maxDrawdown)}，全仓回撤 ${formatPercent(finalState.buyHold.maxDrawdown)}。`);
-    }
-  }, config.playSpeed);
+  const finalState = backtestStates[backtestStates.length - 1];
+  renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length, { drawCharts: false });
+  drawReturnComparison([]);
+  drawTradePriceChart([]);
+  renderTradeDetail(null);
+  startBacktestButton.disabled = false;
+  startBacktestButton.textContent = "开始模拟";
+  const leadingResult = comparisonResults[0];
+  const leadingText = leadingResult
+    ? `当前排名第一：${leadingResult.label}，收益 ${formatPercent(leadingResult.finalState.returnRate)}，最大回撤 ${formatPercent(leadingResult.finalState.maxDrawdown)}。`
+    : "";
+  setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现表和交易记录。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
 }
 
 function pointX(index, count, left, width) {
@@ -2888,12 +3754,11 @@ function renderResult(result) {
   renderCompanyInfo(result);
   rememberLoadedSymbol(code);
 
-  const wavePresetName = renderStrategyPresetOptions("wave", strategyPresetSelect.value);
-  fillStrategyPresetControls(wavePresetName || "optimized");
   drawChart(rows, summary);
   renderTable(rows);
   resetBacktest();
-  setStatus(`已更新 ${displayName}，数据源：${result.source}。`);
+  setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
+  startBacktest();
 }
 
 async function loadData() {
@@ -2967,28 +3832,119 @@ backtestWindowModeSelect.addEventListener("change", () => {
 });
 
 compareCurrentConfigInput.addEventListener("change", () => {
-  if (hasBacktestRun && activeBacktestRows) {
-    const config = readBacktestConfig();
-    comparisonResults = updateModelComparisonTable(activeBacktestRows, config);
-    renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
-  }
+  if (compareCurrentConfigInput) compareCurrentConfigInput.checked = false;
 });
 
 modelCompareOptions.addEventListener("change", () => {
-  if (hasBacktestRun && activeBacktestRows) {
-    const config = readBacktestConfig();
-    comparisonResults = updateModelComparisonTable(activeBacktestRows, config);
-    renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
+  if (lastRows && lastRows.length > 0) {
+    startBacktest();
   }
 });
 
 modelCompareOptions.addEventListener("click", (event) => {
   const target = event.target && event.target.closest ? event.target : event.target.parentElement;
   if (target && target.matches && target.matches(".model-compare-enabled")) return;
+  const paramButton = target ? target.closest(".preset-param-button") : null;
+  if (paramButton) {
+    openPresetParamEditor(paramButton.dataset.presetName);
+    return;
+  }
   const option = target ? target.closest("[data-preset-name]") : null;
   if (!option) return;
   applyStrategyPreset(option.dataset.presetName);
 });
+
+wizardButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (button.dataset.wizardTarget === "new-model") {
+      resetGeneratedModelDraft();
+    }
+    setWizardPage(button.dataset.wizardTarget);
+  });
+});
+
+if (rankingPresetList) {
+  rankingPresetList.addEventListener("click", (event) => {
+    const card = event.target && event.target.closest ? event.target.closest("[data-preset-name]") : null;
+    if (!card) return;
+    applyStrategyPreset(card.dataset.presetName);
+  });
+}
+
+if (modelCompareTable) {
+  modelCompareTable.addEventListener("click", (event) => {
+    const row = event.target && event.target.closest ? event.target.closest("[data-result-name]") : null;
+    if (!row) return;
+    const result = comparisonResults.find((item) => item.name === row.dataset.resultName);
+    if (!result) return;
+    modelCompareTable.querySelectorAll("[data-result-name]").forEach((item) => {
+      item.classList.toggle("selected", item === row);
+    });
+    if (result.name !== "__current__") {
+      applyStrategyPreset(result.name);
+    }
+    renderModelResultCharts(result);
+  });
+}
+
+if (backtestFields.tradeLog) {
+  backtestFields.tradeLog.addEventListener("click", (event) => {
+    const row = event.target && event.target.closest ? event.target.closest("[data-trade-index]") : null;
+    if (!row) return;
+    const trade = lastRenderedTrades[Number(row.dataset.tradeIndex)];
+    if (!trade) return;
+    selectTradeLogRow(row);
+    renderTradeDetail(trade);
+    focusTradeOnChart(trade);
+  });
+}
+
+if (customModelForm) {
+  customModelForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+  });
+}
+
+if (closePresetParamButton && presetParamDialog) {
+  closePresetParamButton.addEventListener("click", () => {
+    editingPresetName = null;
+    presetParamDialog.close();
+  });
+}
+
+if (savePresetParamButton) {
+  savePresetParamButton.addEventListener("click", () => {
+    saveEditedPresetParameters();
+  });
+}
+
+if (generateModelCodeButton) {
+  generateModelCodeButton.addEventListener("click", () => {
+    if (!customModelPrompt || !customModelPrompt.value.trim()) {
+      if (generatedModelCode) generatedModelCode.textContent = "请先输入模型描述。";
+      return;
+    }
+    generatedPresetDraft = createSafePresetDraft(customModelPrompt.value);
+    if (generatedModelCode) generatedModelCode.textContent = generatedPresetDraft.code;
+    if (saveGeneratedModelButton) saveGeneratedModelButton.disabled = false;
+  });
+}
+
+if (saveGeneratedModelButton) {
+  saveGeneratedModelButton.addEventListener("click", () => {
+    if (!generatedPresetDraft) return;
+    const presetName = saveGeneratedPreset(generatedPresetDraft.preset);
+    generatedPresetDraft = null;
+    setWizardPage("ranking");
+    setStatus(`已保存新模型预设：${strategyPresets[presetName].label}。`);
+  });
+}
+
+if (optimizeSelectedModelButton) {
+  optimizeSelectedModelButton.addEventListener("click", () => {
+    optimizeSelectedModel();
+  });
+}
 
 startBacktestButton.addEventListener("click", () => {
   startBacktest();
@@ -3143,6 +4099,7 @@ window.addEventListener("resize", () => {
 recentSymbolPresets = loadRecentSymbols();
 renderSymbolPresetOptions(codeInput.value);
 renderModelCompareOptions();
+renderModelRanking();
 applyStrategyPreset("optimized", false);
 initializeDates();
 updateBacktestWindowUi();

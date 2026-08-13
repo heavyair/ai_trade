@@ -8,12 +8,105 @@
   </head>
   <body>
     <main class="shell">
+      <section class="wizard-hero" aria-label="功能向导">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>AI Trade 策略研究向导</h1>
+            <p>选择一个功能开始：先看模型排行、创建模型，或进入历史模拟。</p>
+          </div>
+        </div>
+        <div class="wizard-actions" role="tablist" aria-label="功能入口">
+          <button id="wizardRankButton" class="wizard-action" type="button" data-wizard-target="ranking" aria-selected="false">模型排行</button>
+          <button id="wizardNewModelButton" class="wizard-action" type="button" data-wizard-target="new-model" aria-selected="false">新建模型</button>
+          <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false">历史模拟</button>
+        </div>
+      </section>
+
+      <section id="rankingPage" class="wizard-page" data-wizard-page="ranking" aria-label="模型排行">
+        <div class="research-panel" aria-label="模型研究工作台">
+          <div class="research-head">
+            <div>
+              <h2>模型排行</h2>
+              <p>直接查看所有预存模型参数集合及当前历史区间表现。</p>
+            </div>
+            <div class="research-actions">
+              <button id="optimizeSelectedModelButton" type="button">优化选中模型</button>
+            </div>
+          </div>
+          <div id="rankingPresetList" class="ranking-list"></div>
+        </div>
+      </section>
+
+      <section id="newModelPage" class="wizard-page" data-wizard-page="new-model" aria-label="新建模型">
+        <form id="customModelForm" class="model-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>新建模型</h2>
+              <p>用文字描述买卖规则，系统会生成受限的客户端模型预设。</p>
+            </div>
+          </div>
+          <label>
+            模型描述
+            <textarea id="customModelPrompt" rows="6" placeholder="例如：最近3天高点回撤2%买入20%，之后每下跌2%再买20%，每笔上涨2%卖出"></textarea>
+          </label>
+          <div class="dialog-grid">
+            <label>
+              创建者
+              <input id="customModelCreatorInput" type="text" maxlength="32" value="user">
+            </label>
+            <label>
+              预设名称
+              <input id="customModelLabelInput" type="text" maxlength="60" placeholder="自动生成">
+            </label>
+          </div>
+          <div class="dialog-actions">
+            <button id="generateModelCodeButton" type="button">生成安全模型</button>
+            <button id="saveGeneratedModelButton" type="button" disabled>保存为预设</button>
+          </div>
+          <div class="security-note">安全策略：不会执行任意 JavaScript，不使用 eval / Function。文字描述只会转换为已支持模型的参数化代码片段，并在浏览器本地回测。</div>
+          <pre id="generatedModelCode" class="code-preview">等待生成...</pre>
+        </form>
+      </section>
+
+      <dialog id="presetParamDialog" class="param-dialog">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="presetParamTitle">预存模型参数</h2>
+              <p id="presetParamSubtitle">查看或修改当前预存模型参数。</p>
+            </div>
+            <button id="closePresetParamButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <label>
+            参数 JSON
+            <textarea id="presetParamEditor" rows="18" spellcheck="false"></textarea>
+          </label>
+          <div class="dialog-actions">
+            <button id="savePresetParamButton" type="button">保存参数</button>
+          </div>
+          <div class="security-note">保存时会校验策略类型和参数范围。内置预设会保存为本地副本，避免覆盖系统预设。</div>
+        </form>
+      </dialog>
+
+      <div id="simulationPage" class="wizard-page" data-wizard-page="simulation">
+      <section class="simulation-step-section" aria-label="选择模拟模型">
+        <div class="section-head">
+          <div>
+            <h2>1. 选择模拟模型</h2>
+            <p>直接选择需要模拟的预存模型；每个预存模型使用独立资金账户。</p>
+          </div>
+        </div>
+        <input id="compareCurrentConfigInput" class="hidden" type="checkbox">
+        <div id="modelCompareOptions" class="model-compare-options"></div>
+      </section>
+
       <section class="toolbar" aria-label="查询条件">
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h1>市场高低点查询</h1>
-            <p>按 A 股代码或美股 ticker 和时间区间计算日线最高价与最低价。</p>
+            <h1>2. 选择股票和时间区间</h1>
+            <p>选择 A 股代码或美股 ticker，并加载用于模拟的历史价格。</p>
           </div>
         </div>
 
@@ -155,15 +248,15 @@
       <section class="backtest-section" aria-label="模拟交易历史回测">
         <div class="section-head">
           <div>
-            <h2>模拟交易回测</h2>
-            <p>按模型策略逐日回放，并与第一天全仓买入后一直持有的基准比较。</p>
+            <h2>3. 运行模拟</h2>
+            <p>快速计算模型表现和交易记录；点击模型或交易后再渲染对应曲线。</p>
           </div>
-          <button id="startBacktestButton" type="button">开始测试</button>
+          <button id="startBacktestButton" type="button">开始模拟</button>
         </div>
 
         <div class="backtest-layout">
-          <form id="backtestForm" class="backtest-form">
-            <div class="preset-panel">
+          <form id="backtestForm" class="backtest-form simulation-config-form">
+            <div class="preset-panel hidden">
               <label>
                 策略预设
                 <select id="strategyPresetSelect"></select>
@@ -171,24 +264,12 @@
               <button id="applyPresetButton" type="button">套用</button>
             </div>
 
-            <div class="rule-panel">
-              <div class="rule-head">
-                <h3>多模型对比</h3>
-                <span>每个模型使用独立模拟账户；勾选启用参与并行回测，点击预设仅显示该模型参数</span>
-              </div>
-              <label class="current-config-option">
-                <input id="compareCurrentConfigInput" type="checkbox">
-                <span>启用当前界面模型和参数</span>
-              </label>
-              <div id="modelCompareOptions" class="model-compare-options"></div>
-            </div>
-
             <div class="settings-grid">
               <label>
                 初始现金
                 <input id="initialCashInput" type="number" min="1000" step="1000" value="100000">
               </label>
-              <label>
+              <label class="hidden">
                 交易速度
                 <input id="playSpeedInput" type="number" min="10" max="1000" step="10" value="80">
               </label>
@@ -390,7 +471,7 @@
               </div>
             </div>
 
-            <div id="waveBuyPanel" class="rule-panel">
+            <div id="waveBuyPanel" class="rule-panel hidden">
               <div class="rule-head">
                 <h3>买入规则</h3>
                 <span>回撤达到阈值时调仓到目标仓位</span>
@@ -398,7 +479,7 @@
               <div id="buyRules" class="rule-grid"></div>
             </div>
 
-            <div id="waveSellPanel" class="rule-panel">
+            <div id="waveSellPanel" class="rule-panel hidden">
               <div class="rule-head">
                 <h3>卖出规则</h3>
                 <span>较最近一次模型买入价上涨达到阈值时减仓</span>
@@ -427,7 +508,7 @@
           </form>
 
           <div class="account-panel">
-            <div class="account-strip">
+            <div class="account-strip hidden">
               <div>
                 <span>当前日期</span>
                 <strong id="btDate">--</strong>
@@ -446,16 +527,16 @@
               </div>
             </div>
 
-            <div class="progress-track" aria-label="回测进度">
+            <div class="progress-track hidden" aria-label="回测进度">
               <span id="btProgress"></span>
             </div>
 
-            <div class="baseline-note">
+            <div class="baseline-note hidden">
               <strong>全仓基准</strong>
               <span id="btBuyHoldPolicy">历史第一天全仓买入，之后一直持有，不执行卖出。</span>
             </div>
 
-            <div class="analysis-grid">
+            <div class="analysis-grid hidden">
               <article>
                 <span>模型收益</span>
                 <strong id="btReturn">--</strong>
@@ -556,6 +637,11 @@
                 <tbody id="tradeLog"></tbody>
               </table>
             </div>
+
+            <div id="tradeDetailPanel" class="trade-detail-panel" aria-live="polite">
+              <strong>交易详情</strong>
+              <span>点击交易记录后，会显示触发条件并把下方价格图放大到对应区间。</span>
+            </div>
           </div>
         </div>
 
@@ -603,6 +689,7 @@
           </table>
         </div>
       </section>
+      </div>
     </main>
     <script src="/app.js"></script>
   </body>

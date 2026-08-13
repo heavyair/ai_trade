@@ -34,6 +34,8 @@ body {
   padding: 28px 0 40px;
 }
 
+.wizard-hero,
+.simulation-step-section,
 .toolbar,
 .chart-section,
 .backtest-section,
@@ -42,6 +44,49 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--shadow);
+}
+
+.wizard-hero {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(0, 1.4fr);
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 22px;
+}
+
+.wizard-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wizard-action {
+  height: 74px;
+  min-width: 0;
+  border: 1px solid #cae3e8;
+  color: var(--accent);
+  background: #eef8fa;
+  font-size: 17px;
+}
+
+.wizard-action:hover,
+.wizard-action.active {
+  color: #fff;
+  background: var(--accent);
+}
+
+.wizard-page {
+  display: none;
+}
+
+.wizard-page.active {
+  display: block;
+}
+
+.simulation-step-section {
+  margin-bottom: 16px;
+  padding: 18px;
 }
 
 .toolbar {
@@ -403,6 +448,110 @@ button:disabled {
   gap: 16px;
 }
 
+.research-panel {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.research-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.research-head h3,
+.dialog-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.research-head p,
+.dialog-head p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.research-actions {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  min-width: min(100%, 520px);
+}
+
+.ranking-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.ranking-card {
+  display: grid;
+  gap: 8px;
+  height: auto;
+  min-height: 118px;
+  padding: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+  text-align: left;
+}
+
+.ranking-card:hover,
+.ranking-card.selected {
+  color: var(--ink);
+  border-color: var(--accent);
+  background: #eef8fa;
+}
+
+.ranking-card strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.ranking-card em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.ranking-params {
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.ranking-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ranking-metrics span {
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #f4f7fb;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ranking-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .backtest-form,
 .account-panel {
   min-width: 0;
@@ -596,9 +745,9 @@ button:disabled {
   accent-color: var(--accent);
 }
 
-.model-compare-options label {
+.model-preset-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 10px;
@@ -606,10 +755,18 @@ button:disabled {
   border-radius: 8px;
   background: #fff;
   font-size: 12px;
+}
+
+.model-preset-card label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   cursor: pointer;
 }
 
-.model-compare-options label.selected {
+.model-preset-card.selected {
   border-color: var(--accent);
   background: #eef8fa;
 }
@@ -621,15 +778,40 @@ button:disabled {
   accent-color: var(--accent);
 }
 
-.model-compare-options span {
+.model-compare-options span,
+.model-compare-options small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .model-compare-options small {
+  grid-column: 2;
   color: var(--muted);
   font-weight: 700;
+}
+
+.preset-param-button {
+  min-width: 62px;
+  height: 34px;
+  padding: 0 10px;
+  color: var(--accent);
+  background: #eef8fa;
+  border: 1px solid #cae3e8;
+  font-size: 12px;
+}
+
+.preset-param-button:hover {
+  color: #fff;
+  background: var(--accent);
+}
+
+.simulation-config-form #localLadderPanel,
+.simulation-config-form #maRsiBandPanel,
+.simulation-config-form #orderGridPanel,
+.simulation-config-form #waveBuyPanel,
+.simulation-config-form #waveSellPanel {
+  display: none !important;
 }
 
 .condition-note {
@@ -849,6 +1031,188 @@ button:disabled {
   font-weight: 700;
 }
 
+.log-wrap tbody tr[data-trade-index],
+.log-wrap tbody tr[data-result-name] {
+  cursor: pointer;
+}
+
+.log-wrap tbody tr.selected td,
+.log-wrap tbody tr[data-result-name].selected td {
+  background: #eef8fa;
+}
+
+.trade-detail-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+}
+
+.trade-detail-panel strong,
+.trade-detail-panel span,
+.trade-detail-panel p {
+  display: block;
+}
+
+.trade-detail-panel strong {
+  font-size: 14px;
+}
+
+.trade-detail-panel span,
+.trade-detail-panel p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.trade-detail-panel dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.trade-detail-panel dl div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #dce8ec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.trade-detail-panel dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trade-detail-panel dd {
+  margin: 5px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.model-dialog {
+  width: min(760px, calc(100% - 28px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.param-dialog {
+  width: min(860px, calc(100% - 28px));
+  max-height: min(92vh, 920px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.param-dialog::backdrop {
+  background: rgba(24, 34, 48, 0.42);
+}
+
+.param-dialog-body {
+  display: grid;
+  gap: 14px;
+  max-height: inherit;
+  overflow: auto;
+  padding: 18px;
+  background: var(--panel);
+}
+
+.model-dialog::backdrop {
+  background: rgba(24, 34, 48, 0.42);
+}
+
+.model-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+#newModelPage .model-dialog-body {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.dialog-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.dialog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 138px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea:focus {
+  outline: 3px solid rgba(31, 122, 140, 0.18);
+  border-color: var(--accent);
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.ghost-button {
+  min-width: 74px;
+  color: var(--accent);
+  background: #eef8fa;
+  border: 1px solid #cae3e8;
+}
+
+.ghost-button:hover {
+  color: #fff;
+  background: var(--accent);
+}
+
+.security-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f4fafb;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.code-preview {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #101828;
+  color: #e6edf3;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 #priceChart {
   display: block;
   width: 100%;
@@ -932,13 +1296,19 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 880px) {
+  .wizard-hero,
+  .simulation-step-section,
+  .wizard-actions,
   .toolbar,
   .query-form,
   .company-card,
   .company-card dl,
   .summary-grid,
   .backtest-layout,
+  .research-head,
+  .research-actions,
   .preset-panel,
+  .dialog-grid,
   .indicator-controls,
   .settings-grid,
   .risk-grid,
@@ -960,10 +1330,22 @@ tbody tr:last-child td {
     flex-basis: auto;
   }
 
+  .research-head,
   .comparison-head,
+  .dialog-head,
   .baseline-note {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .research-actions,
+  .dialog-actions {
+    width: 100%;
+  }
+
+  .dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .legend {
@@ -981,15 +1363,112 @@ tbody tr:last-child td {
 
 @media (max-width: 520px) {
   .shell {
-    width: min(100% - 20px, 1180px);
+    width: 100%;
     padding-top: 14px;
   }
 
+  .wizard-hero,
+  .simulation-step-section,
   .toolbar,
   .chart-section,
   .backtest-section,
   .table-section {
+    border-left: 0;
+    border-right: 0;
+    border-radius: 0;
     padding: 14px;
+  }
+
+  .company-card,
+  .metric {
+    border-radius: 0;
+  }
+
+  input,
+  select,
+  button,
+  .chart-tools button {
+    min-height: 46px;
+    font-size: 16px;
+  }
+
+  button,
+  .chart-tools button {
+    width: 100%;
+  }
+
+  .wizard-action {
+    height: 64px;
+  }
+
+  .chart-tools {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .chart-tools button {
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .model-compare-options label,
+  .model-preset-card,
+  .current-config-option,
+  .ranking-card,
+  .rule-panel,
+  .local-ladder-grid label,
+  .ma-rsi-grid label,
+  .order-grid label,
+  .risk-grid label {
+    min-height: 48px;
+    font-size: 14px;
+  }
+
+  .model-compare-options input,
+  .current-config-option input,
+  .rule-switch input,
+  .risk-switch input,
+  .ma-rsi-grid .condition-switch input {
+    width: 22px;
+    height: 22px;
+  }
+
+  .log-wrap {
+    height: auto;
+    max-height: 420px;
+  }
+
+  .log-wrap table,
+  table {
+    min-width: 760px;
+  }
+
+  .trade-detail-panel dl {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .model-dialog {
+    width: 100%;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .param-dialog {
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .param-dialog-body {
+    height: 100dvh;
+  }
+
+  .preset-param-button {
+    min-height: 42px;
+    width: auto;
   }
 
   .brand {
