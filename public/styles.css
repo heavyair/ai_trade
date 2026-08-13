@@ -84,6 +84,89 @@ body {
   display: block;
 }
 
+.simulation-progress {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.simulation-progress-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "number title"
+    "number note";
+  align-items: center;
+  column-gap: 10px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 9px 11px;
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  color: #344054;
+  background: #fff;
+  text-align: left;
+}
+
+.simulation-progress-step span {
+  grid-area: number;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #edf1f6;
+  color: #344054;
+  font-weight: 800;
+}
+
+.simulation-progress-step strong {
+  grid-area: title;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simulation-progress-step small {
+  grid-area: note;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simulation-progress-step.complete {
+  border-color: #cae3e8;
+  background: #f4fafb;
+}
+
+.simulation-progress-step.active {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  background: #eef8fa;
+}
+
+.simulation-progress-step.active span {
+  color: #fff;
+  background: var(--accent);
+}
+
 .simulation-step-section {
   margin-bottom: 16px;
   padding: 18px;
@@ -947,6 +1030,260 @@ button:disabled {
   min-width: 1180px;
 }
 
+.model-performance-wrap {
+  height: auto;
+  max-height: 680px;
+  border-color: var(--accent);
+  box-shadow: 0 10px 24px rgba(31, 122, 140, 0.12);
+}
+
+.model-performance-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #eef8fa;
+  color: var(--accent-dark);
+}
+
+.model-performance-title strong {
+  font-size: 15px;
+}
+
+.model-performance-title span {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-performance-list {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+.model-performance-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.model-performance-summary article,
+.model-performance-card {
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.model-performance-summary article {
+  padding: 10px;
+}
+
+.model-performance-summary span,
+.performance-metrics span,
+.performance-foot span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-performance-summary strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.model-performance-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.model-performance-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.model-performance-card:hover,
+.model-performance-card.selected {
+  border-color: var(--accent);
+  background: #eef8fa;
+}
+
+.performance-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.performance-card-head strong {
+  display: block;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.performance-card-head small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.performance-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.performance-metrics div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.performance-metrics strong {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.performance-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.performance-foot span {
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: #f4f7fb;
+}
+
+.performance-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.performance-actions button {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #cae3e8;
+  color: var(--accent);
+  background: #fff;
+}
+
+.performance-actions button:hover {
+  color: #fff;
+  background: var(--accent);
+}
+
+.selected-model-detail {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 16px;
+  padding: 14px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+}
+
+.selected-model-detail > strong {
+  font-size: 15px;
+}
+
+.selected-model-detail > span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.selected-model-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.selected-model-detail-head span,
+.selected-model-detail-head small,
+.selected-model-metrics span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.selected-model-detail-head strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.selected-model-detail-head small {
+  margin-top: 5px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.selected-model-param-button {
+  min-width: 96px;
+  height: 38px;
+  padding: 0 12px;
+  color: var(--accent);
+  background: #fff;
+  border: 1px solid #cae3e8;
+}
+
+.selected-model-param-button:hover {
+  color: #fff;
+  background: var(--accent);
+}
+
+.selected-model-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.selected-model-metrics article {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dce8ec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.selected-model-metrics strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
 .full-width-panel {
   margin-top: 16px;
 }
@@ -1416,6 +1753,7 @@ tbody tr:last-child td {
 
 @media (max-width: 880px) {
   .wizard-hero,
+  .simulation-progress,
   .simulation-step-section,
   .wizard-actions,
   .toolbar,
@@ -1476,6 +1814,14 @@ tbody tr:last-child td {
     text-align: left;
   }
 
+  .selected-model-detail-head {
+    grid-template-columns: 1fr;
+  }
+
+  .selected-model-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .chart-wrap {
     height: 360px;
   }
@@ -1488,6 +1834,7 @@ tbody tr:last-child td {
   }
 
   .wizard-hero,
+  .simulation-progress,
   .simulation-step-section,
   .toolbar,
   .chart-section,
@@ -1497,6 +1844,39 @@ tbody tr:last-child td {
     border-right: 0;
     border-radius: 0;
     padding: 14px;
+  }
+
+  .simulation-progress {
+    position: sticky;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px;
+    border-radius: 0;
+  }
+
+  .simulation-progress-step {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "number"
+      "title";
+    justify-items: center;
+    min-height: 62px;
+    padding: 8px 4px;
+    text-align: center;
+  }
+
+  .simulation-progress-step span {
+    width: 28px;
+    height: 28px;
+  }
+
+  .simulation-progress-step strong {
+    max-width: 100%;
+    font-size: 13px;
+  }
+
+  .simulation-progress-step small {
+    display: none;
   }
 
   .company-card,
@@ -1564,6 +1944,18 @@ tbody tr:last-child td {
   .log-wrap table,
   table {
     min-width: 760px;
+  }
+
+  .model-performance-summary,
+  .performance-metrics,
+  .performance-actions,
+  .selected-model-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .performance-actions button,
+  .selected-model-param-button {
+    width: 100%;
   }
 
   .trade-detail-panel dl {

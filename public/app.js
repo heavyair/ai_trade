@@ -8,6 +8,7 @@ const statusBand = document.querySelector(".status-band");
 const statusText = document.querySelector("#statusText");
 const wizardButtons = Array.from(document.querySelectorAll("[data-wizard-target]"));
 const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
+const simulationProgressButtons = Array.from(document.querySelectorAll("[data-simulation-step]"));
 const chart = document.querySelector("#priceChart");
 const returnCompareChart = document.querySelector("#returnCompareChart");
 const tradePriceChart = document.querySelector("#tradePriceChart");
@@ -33,6 +34,9 @@ const applyPresetButton = document.querySelector("#applyPresetButton");
 const compareCurrentConfigInput = document.querySelector("#compareCurrentConfigInput");
 const modelCompareOptions = document.querySelector("#modelCompareOptions");
 const modelCompareTable = document.querySelector("#modelCompareTable");
+const modelPerformancePanel = document.querySelector("#modelPerformancePanel");
+const showModelPerformanceButton = document.querySelector("#showModelPerformanceButton");
+const selectedModelDetail = document.querySelector("#selectedModelDetail");
 const rankingPresetList = document.querySelector("#rankingPresetList");
 const optimizeSelectedModelButton = document.querySelector("#optimizeSelectedModelButton");
 const presetParamDialog = document.querySelector("#presetParamDialog");
@@ -41,6 +45,7 @@ const savePresetParamButton = document.querySelector("#savePresetParamButton");
 const presetParamTitle = document.querySelector("#presetParamTitle");
 const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
 const presetParamNameInput = document.querySelector("#presetParamNameInput");
+const presetParamNarrative = document.querySelector("#presetParamNarrative");
 const presetParamEditor = document.querySelector("#presetParamEditor");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
@@ -135,6 +140,7 @@ let selectedTradeChartStates = [];
 let editingPresetName = null;
 let activeOptimizationId = 0;
 let optimizationPresetDraft = null;
+let activeSimulationStep = "models";
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
@@ -859,6 +865,43 @@ function setStatus(message, isError = false) {
 
 function setLoading(isLoading) {
   form.querySelector("button").disabled = isLoading;
+}
+
+function scrollToModelPerformance() {
+  if (!modelPerformancePanel) return;
+  modelPerformancePanel.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+}
+
+function getSimulationStepTarget(stepName) {
+  if (stepName === "data") return document.querySelector("#simulationDataSection");
+  if (stepName === "results") return document.querySelector("#simulationResultsSection");
+  return document.querySelector("#simulationModelsSection");
+}
+
+function setSimulationStep(stepName) {
+  const order = ["models", "data", "results"];
+  const nextStep = order.includes(stepName) ? stepName : "models";
+  const activeIndex = order.indexOf(nextStep);
+  activeSimulationStep = nextStep;
+  simulationProgressButtons.forEach((button) => {
+    const stepIndex = order.indexOf(button.dataset.simulationStep);
+    const isActive = button.dataset.simulationStep === nextStep;
+    button.classList.toggle("active", isActive);
+    button.classList.toggle("complete", stepIndex >= 0 && stepIndex < activeIndex);
+    button.setAttribute("aria-current", isActive ? "step" : "false");
+  });
+}
+
+function scrollToSimulationStep(stepName) {
+  const target = getSimulationStepTarget(stepName);
+  if (!target) return;
+  target.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
 }
 
 function setWizardPage(pageName) {
@@ -2938,33 +2981,94 @@ function renderModelComparisonTable(results) {
   if (!modelCompareTable) return;
 
   if (!results || results.length === 0) {
-    modelCompareTable.innerHTML = '<tr><td colspan="14">加载历史数据后，选择一个或多个预存模型即可显示表现。</td></tr>';
+    modelCompareTable.innerHTML = '<div class="ranking-empty">加载历史数据后，选择一个或多个预存模型即可显示表现。</div>';
     return;
   }
 
-  modelCompareTable.innerHTML = results
-    .map((result) => {
+  const bestReturn = results.reduce((best, item) => (
+    !best || item.finalState.returnRate > best.finalState.returnRate ? item : best
+  ), null);
+  const bestDrawdown = results.reduce((best, item) => (
+    !best || item.finalState.maxDrawdown < best.finalState.maxDrawdown ? item : best
+  ), null);
+  const beatCount = results.filter((item) => item.finalState.returnRate >= item.finalState.buyHold.returnRate).length;
+
+  modelCompareTable.innerHTML = `
+    <div class="model-performance-summary">
+      <article>
+        <span>已测试模型</span>
+        <strong>${results.length}</strong>
+      </article>
+      <article>
+        <span>最佳收益</span>
+        <strong>${escapeHtml(bestReturn ? bestReturn.label : "--")} ${bestReturn ? formatPercent(bestReturn.finalState.returnRate) : "--"}</strong>
+      </article>
+      <article>
+        <span>最低回撤</span>
+        <strong>${escapeHtml(bestDrawdown ? bestDrawdown.label : "--")} ${bestDrawdown ? formatPercent(bestDrawdown.finalState.maxDrawdown) : "--"}</strong>
+      </article>
+      <article>
+        <span>跑赢全仓</span>
+        <strong>${beatCount}</strong>
+      </article>
+    </div>
+    <div class="model-performance-cards">
+      ${results
+    .map((result, index) => {
       const state = result.finalState;
+      const canEditPreset = result.name !== "__current__" && strategyPresets[result.name];
       return `
-        <tr data-result-name="${escapeHtml(result.name)}">
-          <td>${escapeHtml(result.label)}</td>
-          <td class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</td>
-          <td>${formatPercent(state.maxDrawdown)}</td>
-          <td>${formatPercent(state.buyHold.returnRate)}</td>
-          <td>${formatPercent(state.buyHold.maxDrawdown)}</td>
-          <td class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</td>
-          <td class="${state.drawdownDiff <= 0 ? "up" : "down"}">${formatPercent(state.drawdownDiff)}</td>
-          <td>${getCompareVerdict(state)}</td>
-          <td>${escapeHtml(getStrategyTypeLabel(result.strategyType))}</td>
-          <td>${formatMoney(state.equity)}</td>
-          <td>${formatMoney(state.cash)}</td>
-          <td>${formatPercent(state.positionRatio)}</td>
-          <td>${formatMoney(state.totalFees || 0)}</td>
-          <td>${state.trades.length}</td>
-        </tr>
+        <article class="model-performance-card${index === 0 ? " selected" : ""}" data-result-name="${escapeHtml(result.name)}">
+          <div class="performance-card-head">
+            <span class="rank-badge">#${index + 1}</span>
+            <div>
+              <strong>${escapeHtml(result.label)}</strong>
+              <small>${escapeHtml(getStrategyTypeLabel(result.strategyType))} · ${escapeHtml(getCompareVerdict(state))}</small>
+            </div>
+          </div>
+          <div class="performance-metrics">
+            <div>
+              <span>收益</span>
+              <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong>
+            </div>
+            <div>
+              <span>最大回撤</span>
+              <strong>${formatPercent(state.maxDrawdown)}</strong>
+            </div>
+            <div>
+              <span>全仓收益</span>
+              <strong>${formatPercent(state.buyHold.returnRate)}</strong>
+            </div>
+            <div>
+              <span>全仓回撤</span>
+              <strong>${formatPercent(state.buyHold.maxDrawdown)}</strong>
+            </div>
+            <div>
+              <span>超额</span>
+              <strong class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</strong>
+            </div>
+            <div>
+              <span>回撤差异</span>
+              <strong class="${state.drawdownDiff <= 0 ? "up" : "down"}">${formatPercent(state.drawdownDiff)}</strong>
+            </div>
+          </div>
+          <div class="performance-foot">
+            <span>资产 ${formatMoney(state.equity)}</span>
+            <span>仓位 ${formatPercent(state.positionRatio)}</span>
+            <span>费用 ${formatMoney(state.totalFees || 0)}</span>
+            <span>交易 ${state.trades.length}</span>
+          </div>
+          <div class="performance-actions">
+            <button class="result-chart-button" type="button" data-result-name="${escapeHtml(result.name)}">查看曲线</button>
+            ${canEditPreset ? `<button class="result-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
+            ${canEditPreset ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化</button>` : ""}
+          </div>
+        </article>
       `;
     })
-    .join("");
+    .join("")}
+    </div>
+  `;
 }
 
 function updateModelComparisonTable(rows, currentConfig) {
@@ -3224,6 +3328,7 @@ function openPresetParamEditor(presetName) {
     ? "这个本地预设会直接保存修改。"
     : "这是内置预设，保存时会创建一个本地副本。";
   if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
+  renderPresetParamNarrative(presetName);
   presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
   if (typeof presetParamDialog.showModal === "function") {
     presetParamDialog.showModal();
@@ -3741,6 +3846,106 @@ function renderOptimizationNarrative(config) {
   `;
 }
 
+function renderPresetParamNarrative(presetName) {
+  if (!presetParamNarrative) return;
+  const preset = strategyPresets[presetName];
+  if (!preset) {
+    presetParamNarrative.innerHTML = "";
+    return;
+  }
+  const config = createConfigFromPreset(presetName, readBacktestConfig());
+  const narrative = describeOptimizationConfig(config);
+  presetParamNarrative.innerHTML = `
+    <section>
+      <h3>${escapeHtml(narrative.title)}</h3>
+      <p>${escapeHtml(summarizePresetParameters(preset))}</p>
+    </section>
+    <section>
+      <h4>如何使用这个模型建仓</h4>
+      ${renderNarrativeList(narrative.build)}
+    </section>
+    <section>
+      <h4>如何卖出或降仓</h4>
+      ${renderNarrativeList(narrative.exit)}
+    </section>
+  `;
+}
+
+function renderSelectedModelDetail(result) {
+  if (!selectedModelDetail) return;
+  if (!result || !result.finalState) {
+    selectedModelDetail.innerHTML = `
+      <strong>选择排行榜中的模型查看详情</strong>
+      <span>收益曲线、交易记录和这个模型的参数说明会显示在下方。</span>
+    `;
+    return;
+  }
+
+  const state = result.finalState;
+  const preset = result.name !== "__current__" ? strategyPresets[result.name] : null;
+  const narrative = describeOptimizationConfig(result.config);
+  const presetSummary = preset
+    ? summarizePresetParameters(preset)
+    : summarizePresetParameters(createPresetFromConfig(result.label, result.config));
+
+  selectedModelDetail.innerHTML = `
+    <div class="selected-model-detail-head">
+      <div>
+        <span>当前查看模型</span>
+        <strong>${escapeHtml(result.label)}</strong>
+        <small>${escapeHtml(getStrategyTypeLabel(result.strategyType))} · ${escapeHtml(presetSummary)}</small>
+      </div>
+      <button class="selected-model-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>
+    </div>
+    <div class="selected-model-metrics">
+      <article>
+        <span>模型收益</span>
+        <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong>
+      </article>
+      <article>
+        <span>最大回撤</span>
+        <strong>${formatPercent(state.maxDrawdown)}</strong>
+      </article>
+      <article>
+        <span>全仓收益</span>
+        <strong>${formatPercent(state.buyHold.returnRate)}</strong>
+      </article>
+      <article>
+        <span>超额收益</span>
+        <strong class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</strong>
+      </article>
+      <article>
+        <span>交易费用</span>
+        <strong>${formatMoney(state.totalFees || 0)}</strong>
+      </article>
+      <article>
+        <span>交易次数</span>
+        <strong>${state.trades.length}</strong>
+      </article>
+    </div>
+    <div class="optimization-narrative">
+      <section>
+        <h3>${escapeHtml(narrative.title)}</h3>
+        <p>${escapeHtml(presetSummary)}</p>
+      </section>
+      <section>
+        <h4>如何使用这个模型建仓</h4>
+        ${renderNarrativeList(narrative.build)}
+      </section>
+      <section>
+        <h4>如何卖出或降仓</h4>
+        ${renderNarrativeList(narrative.exit)}
+      </section>
+    </div>
+  `;
+
+  const paramButton = selectedModelDetail.querySelector(".selected-model-param-button");
+  if (paramButton) {
+    paramButton.disabled = !preset;
+    paramButton.hidden = !preset;
+  }
+}
+
 function renderOptimizationReport(sourcePresetName, baseResult, bestResult, testedCount) {
   if (!optimizationReport || !optimizationParamPreview) return;
   const sourcePreset = strategyPresets[sourcePresetName] || {};
@@ -3993,9 +4198,12 @@ function renderModelResultCharts(result) {
   if (!result || !result.states || result.states.length === 0) return;
   selectedTradeForChart = null;
   selectedTradeChartStates = [];
+  renderSelectedModelDetail(result);
+  renderTradeLog(withTradeModelLabel(result.finalState.trades || [], result.label), result.label);
+  renderTradeDetail(null);
   drawReturnComparison(result.states);
   drawTradePriceChart([]);
-  setStatus(`已渲染 ${result.label} 的收益曲线。请选择一条交易记录查看对应价格、参考高低点和趋势。`);
+  setStatus(`已切换到 ${result.label}：下方只显示这个模型的交易记录。请选择一条交易查看对应价格、参考高低点和趋势。`);
 }
 
 function selectTradeLogRow(row) {
@@ -4464,6 +4672,7 @@ function resetBacktest() {
   renderBacktestState(null, 0, 0);
   renderModelComparisonTable([]);
   renderTradeDetail(null);
+  renderSelectedModelDetail(null);
   renderModelRanking();
 }
 
@@ -4540,6 +4749,7 @@ function recomputeBacktestWithLatestConfig() {
   drawReturnComparison([]);
   drawTradePriceChart([]);
   renderTradeDetail(null);
+  renderSelectedModelDetail(comparisonResults[0] || null);
   const status = config.strategyType === "local-high-ladder"
     ? "已按近端高点阶梯指标同步重算表现和回测交易。"
     : config.strategyType === "ma-rsi-band"
@@ -4561,6 +4771,8 @@ function startBacktest() {
   if (getSelectedComparisonPresetNames().length === 0) {
     renderModelComparisonTable([]);
     renderTradeLog([]);
+    renderSelectedModelDetail(null);
+    setSimulationStep("models");
     setStatus("请至少选择一个预存模型进行历史模拟。");
     return;
   }
@@ -4602,13 +4814,20 @@ function startBacktest() {
   drawReturnComparison([]);
   drawTradePriceChart([]);
   renderTradeDetail(null);
+  const leadingResult = comparisonResults[0];
+  if (leadingResult) {
+    renderModelResultCharts(leadingResult);
+  } else {
+    renderSelectedModelDetail(null);
+  }
   startBacktestButton.disabled = false;
   startBacktestButton.textContent = "开始模拟";
-  const leadingResult = comparisonResults[0];
   const leadingText = leadingResult
     ? `当前排名第一：${leadingResult.label}，收益 ${formatPercent(leadingResult.finalState.returnRate)}，最大回撤 ${formatPercent(leadingResult.finalState.maxDrawdown)}。`
     : "";
   setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现表和交易记录。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
+  setSimulationStep("results");
+  window.setTimeout(scrollToModelPerformance, 80);
 }
 
 function pointX(index, count, left, width) {
@@ -4835,7 +5054,9 @@ function renderResult(result) {
     setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
     startBacktest();
   } else {
+    setSimulationStep("results");
     setStatus(`已更新 ${displayName}，数据源：${result.source}。请选择一个或多个预存模型进行历史模拟。`);
+    window.setTimeout(scrollToModelPerformance, 80);
   }
 }
 
@@ -4916,6 +5137,11 @@ compareCurrentConfigInput.addEventListener("change", () => {
 modelCompareOptions.addEventListener("change", () => {
   if (lastRows && lastRows.length > 0) {
     startBacktest();
+  } else if (getSelectedComparisonPresetNames().length > 0) {
+    setSimulationStep("data");
+    scrollToSimulationStep("data");
+  } else {
+    setSimulationStep("models");
   }
 });
 
@@ -4946,6 +5172,14 @@ wizardButtons.forEach((button) => {
   });
 });
 
+simulationProgressButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const stepName = button.dataset.simulationStep || activeSimulationStep;
+    setSimulationStep(stepName);
+    scrollToSimulationStep(stepName);
+  });
+});
+
 if (rankingPresetList) {
   rankingPresetList.addEventListener("click", (event) => {
     const card = event.target && event.target.closest ? event.target.closest("[data-preset-name]") : null;
@@ -4956,17 +5190,44 @@ if (rankingPresetList) {
 
 if (modelCompareTable) {
   modelCompareTable.addEventListener("click", (event) => {
-    const row = event.target && event.target.closest ? event.target.closest("[data-result-name]") : null;
-    if (!row) return;
-    const result = comparisonResults.find((item) => item.name === row.dataset.resultName);
+    const target = event.target;
+    const paramButton = target && target.closest ? target.closest(".result-param-button") : null;
+    if (paramButton) {
+      openPresetParamEditor(paramButton.dataset.presetName);
+      return;
+    }
+    const optimizeButton = target && target.closest ? target.closest(".result-optimize-button") : null;
+    if (optimizeButton) {
+      optimizePresetParameters(optimizeButton.dataset.presetName);
+      return;
+    }
+
+    const card = target && target.closest ? target.closest("[data-result-name]") : null;
+    if (!card) return;
+    const result = comparisonResults.find((item) => item.name === card.dataset.resultName);
     if (!result) return;
     modelCompareTable.querySelectorAll("[data-result-name]").forEach((item) => {
-      item.classList.toggle("selected", item === row);
+      item.classList.toggle("selected", item === card);
     });
     if (result.name !== "__current__") {
       applyStrategyPreset(result.name);
     }
     renderModelResultCharts(result);
+  });
+}
+
+if (showModelPerformanceButton) {
+  showModelPerformanceButton.addEventListener("click", () => {
+    setSimulationStep("results");
+    scrollToModelPerformance();
+  });
+}
+
+if (selectedModelDetail) {
+  selectedModelDetail.addEventListener("click", (event) => {
+    const paramButton = event.target && event.target.closest ? event.target.closest(".selected-model-param-button") : null;
+    if (!paramButton || !paramButton.dataset.presetName || paramButton.dataset.presetName === "__current__") return;
+    openPresetParamEditor(paramButton.dataset.presetName);
   });
 }
 
@@ -5217,6 +5478,7 @@ recentSymbolPresets = loadRecentSymbols();
 renderSymbolPresetOptions(codeInput.value);
 renderModelCompareOptions();
 renderModelRanking();
+setSimulationStep("models");
 applyStrategyPreset("optimized", false);
 initializeDates();
 updateBacktestWindowUi();

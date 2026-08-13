@@ -78,6 +78,7 @@
             </div>
             <button id="closePresetParamButton" type="button" class="ghost-button">关闭</button>
           </div>
+          <div id="presetParamNarrative" class="optimization-narrative"></div>
           <label>
             预设模型名称
             <input id="presetParamNameInput" type="text" maxlength="80" autocomplete="off">
@@ -112,18 +113,37 @@
       </dialog>
 
       <div id="simulationPage" class="wizard-page" data-wizard-page="simulation">
-      <section class="simulation-step-section" aria-label="选择模拟模型">
+      <nav class="simulation-progress" aria-label="历史模拟流程">
+        <button class="simulation-progress-step active" type="button" data-simulation-step="models">
+          <span>1</span>
+          <strong>选择模型</strong>
+          <small>勾选预存模型</small>
+        </button>
+        <button class="simulation-progress-step" type="button" data-simulation-step="data">
+          <span>2</span>
+          <strong>加载历史</strong>
+          <small>选择股票和区间</small>
+        </button>
+        <button class="simulation-progress-step" type="button" data-simulation-step="results">
+          <span>3</span>
+          <strong>查看表现</strong>
+          <small>排行、曲线、交易</small>
+        </button>
+      </nav>
+
+      <section id="simulationModelsSection" class="simulation-step-section" aria-label="选择模拟模型">
         <div class="section-head">
           <div>
             <h2>1. 选择模拟模型</h2>
             <p>直接选择需要模拟的预存模型；每个预存模型使用独立资金账户。</p>
           </div>
+          <button id="showModelPerformanceButton" class="ghost-button" type="button">查看模型表现</button>
         </div>
         <input id="compareCurrentConfigInput" class="hidden" type="checkbox">
         <div id="modelCompareOptions" class="model-compare-options"></div>
       </section>
 
-      <section class="toolbar" aria-label="查询条件">
+      <section id="simulationDataSection" class="toolbar" aria-label="查询条件">
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
           <div>
@@ -278,13 +298,26 @@
         </div>
       </section>
 
-      <section class="backtest-section" aria-label="模拟交易历史回测">
+      <section id="simulationResultsSection" class="backtest-section" aria-label="模拟交易历史回测">
         <div class="section-head">
           <div>
-            <h2>3. 运行模拟</h2>
-            <p>快速计算模型表现和交易记录；点击模型或交易后再渲染对应曲线。</p>
+            <h2>3. 查看模型表现</h2>
+            <p>加载历史数据后先看排行榜；点击模型后再显示该模型的曲线、参数解释和交易记录。</p>
           </div>
           <button id="startBacktestButton" type="button">开始模拟</button>
+        </div>
+
+        <div id="modelPerformancePanel" class="log-wrap model-performance-wrap">
+          <div class="log-title model-performance-title">
+            <strong>模型表现排行榜</strong>
+            <span>收益、回撤和全仓基准对比</span>
+          </div>
+          <div id="modelCompareTable" class="model-performance-list"></div>
+        </div>
+
+        <div id="selectedModelDetail" class="selected-model-detail" aria-live="polite">
+          <strong>选择排行榜中的模型查看详情</strong>
+          <span>收益曲线、交易记录和这个模型的参数说明会显示在下方。</span>
         </div>
 
         <div class="backtest-layout">
@@ -655,31 +688,6 @@
                 <span>持仓数量</span>
                 <strong id="btShares">--</strong>
               </article>
-            </div>
-
-            <div class="log-wrap model-performance-wrap">
-              <div class="log-title">多模型表现表</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th>收益</th>
-                    <th>最大回撤</th>
-                    <th>全仓收益</th>
-                    <th>全仓回撤</th>
-                    <th>超额</th>
-                    <th>回撤差异</th>
-                    <th>结论</th>
-                    <th>类型</th>
-                    <th>最终资产</th>
-                    <th>现金</th>
-                    <th>仓位</th>
-                    <th>费用</th>
-                    <th>交易次数</th>
-                  </tr>
-                </thead>
-                <tbody id="modelCompareTable"></tbody>
-              </table>
             </div>
 
             <div class="comparison-panel">
