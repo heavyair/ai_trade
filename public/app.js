@@ -46,6 +46,7 @@ const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
 const optimizationReport = document.querySelector("#optimizationReport");
+const optimizationNarrative = document.querySelector("#optimizationNarrative");
 const optimizationParamPreview = document.querySelector("#optimizationParamPreview");
 const closeOptimizationButton = document.querySelector("#closeOptimizationButton");
 const saveOptimizationButton = document.querySelector("#saveOptimizationButton");
@@ -1099,13 +1100,13 @@ function updateIndicatorUi() {
   const isMaRsiBand = strategyType === "ma-rsi-band";
   const isOrderGrid = strategyType === "order-grid";
   const isPeVolume = strategyType === "pe-volume";
-  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", !isWave));
-  localLadderPanel.classList.toggle("hidden", !isLocalLadder);
-  maRsiBandPanel.classList.toggle("hidden", !isMaRsiBand);
-  orderGridPanel.classList.toggle("hidden", !isOrderGrid);
-  peVolumePanel.classList.toggle("hidden", !isPeVolume);
-  waveBuyPanel.classList.toggle("hidden", !isWave);
-  waveSellPanel.classList.toggle("hidden", !isWave);
+  document.querySelectorAll(".wave-param").forEach((item) => item.classList.add("hidden"));
+  localLadderPanel.classList.add("hidden");
+  maRsiBandPanel.classList.add("hidden");
+  orderGridPanel.classList.add("hidden");
+  peVolumePanel.classList.add("hidden");
+  waveBuyPanel.classList.add("hidden");
+  waveSellPanel.classList.add("hidden");
 
   if (isLocalLadder) {
     indicatorHighLegend.textContent = "近端高点";
@@ -1325,8 +1326,8 @@ function readBacktestConfig() {
     peVolumeRule: readPeVolumeRule(),
     playSpeed: Math.max(10, Number(playSpeedInput.value)),
     tradeFee: Math.max(0, Number(tradeFeeInput.value) || 0),
-    backtestWindowMode: backtestWindowModeSelect ? backtestWindowModeSelect.value : "all",
-    backtestYears: backtestYearsSelect ? Math.min(5, Math.max(1, Math.round(Number(backtestYearsSelect.value) || 1))) : 1,
+    backtestWindowMode: "all",
+    backtestYears: 1,
     buyRules,
     sellRules,
     noNewHighExitRule: {
@@ -2937,7 +2938,7 @@ function renderModelComparisonTable(results) {
   if (!modelCompareTable) return;
 
   if (!results || results.length === 0) {
-    modelCompareTable.innerHTML = '<tr><td colspan="13">暂无启用的对比模型</td></tr>';
+    modelCompareTable.innerHTML = '<tr><td colspan="14">加载历史数据后，选择一个或多个预存模型即可显示表现。</td></tr>';
     return;
   }
 
@@ -2947,18 +2948,19 @@ function renderModelComparisonTable(results) {
       return `
         <tr data-result-name="${escapeHtml(result.name)}">
           <td>${escapeHtml(result.label)}</td>
+          <td class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</td>
+          <td>${formatPercent(state.maxDrawdown)}</td>
+          <td>${formatPercent(state.buyHold.returnRate)}</td>
+          <td>${formatPercent(state.buyHold.maxDrawdown)}</td>
+          <td class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</td>
+          <td class="${state.drawdownDiff <= 0 ? "up" : "down"}">${formatPercent(state.drawdownDiff)}</td>
+          <td>${getCompareVerdict(state)}</td>
           <td>${escapeHtml(getStrategyTypeLabel(result.strategyType))}</td>
           <td>${formatMoney(state.equity)}</td>
           <td>${formatMoney(state.cash)}</td>
           <td>${formatPercent(state.positionRatio)}</td>
-          <td class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</td>
-          <td>${formatPercent(state.buyHold.returnRate)}</td>
-          <td class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</td>
-          <td>${formatPercent(state.maxDrawdown)}</td>
-          <td class="${state.drawdownDiff <= 0 ? "up" : "down"}">${formatPercent(state.drawdownDiff)}</td>
           <td>${formatMoney(state.totalFees || 0)}</td>
           <td>${state.trades.length}</td>
-          <td>${getCompareVerdict(state)}</td>
         </tr>
       `;
     })
@@ -3602,6 +3604,143 @@ function buildOptimizationPreset(presetName, config, rowsForTest) {
   });
 }
 
+function renderNarrativeList(items) {
+  return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function describeWaveConfig(config) {
+  const buyRules = cloneRules(config.buyRules, defaultBuyRules).filter((rule) => rule.enabled !== false);
+  const sellRules = cloneRules(config.sellRules, defaultSellRules).filter((rule) => rule.enabled !== false);
+  const risk = config.noNewHighExitRule || defaultNoNewHighExitRule;
+  return {
+    title: "波浪回撤分批建仓模型",
+    build: [
+      `波浪确认阈值为 ${formatPercent(config.waveThreshold)}，小于这个幅度的高低点变化不作为新波浪。`,
+      buyRules.length
+        ? `从最近确认的阶段高点开始计算回撤，达到 ${buyRules.map((rule) => `${formatPercent(rule.drop)} 调仓到 ${formatPercent(rule.target)}`).join("，")}。`
+        : "当前没有启用买入规则，因此模型不会主动建仓。",
+      "每次买入不是买固定金额，而是把账户总仓位调整到该规则指定的目标仓位。"
+    ],
+    exit: [
+      sellRules.length
+        ? `卖出以最近一次模型买入价为参考，价格上涨到 ${sellRules.map((rule) => `${formatPercent(rule.rise)} 减仓 ${formatPercent(rule.reduce)}`).join("，")}。`
+        : "当前没有启用卖出规则。",
+      risk && risk.enabled
+        ? `风控开启：连续 ${risk.stalledDays} 个交易日未突破最近 ${risk.lookbackDays} 日高点时，减仓 ${formatPercent(risk.reduce)}。`
+        : "风控平仓关闭。"
+    ],
+  };
+}
+
+function describeLocalLadderConfig(config) {
+  const rule = { ...defaultLocalLadderRule, ...(config.localLadderRule || {}) };
+  return {
+    title: "近端高点阶梯模型",
+    build: [
+      `每个交易日寻找最近 ${rule.lookbackDays} 天最高点作为近端高点。`,
+      `当收盘价从该近端高点回落 ${formatPercent(rule.entryDrop)} 时开始建仓。`,
+      `之后每继续下跌 ${formatPercent(rule.ladderDrop)}，目标仓位增加 ${formatPercent(rule.buyAdd)}，最高不超过 ${formatPercent(rule.maxTarget)}。`,
+      "仓位按账户总资产比例调整，不是按当日现金比例调整。"
+    ],
+    exit: [
+      `当价格相对最近一笔模型买入价反弹 ${formatPercent(rule.sellRise)} 时，减仓 ${formatPercent(rule.sellReduce)}。`,
+      rule.stopLoss > 0
+        ? `深跌保护：若相对锚定高点回落 ${formatPercent(rule.stopLoss)}，减仓 ${formatPercent(rule.stopReduce)}。`
+        : "深跌保护关闭。",
+      `仓位低于 ${formatPercent(rule.resetPositionBelow)} 后，模型允许重新寻找新的近端高点循环。`
+    ],
+  };
+}
+
+function describeOrderGridConfig(config) {
+  const rule = { ...defaultOrderGridRule, ...(config.orderGridRule || {}) };
+  return {
+    title: "近端高点订单网格模型",
+    build: [
+      `空仓时寻找最近 ${rule.lookbackDays} 天最高点。`,
+      `当价格从该高点回撤 ${formatPercent(rule.entryDrop)}，建立第一笔订单。`,
+      `每笔订单投入原始资金的 ${formatPercent(rule.orderCapitalPercent)}，最多 ${getOrderGridMaxLots(rule)} 笔。`,
+      `持仓后，若价格相对上一笔订单买入价再下跌 ${formatPercent(rule.addDrop)}，追加下一笔订单。`
+    ],
+    exit: [
+      `每笔订单独立止盈：任意订单相对自己的买入价上涨 ${formatPercent(rule.takeProfit)}，只卖出该订单。`,
+      "当所有订单卖出后，模型回到空仓状态，重新寻找近端高点和回撤建仓机会。"
+    ],
+  };
+}
+
+function describeMaRsiBandConfig(config) {
+  const rule = { ...defaultMaRsiBandRule, ...(config.maRsiBandRule || {}) };
+  return {
+    title: "MA-RSI 波段目标仓位模型",
+    build: [
+      `快均线为 ${rule.fastMa} 日，慢均线为 ${rule.slowMa} 日。`,
+      rule.useSlowTrend !== false
+        ? `收盘价站上慢线加 ${formatPercent(rule.slowBuffer)} 缓冲时，基础目标仓位为 ${formatPercent(rule.bullTarget)}；跌破慢线时为 ${formatPercent(rule.bearTarget)}。`
+        : `慢线趋势关闭，基础目标仓位为 ${formatPercent(rule.bearTarget)}。`,
+      rule.useRsiBuy !== false
+        ? `RSI ${rule.rsiDays} 日低于 ${rule.rsiBuy} 时，视为超跌，目标仓位不低于 ${formatPercent(rule.rsiTarget)}。`
+        : "RSI 超跌买入条件关闭。"
+    ],
+    exit: [
+      rule.useFastCut !== false
+        ? `跌破快线 ${formatPercent(rule.fastCut)} 时，目标仓位不高于 ${formatPercent(rule.fastBearTarget)}。`
+        : "快线跌破减仓条件关闭。",
+      rule.useRsiSell !== false
+        ? `RSI 高于 ${rule.rsiSell} 时，视为过热，目标仓位不高于 ${formatPercent(rule.hotTarget)}。`
+        : "RSI 过热卖出条件关闭。",
+      rule.useAtr !== false
+        ? `ATR ${rule.atrDays} 日高于 ${formatPercent(rule.highAtr)} 时，视为高波动，目标仓位不高于 ${formatPercent(rule.volTarget)}。`
+        : "ATR 高波动风控关闭。"
+    ],
+  };
+}
+
+function describePeVolumeConfig(config) {
+  const rule = { ...defaultPeVolumeRule, ...(config.peVolumeRule || {}) };
+  return {
+    title: "PE-成交量估值模型",
+    build: [
+      `用最近 ${rule.peLookbackDays} 个交易日的 PE 计算估值分位。`,
+      `低 PE 阈值为历史 ${formatPercent(rule.lowPePercentile)} 分位，高 PE 阈值为历史 ${formatPercent(rule.highPePercentile)} 分位。`,
+      `成交量均线为 ${rule.volumeMaDays} 日；当成交量达到均量 ${rule.volumeBuyMultiplier.toFixed(2)} 倍且 PE 低于低分位时，目标仓位为 ${formatPercent(rule.lowPeTarget)}。`,
+      `估值和量能中性时，目标仓位为 ${formatPercent(rule.neutralTarget)}。`
+    ],
+    exit: [
+      `当 PE 高于高分位，或成交量低于均量 ${rule.volumeSellMultiplier.toFixed(2)} 倍时，目标仓位降到 ${formatPercent(rule.highPeTarget)}。`,
+      "如果当前股票没有 PE 或成交量数据，此模型不会运行，系统会提示并停止测试。"
+    ],
+  };
+}
+
+function describeOptimizationConfig(config) {
+  const strategyType = config.strategyType || "wave";
+  if (strategyType === "local-high-ladder") return describeLocalLadderConfig(config);
+  if (strategyType === "ma-rsi-band") return describeMaRsiBandConfig(config);
+  if (strategyType === "order-grid") return describeOrderGridConfig(config);
+  if (strategyType === "pe-volume") return describePeVolumeConfig(config);
+  return describeWaveConfig(config);
+}
+
+function renderOptimizationNarrative(config) {
+  if (!optimizationNarrative) return;
+  const narrative = describeOptimizationConfig(config);
+  optimizationNarrative.innerHTML = `
+    <section>
+      <h3>${escapeHtml(narrative.title)}</h3>
+      <p>${escapeHtml(summarizePresetParameters(createPresetFromConfig("优化参数说明", config)))}</p>
+    </section>
+    <section>
+      <h4>如何建仓</h4>
+      ${renderNarrativeList(narrative.build)}
+    </section>
+    <section>
+      <h4>如何卖出或降仓</h4>
+      ${renderNarrativeList(narrative.exit)}
+    </section>
+  `;
+}
+
 function renderOptimizationReport(sourcePresetName, baseResult, bestResult, testedCount) {
   if (!optimizationReport || !optimizationParamPreview) return;
   const sourcePreset = strategyPresets[sourcePresetName] || {};
@@ -3636,6 +3775,7 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
       <p>负数表示最大回撤降低。</p>
     </article>
   `;
+  renderOptimizationNarrative(bestResult.config);
   optimizationParamPreview.textContent = JSON.stringify(getSerializablePreset(optimizationPresetDraft), null, 2);
   if (saveOptimizationButton) saveOptimizationButton.disabled = false;
   if (optimizationDialog && !optimizationDialog.open) {
@@ -3649,6 +3789,7 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
 
 function openOptimizationDialog(message) {
   if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">${escapeHtml(message)}</div>`;
+  if (optimizationNarrative) optimizationNarrative.innerHTML = "";
   if (optimizationParamPreview) optimizationParamPreview.textContent = "优化进行中...";
   if (saveOptimizationButton) saveOptimizationButton.disabled = true;
   if (optimizationTitle) optimizationTitle.textContent = "参数优化中";

@@ -103,6 +103,7 @@
             <button id="closeOptimizationButton" type="button" class="ghost-button">关闭</button>
           </div>
           <div id="optimizationReport" class="optimization-report"></div>
+          <div id="optimizationNarrative" class="optimization-narrative"></div>
           <pre id="optimizationParamPreview" class="code-preview">等待结果...</pre>
           <div class="dialog-actions">
             <button id="saveOptimizationButton" type="button" disabled>保存优化参数</button>
@@ -243,7 +244,7 @@
             <p id="chartSubtitle">最近一年日线</p>
           </div>
           <div class="indicator-controls">
-            <label>
+            <label class="hidden">
               指标模型
               <select id="indicatorModelSelect">
                 <option value="wave">波浪模型</option>
@@ -253,7 +254,7 @@
                 <option value="pe-volume">PE-成交量指标模型</option>
               </select>
             </label>
-            <label class="wave-param">
+            <label class="wave-param hidden">
               波浪确认波动 %
               <input id="waveThresholdInput" type="number" min="1" max="30" step="0.5" value="5">
             </label>
@@ -309,14 +310,14 @@
                 每笔交易费
                 <input id="tradeFeeInput" type="number" min="0" step="0.01" value="5">
               </label>
-              <label>
+              <label class="hidden">
                 回测抽样
                 <select id="backtestWindowModeSelect">
                   <option value="all">导入数据全区间</option>
                   <option value="random">随机开始时间</option>
                 </select>
               </label>
-              <label>
+              <label class="hidden">
                 测试年限
                 <select id="backtestYearsSelect">
                   <option value="1">1 年</option>
@@ -656,6 +657,31 @@
               </article>
             </div>
 
+            <div class="log-wrap model-performance-wrap">
+              <div class="log-title">多模型表现表</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>收益</th>
+                    <th>最大回撤</th>
+                    <th>全仓收益</th>
+                    <th>全仓回撤</th>
+                    <th>超额</th>
+                    <th>回撤差异</th>
+                    <th>结论</th>
+                    <th>类型</th>
+                    <th>最终资产</th>
+                    <th>现金</th>
+                    <th>仓位</th>
+                    <th>费用</th>
+                    <th>交易次数</th>
+                  </tr>
+                </thead>
+                <tbody id="modelCompareTable"></tbody>
+              </table>
+            </div>
+
             <div class="comparison-panel">
               <div class="comparison-head">
                 <h3>模型收益 vs 全仓收益</h3>
@@ -667,30 +693,6 @@
               <div class="comparison-wrap">
                 <svg id="returnCompareChart" role="img" aria-label="模型收益和全仓收益对比曲线"></svg>
               </div>
-            </div>
-
-            <div class="log-wrap">
-              <div class="log-title">多模型表现表</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th>类型</th>
-                    <th>最终资产</th>
-                    <th>现金</th>
-                    <th>仓位</th>
-                    <th>收益</th>
-                    <th>全仓收益</th>
-                    <th>超额</th>
-                    <th>最大回撤</th>
-                    <th>回撤差异</th>
-                    <th>费用</th>
-                    <th>交易次数</th>
-                    <th>结论</th>
-                  </tr>
-                </thead>
-                <tbody id="modelCompareTable"></tbody>
-              </table>
             </div>
 
             <div class="log-wrap">
