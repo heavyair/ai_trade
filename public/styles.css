@@ -487,8 +487,36 @@ button:disabled {
 
 .ranking-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
+  gap: 16px;
+}
+
+.ranking-table-section {
+  display: grid;
+  gap: 8px;
+}
+
+.ranking-table-section h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.ranking-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ranking-table {
+  min-width: 1120px;
+}
+
+.ranking-table tr[data-preset-name] {
+  cursor: pointer;
+}
+
+.ranking-table tr[data-preset-name]:hover {
+  background: #eef8fa;
 }
 
 .ranking-card {
@@ -747,7 +775,7 @@ button:disabled {
 
 .model-preset-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 10px;
@@ -791,7 +819,8 @@ button:disabled {
   font-weight: 700;
 }
 
-.preset-param-button {
+.preset-param-button,
+.preset-optimize-button {
   min-width: 62px;
   height: 34px;
   padding: 0 10px;
@@ -801,9 +830,17 @@ button:disabled {
   font-size: 12px;
 }
 
-.preset-param-button:hover {
+.preset-optimize-button {
   color: #fff;
   background: var(--accent);
+  border-color: var(--accent);
+}
+
+.preset-param-button:hover,
+.preset-optimize-button:hover {
+  color: #fff;
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
 }
 
 .simulation-config-form #localLadderPanel,
@@ -1199,6 +1236,39 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.optimization-report {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.optimization-report article {
+  padding: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.optimization-report span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.optimization-report strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 18px;
+}
+
+.optimization-report p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .code-preview {
   max-height: 260px;
   margin: 0;
@@ -1455,6 +1525,14 @@ tbody tr:last-child td {
     border-radius: 0;
   }
 
+  .model-preset-card {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .model-preset-card label {
+    grid-column: 1 / -1;
+  }
+
   .param-dialog {
     width: 100%;
     height: 100dvh;
@@ -1466,9 +1544,14 @@ tbody tr:last-child td {
     height: 100dvh;
   }
 
-  .preset-param-button {
+  .preset-param-button,
+  .preset-optimize-button {
     min-height: 42px;
     width: auto;
+  }
+
+  .optimization-report {
+    grid-template-columns: 1fr;
   }
 
   .brand {

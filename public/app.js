@@ -40,7 +40,15 @@ const closePresetParamButton = document.querySelector("#closePresetParamButton")
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
 const presetParamTitle = document.querySelector("#presetParamTitle");
 const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
+const presetParamNameInput = document.querySelector("#presetParamNameInput");
 const presetParamEditor = document.querySelector("#presetParamEditor");
+const optimizationDialog = document.querySelector("#optimizationDialog");
+const optimizationTitle = document.querySelector("#optimizationTitle");
+const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
+const optimizationReport = document.querySelector("#optimizationReport");
+const optimizationParamPreview = document.querySelector("#optimizationParamPreview");
+const closeOptimizationButton = document.querySelector("#closeOptimizationButton");
+const saveOptimizationButton = document.querySelector("#saveOptimizationButton");
 const customModelForm = document.querySelector("#customModelForm");
 const customModelPrompt = document.querySelector("#customModelPrompt");
 const customModelCreatorInput = document.querySelector("#customModelCreatorInput");
@@ -114,11 +122,17 @@ let lastRenderedTrades = [];
 let selectedTradeForChart = null;
 let selectedTradeChartStates = [];
 let editingPresetName = null;
+let activeOptimizationId = 0;
+let optimizationPresetDraft = null;
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
 const customPresetStorageKey = "aiTradeCustomStrategyPresets";
+const customPresetMigrationKey = "aiTradeCustomStrategyPresetsMigratedToServer";
+const rankingRecordStorageKey = "aiTradeRankingRecords";
+const rankingPeriods = [1, 3, 5];
 let recentSymbolPresets = [];
+let rankingRecords = [];
 
 const fields = {
   highestPrice: document.querySelector("#highestPrice"),
@@ -451,7 +465,7 @@ function sanitizeStoredPreset(name, preset) {
   };
 }
 
-function loadCustomStrategyPresets() {
+function loadLocalCustomStrategyPresets() {
   try {
     const parsed = JSON.parse(localStorage.getItem(customPresetStorageKey) || "{}");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
@@ -471,9 +485,198 @@ function saveCustomStrategyPresets() {
     Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
   );
   localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
+  saveServerCustomStrategyPresets(customPresets);
 }
 
-Object.assign(strategyPresets, loadCustomStrategyPresets());
+async function fetchServerCustomStrategyPresets() {
+  const response = await fetch("/api/presets", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "读取服务器预设失败。");
+  }
+  return payload.presets && typeof payload.presets === "object" ? payload.presets : {};
+}
+
+async function saveServerCustomStrategyPresets(customPresets) {
+  try {
+    const response = await fetch("/api/presets", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ presets: customPresets }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "保存服务器预设失败。");
+    }
+    if (payload.presets && typeof payload.presets === "object") {
+      Object.assign(strategyPresets, normalizeCustomPresetMap(payload.presets));
+      localStorage.setItem(customPresetStorageKey, JSON.stringify(getCurrentCustomPresets()));
+    }
+    return payload;
+  } catch (error) {
+    setStatus(`服务器预设保存失败，已保留浏览器本地备份：${error.message}`, true);
+    return null;
+  }
+}
+
+function normalizeCustomPresetMap(presets) {
+  if (!presets || typeof presets !== "object" || Array.isArray(presets)) return {};
+  return Object.entries(presets).reduce((next, [name, preset]) => {
+    const key = String(name || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+    const safePreset = sanitizeStoredPreset(key, preset);
+    if (key && safePreset) next[key] = safePreset;
+    return next;
+  }, {});
+}
+
+function getCurrentCustomPresets() {
+  return Object.fromEntries(
+    Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
+  );
+}
+
+async function initializeServerCustomPresets() {
+  const localPresets = loadLocalCustomStrategyPresets();
+  const hasLocalPresets = Object.keys(localPresets).length > 0;
+  try {
+    const serverPresets = normalizeCustomPresetMap(await fetchServerCustomStrategyPresets());
+    Object.assign(strategyPresets, serverPresets);
+
+    if (hasLocalPresets && localStorage.getItem(customPresetMigrationKey) !== "true") {
+      Object.assign(strategyPresets, localPresets);
+      await saveServerCustomStrategyPresets(getCurrentCustomPresets());
+      localStorage.setItem(customPresetMigrationKey, "true");
+      setStatus("已将浏览器本地自定义模型迁移到服务器端保存。");
+    } else {
+      localStorage.setItem(customPresetStorageKey, JSON.stringify(getCurrentCustomPresets()));
+    }
+
+    renderModelCompareOptions();
+    renderModelRanking();
+    const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
+    const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
+    renderStrategyPresetOptions(selectedType, selectedPreset);
+  } catch (error) {
+    if (hasLocalPresets) {
+      Object.assign(strategyPresets, localPresets);
+      renderModelCompareOptions();
+      renderModelRanking();
+      setStatus(`服务器预设读取失败，暂时使用浏览器本地备份：${error.message}`, true);
+    } else {
+      setStatus(`服务器预设读取失败：${error.message}`, true);
+    }
+  }
+}
+
+function buildRankingRecordKey(symbol, periodYears, presetName, startDate = "", endDate = "") {
+  return `${String(symbol || "").toUpperCase()}:${periodYears}:${startDate}:${endDate}:${presetName}`;
+}
+
+function sanitizeRankingRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const periodYears = Number(record.periodYears);
+  if (!rankingPeriods.includes(periodYears)) return null;
+  const symbol = String(record.symbol || "").trim().toUpperCase().slice(0, 16);
+  const presetName = String(record.presetName || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+  if (!symbol || !presetName) return null;
+  const numberValue = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+  return {
+    key: String(record.key || buildRankingRecordKey(symbol, periodYears, presetName, record.startDate, record.endDate)).slice(0, 160),
+    symbol,
+    symbolName: String(record.symbolName || symbol).slice(0, 80),
+    periodYears,
+    periodLabel: `${periodYears} 年`,
+    startDate: String(record.startDate || "").slice(0, 16),
+    endDate: String(record.endDate || "").slice(0, 16),
+    presetName,
+    presetLabel: String(record.presetLabel || presetName).slice(0, 100),
+    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(record.strategyType)
+      ? record.strategyType
+      : "wave",
+    returnRate: numberValue(record.returnRate),
+    annualizedReturn: numberValue(record.annualizedReturn),
+    buyHoldReturnRate: numberValue(record.buyHoldReturnRate),
+    excessReturn: numberValue(record.excessReturn),
+    maxDrawdown: numberValue(record.maxDrawdown),
+    buyHoldMaxDrawdown: numberValue(record.buyHoldMaxDrawdown),
+    drawdownDiff: numberValue(record.drawdownDiff),
+    totalFees: numberValue(record.totalFees),
+    buyHoldFees: numberValue(record.buyHoldFees),
+    trades: Math.max(0, Math.round(numberValue(record.trades))),
+    updatedAt: String(record.updatedAt || todayText()).slice(0, 16),
+  };
+}
+
+function normalizeRankingRecords(records) {
+  if (!Array.isArray(records)) return [];
+  const merged = new Map();
+  records.forEach((record) => {
+    const safeRecord = sanitizeRankingRecord(record);
+    if (safeRecord) merged.set(safeRecord.key, safeRecord);
+  });
+  return Array.from(merged.values());
+}
+
+function loadLocalRankingRecords() {
+  try {
+    return normalizeRankingRecords(JSON.parse(localStorage.getItem(rankingRecordStorageKey) || "[]"));
+  } catch (error) {
+    return [];
+  }
+}
+
+function mergeRankingRecords(records) {
+  rankingRecords = normalizeRankingRecords([...rankingRecords, ...(records || [])]);
+  localStorage.setItem(rankingRecordStorageKey, JSON.stringify(rankingRecords));
+}
+
+async function fetchServerRankingRecords() {
+  const response = await fetch("/api/rankings", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "读取服务器排行失败。");
+  }
+  return Array.isArray(payload.records) ? payload.records : [];
+}
+
+async function saveServerRankingRecords(records) {
+  try {
+    const response = await fetch("/api/rankings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ records }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "保存服务器排行失败。");
+    }
+    if (Array.isArray(payload.records)) {
+      mergeRankingRecords(payload.records);
+      renderModelRanking();
+    }
+  } catch (error) {
+    setStatus(`服务器排行保存失败，已保留浏览器本地备份：${error.message}`, true);
+  }
+}
+
+async function initializeServerRankingRecords() {
+  rankingRecords = loadLocalRankingRecords();
+  renderModelRanking();
+  try {
+    mergeRankingRecords(await fetchServerRankingRecords());
+    renderModelRanking();
+    if (rankingRecords.length > 0) saveServerRankingRecords(rankingRecords);
+  } catch (error) {
+    setStatus(`服务器排行读取失败，暂时使用浏览器本地备份：${error.message}`, true);
+  }
+}
+
+Object.assign(strategyPresets, loadLocalCustomStrategyPresets());
+rankingRecords = loadLocalRankingRecords();
 
 function formatDate(date) {
   const year = date.getFullYear();
@@ -878,18 +1081,21 @@ function createConfigFromPreset(presetName, baseConfig) {
 
 function renderModelCompareOptions() {
   if (!modelCompareOptions) return;
+  const selectedNames = new Set(getSelectedComparisonPresetNames());
   const presetEntries = Object.entries(strategyPresets);
 
   modelCompareOptions.innerHTML = presetEntries
     .map(([name, preset]) => {
+      const checked = selectedNames.has(name) ? " checked" : "";
       return `
         <div class="model-preset-card" data-preset-name="${escapeHtml(name)}">
           <label>
-            <input class="model-compare-enabled" type="checkbox" value="${escapeHtml(name)}" checked>
+            <input class="model-compare-enabled" type="checkbox" value="${escapeHtml(name)}"${checked}>
             <span>${escapeHtml(preset.label)}</span>
             <small>${escapeHtml(getPresetResearchName(name, preset))}</small>
           </label>
           <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
+          <button class="preset-optimize-button" type="button" data-preset-name="${escapeHtml(name)}">优化</button>
         </div>
       `;
     })
@@ -2420,48 +2626,174 @@ function getPresetPerformanceSummary(presetName) {
   return buildPresetPerformance(presetName);
 }
 
+function selectTrailingRowsByYears(rows, years) {
+  if (!rows || rows.length < 2) return null;
+  const endDate = new Date(`${rows[rows.length - 1].date}T00:00:00`);
+  const startBoundary = shiftYears(endDate, -years);
+  const startIndex = rows.findIndex((row) => new Date(`${row.date}T00:00:00`) >= startBoundary);
+  if (startIndex < 0 || rows.length - startIndex < 2) return null;
+  const selectedRows = rows.slice(startIndex);
+  const actualStart = new Date(`${selectedRows[0].date}T00:00:00`);
+  const monthsCovered = (endDate.getFullYear() - actualStart.getFullYear()) * 12
+    + (endDate.getMonth() - actualStart.getMonth());
+  if (monthsCovered < years * 12 - 2) return null;
+  return selectedRows;
+}
+
+function getActiveRankingSymbolInfo() {
+  const summarySymbol = lastSummary && lastSummary.symbol ? lastSummary.symbol : {};
+  const symbol = normalizeSymbolInput(summarySymbol.code || codeInput.value) || String(summarySymbol.code || codeInput.value || "").toUpperCase();
+  return {
+    symbol,
+    symbolName: String(lastSummary && lastSummary.name || summarySymbol.name || symbol || "未知标的"),
+  };
+}
+
+function annualizeReturn(returnRate, years) {
+  if (!Number.isFinite(returnRate) || years <= 0) return 0;
+  if (returnRate <= -100) return -100;
+  return (Math.pow(1 + returnRate / 100, 1 / years) - 1) * 100;
+}
+
+function buildPresetRankingResults(rows, currentConfig, presetNames) {
+  return presetNames
+    .map((presetName) => {
+      const preset = strategyPresets[presetName];
+      if (!preset) return null;
+      const states = buildParallelBacktestStates(rows, createConfigFromPreset(presetName, currentConfig));
+      const finalState = states[states.length - 1];
+      if (!finalState || !finalState.buyHold) return null;
+      return {
+        name: presetName,
+        label: preset.label,
+        strategyType: preset.strategyType || "wave",
+        finalState,
+      };
+    })
+    .filter(Boolean);
+}
+
+function createRankingRecord(symbolInfo, periodYears, rowsForPeriod, result) {
+  const state = result.finalState;
+  return sanitizeRankingRecord({
+    key: buildRankingRecordKey(
+      symbolInfo.symbol,
+      periodYears,
+      result.name,
+      rowsForPeriod[0].date,
+      rowsForPeriod[rowsForPeriod.length - 1].date
+    ),
+    symbol: symbolInfo.symbol,
+    symbolName: symbolInfo.symbolName,
+    periodYears,
+    startDate: rowsForPeriod[0].date,
+    endDate: rowsForPeriod[rowsForPeriod.length - 1].date,
+    presetName: result.name,
+    presetLabel: result.label,
+    strategyType: result.strategyType,
+    returnRate: state.returnRate,
+    annualizedReturn: annualizeReturn(state.returnRate, periodYears),
+    buyHoldReturnRate: state.buyHold.returnRate,
+    excessReturn: state.excessReturn,
+    maxDrawdown: state.maxDrawdown,
+    buyHoldMaxDrawdown: state.buyHold.maxDrawdown,
+    drawdownDiff: state.drawdownDiff,
+    totalFees: state.totalFees || 0,
+    buyHoldFees: state.buyHold.totalFees || 0,
+    trades: state.trades.length,
+    updatedAt: todayText(),
+  });
+}
+
+function recordRankingResultsForLoadedData(currentConfig) {
+  const presetNames = getSelectedComparisonPresetNames();
+  if (!lastRows || lastRows.length < 2 || presetNames.length === 0) return;
+  const symbolInfo = getActiveRankingSymbolInfo();
+  if (!symbolInfo.symbol) return;
+
+  const nextRecords = [];
+  rankingPeriods.forEach((periodYears) => {
+    const rowsForPeriod = selectTrailingRowsByYears(lastRows, periodYears);
+    if (!rowsForPeriod) return;
+    buildPresetRankingResults(rowsForPeriod, currentConfig, presetNames).forEach((result) => {
+      const record = createRankingRecord(symbolInfo, periodYears, rowsForPeriod, result);
+      if (record) nextRecords.push(record);
+    });
+  });
+
+  if (nextRecords.length === 0) return;
+  mergeRankingRecords(nextRecords);
+  saveServerRankingRecords(nextRecords);
+  renderModelRanking();
+}
+
 function renderModelRanking() {
   if (!rankingPresetList) return;
-  const presetEntries = Object.entries(strategyPresets)
-    .map(([name, preset]) => ({
-      name,
-      preset,
-      performance: getPresetPerformanceSummary(name),
-    }))
-    .sort((a, b) => {
-      const aReturn = a.performance ? a.performance.finalState.returnRate : -Infinity;
-      const bReturn = b.performance ? b.performance.finalState.returnRate : -Infinity;
-      return bReturn - aReturn;
-    });
 
-  if (presetEntries.length === 0) {
-    rankingPresetList.innerHTML = '<div class="ranking-empty">这个模型还没有预存参数集合。</div>';
+  if (rankingRecords.length === 0) {
+    rankingPresetList.innerHTML = '<div class="ranking-empty">暂无排行记录。进入历史模拟，选择模型并开始模拟后，会按 1 年、3 年、5 年分别记录成绩。</div>';
     return;
   }
 
-  rankingPresetList.innerHTML = presetEntries
-    .map(({ name, preset, performance }, index) => {
-      const state = performance && performance.finalState;
-      const selected = strategyPresetSelect && strategyPresetSelect.value === name ? " selected" : "";
-      const researchName = getPresetResearchName(name, preset);
-      const parameterText = summarizePresetParameters(preset);
-      const metrics = state
-        ? `
-          <span>收益 ${formatPercent(state.returnRate)}</span>
-          <span>全仓 ${formatPercent(state.buyHold.returnRate)}</span>
-          <span>超额 ${formatPercent(state.excessReturn)}</span>
-          <span>回撤 ${formatPercent(state.maxDrawdown)}</span>
-          <span>费用 ${formatMoney(state.totalFees || 0)}</span>
-          <span>交易 ${state.trades.length}</span>
-        `
-        : "<span>等待回测</span>";
+  rankingPresetList.innerHTML = rankingPeriods
+    .map((periodYears) => {
+      const records = rankingRecords
+        .filter((record) => record.periodYears === periodYears)
+        .sort((a, b) => b.returnRate - a.returnRate);
+      if (records.length === 0) {
+        return `
+          <section class="ranking-table-section">
+            <h3>${periodYears} 年排行</h3>
+            <div class="ranking-empty">暂无 ${periodYears} 年记录。</div>
+          </section>
+        `;
+      }
       return `
-        <button class="ranking-card${selected}" type="button" data-preset-name="${escapeHtml(name)}">
-          <strong>#${index + 1} ${escapeHtml(preset.label)}</strong>
-          <em>${escapeHtml(researchName)}</em>
-          <span class="ranking-params">${escapeHtml(parameterText)}</span>
-          <span class="ranking-metrics">${metrics}</span>
-        </button>
+        <section class="ranking-table-section">
+          <h3>${periodYears} 年排行</h3>
+          <div class="ranking-table-wrap">
+            <table class="ranking-table">
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>股票</th>
+                  <th>区间</th>
+                  <th>模型</th>
+                  <th>类型</th>
+                  <th>收益</th>
+                  <th>年化</th>
+                  <th>全仓收益</th>
+                  <th>超额</th>
+                  <th>最大回撤</th>
+                  <th>全仓回撤</th>
+                  <th>费用</th>
+                  <th>交易</th>
+                  <th>更新</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${records.map((record, index) => `
+                  <tr data-preset-name="${escapeHtml(record.presetName)}">
+                    <td>#${index + 1}</td>
+                    <td>${escapeHtml(record.symbol)} ${escapeHtml(record.symbolName)}</td>
+                    <td>${escapeHtml(record.startDate)} 至 ${escapeHtml(record.endDate)}</td>
+                    <td>${escapeHtml(record.presetLabel)}</td>
+                    <td>${escapeHtml(getStrategyTypeLabel(record.strategyType))}</td>
+                    <td class="${record.returnRate >= 0 ? "up" : "down"}">${formatPercent(record.returnRate)}</td>
+                    <td class="${record.annualizedReturn >= 0 ? "up" : "down"}">${formatPercent(record.annualizedReturn)}</td>
+                    <td>${formatPercent(record.buyHoldReturnRate)}</td>
+                    <td class="${record.excessReturn >= 0 ? "up" : "down"}">${formatPercent(record.excessReturn)}</td>
+                    <td>${formatPercent(record.maxDrawdown)}</td>
+                    <td>${formatPercent(record.buyHoldMaxDrawdown)}</td>
+                    <td>${formatMoney(record.totalFees || 0)}</td>
+                    <td>${record.trades}</td>
+                    <td>${escapeHtml(record.updatedAt)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </section>
       `;
     })
     .join("");
@@ -2515,10 +2847,11 @@ function openPresetParamEditor(presetName) {
   const preset = strategyPresets[presetName];
   if (!preset || !presetParamDialog || !presetParamEditor) return;
   editingPresetName = presetName;
-  if (presetParamTitle) presetParamTitle.textContent = `${preset.label} 参数`;
+  if (presetParamTitle) presetParamTitle.textContent = "编辑预设模型";
   if (presetParamSubtitle) presetParamSubtitle.textContent = isUserEditablePreset(presetName)
     ? "这个本地预设会直接保存修改。"
     : "这是内置预设，保存时会创建一个本地副本。";
+  if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
   presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
   if (typeof presetParamDialog.showModal === "function") {
     presetParamDialog.showModal();
@@ -2538,6 +2871,16 @@ function saveEditedPresetParameters() {
   }
 
   const existing = strategyPresets[editingPresetName];
+  const existingLabel = String(existing && existing.label || editingPresetName);
+  const requestedLabel = String(
+    presetParamNameInput && presetParamNameInput.value
+      ? presetParamNameInput.value
+      : parsed.label || existingLabel
+  ).trim().slice(0, 80);
+  parsed = {
+    ...parsed,
+    label: requestedLabel || existingLabel,
+  };
   const now = todayText();
   const nextPreset = sanitizeStoredPreset(editingPresetName, {
     ...existing,
@@ -2558,9 +2901,10 @@ function saveEditedPresetParameters() {
     strategyPresets[editingPresetName] = nextPreset;
   } else {
     savedName = `custom_${Date.now()}`;
+    const userRenamedPreset = nextPreset.label !== existingLabel;
     strategyPresets[savedName] = {
       ...nextPreset,
-      label: `${nextPreset.label} 本地修改`,
+      label: userRenamedPreset ? nextPreset.label : `${nextPreset.label} 本地修改`,
       meta: {
         ...nextPreset.meta,
         createdAt: now,
@@ -2834,45 +3178,172 @@ function buildOptimizationCandidates(basePreset, strategyType) {
   return candidates;
 }
 
-function optimizeSelectedModel() {
-  if (!lastRows || lastRows.length === 0) {
-    setStatus("请先加载历史行情，再进行参数优化。", true);
-    return;
-  }
-  const rowsForTest = activeBacktestRows || lastRows;
-  const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
-  const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
-  const candidates = buildOptimizationCandidates(selectedPreset, selectedType);
-  let best = null;
+function scoreBacktestState(state) {
+  return state ? state.returnRate - state.maxDrawdown * 0.25 : -Infinity;
+}
 
-  candidates.forEach((config) => {
-    const states = buildParallelBacktestStates(rowsForTest, config);
-    const finalState = states[states.length - 1];
-    if (!finalState) return;
-    const score = finalState.returnRate - finalState.maxDrawdown * 0.25;
-    if (!best || score > best.score) {
-      best = { config, states, finalState, score };
-    }
-  });
-
-  if (!best) {
-    setStatus("没有找到可用的优化结果。", true);
-    return;
-  }
-
+function buildOptimizationPreset(presetName, config, rowsForTest) {
+  const sourcePreset = strategyPresets[presetName] || {};
   const now = todayText();
-  const label = `${normalizeSymbolInput(codeInput.value) || "通用"} ${getStrategyTypeLabel(selectedType)} 自动优化`;
-  const preset = createPresetFromConfig(label, best.config, {
+  return createPresetFromConfig(`${sourcePreset.label || getStrategyTypeLabel(config.strategyType)} 优化参数`, config, {
     targetSymbol: normalizeSymbolInput(codeInput.value) || "通用",
     provedPeriod: activeBacktestRangeLabel || `${rowsForTest[0].date}至${rowsForTest[rowsForTest.length - 1].date}`,
     creator: "auto",
     createdAt: now,
     updatedAt: now,
   });
-  const presetName = saveGeneratedPreset(preset);
-  comparisonResults = updateModelComparisonTable(rowsForTest, best.config);
-  renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(best.config));
-  setStatus(`已生成优化预设 ${strategyPresets[presetName].label}：收益 ${formatPercent(best.finalState.returnRate)}，最大回撤 ${formatPercent(best.finalState.maxDrawdown)}。`);
+}
+
+function renderOptimizationReport(sourcePresetName, baseResult, bestResult, testedCount) {
+  if (!optimizationReport || !optimizationParamPreview) return;
+  const sourcePreset = strategyPresets[sourcePresetName] || {};
+  const improvement = bestResult.finalState.returnRate - baseResult.finalState.returnRate;
+  const drawdownChange = bestResult.finalState.maxDrawdown - baseResult.finalState.maxDrawdown;
+  const scoreChange = bestResult.score - baseResult.score;
+  const verdict = scoreChange > 0
+    ? "找到更优参数"
+    : "未找到评分更高的参数，当前展示的是最佳候选";
+
+  if (optimizationTitle) optimizationTitle.textContent = `${sourcePreset.label || "模型"} 参数优化报告`;
+  if (optimizationSubtitle) optimizationSubtitle.textContent = `${verdict}；共测试 ${testedCount} 组参数。`;
+  optimizationReport.innerHTML = `
+    <article>
+      <span>原参数收益 / 回撤</span>
+      <strong>${formatPercent(baseResult.finalState.returnRate)} / ${formatPercent(baseResult.finalState.maxDrawdown)}</strong>
+      <p>交易 ${baseResult.finalState.trades.length} 次；评分 ${baseResult.score.toFixed(2)}</p>
+    </article>
+    <article>
+      <span>最佳参数收益 / 回撤</span>
+      <strong>${formatPercent(bestResult.finalState.returnRate)} / ${formatPercent(bestResult.finalState.maxDrawdown)}</strong>
+      <p>交易 ${bestResult.finalState.trades.length} 次；评分 ${bestResult.score.toFixed(2)}</p>
+    </article>
+    <article>
+      <span>收益变化</span>
+      <strong class="${improvement >= 0 ? "up" : "down"}">${formatPercent(improvement)}</strong>
+      <p>相对原预设收益率变化。</p>
+    </article>
+    <article>
+      <span>回撤变化</span>
+      <strong class="${drawdownChange <= 0 ? "up" : "down"}">${formatPercent(drawdownChange)}</strong>
+      <p>负数表示最大回撤降低。</p>
+    </article>
+  `;
+  optimizationParamPreview.textContent = JSON.stringify(getSerializablePreset(optimizationPresetDraft), null, 2);
+  if (saveOptimizationButton) saveOptimizationButton.disabled = false;
+  if (optimizationDialog && !optimizationDialog.open) {
+    if (typeof optimizationDialog.showModal === "function") {
+      optimizationDialog.showModal();
+    } else {
+      optimizationDialog.setAttribute("open", "open");
+    }
+  }
+}
+
+function openOptimizationDialog(message) {
+  if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">${escapeHtml(message)}</div>`;
+  if (optimizationParamPreview) optimizationParamPreview.textContent = "优化进行中...";
+  if (saveOptimizationButton) saveOptimizationButton.disabled = true;
+  if (optimizationTitle) optimizationTitle.textContent = "参数优化中";
+  if (optimizationSubtitle) optimizationSubtitle.textContent = message;
+}
+
+function optimizePresetParameters(presetName) {
+  const preset = strategyPresets[presetName];
+  if (!preset) return;
+  if (!lastRows || lastRows.length === 0) {
+    setStatus("请先加载历史行情，再优化模型参数。", true);
+    return;
+  }
+
+  let rowsForTest = activeBacktestRows;
+  const baseConfig = readBacktestConfig();
+  if (!rowsForTest || rowsForTest.length === 0) {
+    try {
+      const selected = selectBacktestRows(lastRows, baseConfig);
+      rowsForTest = selected.rows;
+      activeBacktestRows = selected.rows;
+      activeBacktestRangeLabel = selected.label;
+    } catch (error) {
+      setStatus(error.message || "优化区间选择失败。", true);
+      return;
+    }
+  }
+
+  const strategyType = preset.strategyType || "wave";
+  const candidates = buildOptimizationCandidates(presetName, strategyType);
+  if (candidates.length === 0) {
+    setStatus("这个模型没有可尝试的参数组合。", true);
+    return;
+  }
+
+  activeOptimizationId += 1;
+  const runId = activeOptimizationId;
+  optimizationPresetDraft = null;
+  let index = 0;
+  let best = null;
+  let baseResult = null;
+  const chunkSize = 12;
+
+  openOptimizationDialog(`正在优化 ${preset.label}，共 ${candidates.length} 组参数。`);
+  setStatus(`正在尝试 ${preset.label} 的参数组合，不会打断当前模拟界面...`);
+
+  const runChunk = () => {
+    if (runId !== activeOptimizationId) return;
+    const end = Math.min(candidates.length, index + chunkSize);
+    for (; index < end; index += 1) {
+      const config = candidates[index];
+      const states = buildParallelBacktestStates(rowsForTest, config);
+      const finalState = states[states.length - 1];
+      if (!finalState) continue;
+      const score = scoreBacktestState(finalState);
+      const result = { config, states, finalState, score };
+      if (index === 0) baseResult = result;
+      if (!best || score > best.score) best = result;
+    }
+
+    if (optimizationSubtitle) {
+      optimizationSubtitle.textContent = `正在优化 ${preset.label}：${index}/${candidates.length}`;
+    }
+
+    if (index < candidates.length) {
+      window.setTimeout(runChunk, 0);
+      return;
+    }
+
+    if (!best || !baseResult) {
+      setStatus("没有找到可用的优化结果。", true);
+      return;
+    }
+
+    optimizationPresetDraft = buildOptimizationPreset(presetName, best.config, rowsForTest);
+    renderOptimizationReport(presetName, baseResult, best, candidates.length);
+    setStatus(`优化完成：${preset.label}；最佳收益 ${formatPercent(best.finalState.returnRate)}，最大回撤 ${formatPercent(best.finalState.maxDrawdown)}。`);
+  };
+
+  window.setTimeout(runChunk, 0);
+}
+
+function optimizeSelectedModel() {
+  const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
+  optimizePresetParameters(selectedPreset);
+}
+
+function saveOptimizationPreset() {
+  if (!optimizationPresetDraft) {
+    setStatus("没有可保存的优化参数。", true);
+    return;
+  }
+  const presetName = saveGeneratedPreset(optimizationPresetDraft);
+  const checkbox = Array.from(document.querySelectorAll(".model-compare-enabled"))
+    .find((input) => input.value === presetName);
+  if (checkbox) checkbox.checked = true;
+  if (optimizationDialog && optimizationDialog.open) optimizationDialog.close();
+  optimizationPresetDraft = null;
+  if (lastRows && lastRows.length > 0) {
+    startBacktest();
+  } else {
+    setStatus(`已保存优化参数：${strategyPresets[presetName].label}。`);
+  }
 }
 
 function renderTradeLog(trades, fallbackModelLabel = "当前模型") {
@@ -3491,6 +3962,7 @@ function recomputeBacktestWithLatestConfig() {
   const finalState = backtestStates[backtestStates.length - 1];
   renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length, { drawCharts: false });
   comparisonResults = updateModelComparisonTable(rowsForBacktest, config);
+  recordRankingResultsForLoadedData(config);
   renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
   selectedTradeForChart = null;
   selectedTradeChartStates = [];
@@ -3516,7 +3988,7 @@ function startBacktest() {
   if (getSelectedComparisonPresetNames().length === 0) {
     renderModelComparisonTable([]);
     renderTradeLog([]);
-    setStatus("请至少选择一个预存模型进行历史模拟。", true);
+    setStatus("请至少选择一个预存模型进行历史模拟。");
     return;
   }
 
@@ -3540,6 +4012,7 @@ function startBacktest() {
   activeBacktestRangeLabel = selected.label;
   backtestStates = buildParallelBacktestStates(activeBacktestRows, config);
   comparisonResults = updateModelComparisonTable(activeBacktestRows, config);
+  recordRankingResultsForLoadedData(config);
   renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
   selectedTradeForChart = null;
   selectedTradeChartStates = [];
@@ -3757,8 +4230,12 @@ function renderResult(result) {
   drawChart(rows, summary);
   renderTable(rows);
   resetBacktest();
-  setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
-  startBacktest();
+  if (getSelectedComparisonPresetNames().length > 0) {
+    setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
+    startBacktest();
+  } else {
+    setStatus(`已更新 ${displayName}，数据源：${result.source}。请选择一个或多个预存模型进行历史模拟。`);
+  }
 }
 
 async function loadData() {
@@ -3849,6 +4326,11 @@ modelCompareOptions.addEventListener("click", (event) => {
     openPresetParamEditor(paramButton.dataset.presetName);
     return;
   }
+  const optimizeButton = target ? target.closest(".preset-optimize-button") : null;
+  if (optimizeButton) {
+    optimizePresetParameters(optimizeButton.dataset.presetName);
+    return;
+  }
   const option = target ? target.closest("[data-preset-name]") : null;
   if (!option) return;
   applyStrategyPreset(option.dataset.presetName);
@@ -3915,6 +4397,20 @@ if (closePresetParamButton && presetParamDialog) {
 if (savePresetParamButton) {
   savePresetParamButton.addEventListener("click", () => {
     saveEditedPresetParameters();
+  });
+}
+
+if (closeOptimizationButton && optimizationDialog) {
+  closeOptimizationButton.addEventListener("click", () => {
+    activeOptimizationId += 1;
+    optimizationPresetDraft = null;
+    optimizationDialog.close();
+  });
+}
+
+if (saveOptimizationButton) {
+  saveOptimizationButton.addEventListener("click", () => {
+    saveOptimizationPreset();
   });
 }
 
@@ -4103,4 +4599,6 @@ renderModelRanking();
 applyStrategyPreset("optimized", false);
 initializeDates();
 updateBacktestWindowUi();
+initializeServerCustomPresets();
+initializeServerRankingRecords();
 loadData();

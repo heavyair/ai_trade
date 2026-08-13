@@ -28,7 +28,7 @@
           <div class="research-head">
             <div>
               <h2>模型排行</h2>
-              <p>直接查看所有预存模型参数集合及当前历史区间表现。</p>
+              <p>按股票和 1 年、3 年、5 年区间分别记录模型表现。</p>
             </div>
             <div class="research-actions">
               <button id="optimizeSelectedModelButton" type="button">优化选中模型</button>
@@ -79,6 +79,10 @@
             <button id="closePresetParamButton" type="button" class="ghost-button">关闭</button>
           </div>
           <label>
+            预设模型名称
+            <input id="presetParamNameInput" type="text" maxlength="80" autocomplete="off">
+          </label>
+          <label>
             参数 JSON
             <textarea id="presetParamEditor" rows="18" spellcheck="false"></textarea>
           </label>
@@ -86,6 +90,23 @@
             <button id="savePresetParamButton" type="button">保存参数</button>
           </div>
           <div class="security-note">保存时会校验策略类型和参数范围。内置预设会保存为本地副本，避免覆盖系统预设。</div>
+        </form>
+      </dialog>
+
+      <dialog id="optimizationDialog" class="param-dialog">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="optimizationTitle">参数优化报告</h2>
+              <p id="optimizationSubtitle">等待优化结果。</p>
+            </div>
+            <button id="closeOptimizationButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div id="optimizationReport" class="optimization-report"></div>
+          <pre id="optimizationParamPreview" class="code-preview">等待结果...</pre>
+          <div class="dialog-actions">
+            <button id="saveOptimizationButton" type="button" disabled>保存优化参数</button>
+          </div>
         </form>
       </dialog>
 

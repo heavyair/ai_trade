@@ -3,3 +3,5 @@ app-server.err
 server-smoke.out
 server-smoke.err
 node_modules/
+data/*.json
+data/*.tmp

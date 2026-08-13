@@ -20,6 +20,31 @@ http://localhost:3000
 $env:PORT=3001; npm start
 ```
 
+## 服务端预设保存与迁移
+
+用户新建模型、优化后保存的模型参数会写入服务器端 JSON 文件：
+
+```text
+data/custom-presets.json
+data/ranking-records.json
+```
+
+也可以用环境变量修改保存位置：
+
+```powershell
+$env:PRESETS_FILE="D:\ai_trade_data\custom-presets.json"; $env:RANKINGS_FILE="D:\ai_trade_data\ranking-records.json"; npm start
+```
+
+旧版本曾把自定义预设保存到浏览器 `localStorage` 的 `aiTradeCustomStrategyPresets`。新版页面启动后会自动读取旧本地数据，并通过 `/api/presets` 上传到服务器端保存一次。迁移成功后，同一服务器上的其他浏览器也能读取这些预设。
+
+Docker 部署时请挂载持久目录：
+
+```bash
+docker run -d --name ai_trade -p 80:3000 -v /opt/ai_trade_data:/app/data ai_trade:latest
+```
+
+迁移服务器时，复制 `/opt/ai_trade_data/custom-presets.json` 和 `/opt/ai_trade_data/ranking-records.json` 即可保留用户保存的模型参数和模型排行记录。
+
 ## 功能
 
 - 修改 6 位 A 股代码或美股 ticker，例如 `NET`、`QQQ`、`AMD`
