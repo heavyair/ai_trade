@@ -711,7 +711,8 @@ button:disabled {
 
 .local-ladder-grid,
 .ma-rsi-grid,
-.order-grid {
+.order-grid,
+.pe-volume-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
@@ -719,7 +720,8 @@ button:disabled {
 
 .local-ladder-grid label,
 .ma-rsi-grid label,
-.order-grid label {
+.order-grid label,
+.pe-volume-grid label {
   padding: 10px;
   border: 1px solid #e5ebf3;
   border-radius: 8px;
@@ -729,7 +731,8 @@ button:disabled {
 
 .local-ladder-grid input,
 .ma-rsi-grid input,
-.order-grid input {
+.order-grid input,
+.pe-volume-grid input {
   height: 36px;
   padding: 0 10px;
 }
@@ -1385,6 +1388,7 @@ tbody tr:last-child td {
   .local-ladder-grid,
   .ma-rsi-grid,
   .order-grid,
+  .pe-volume-grid,
   .model-compare-options,
   .account-strip,
   .analysis-grid {
@@ -1491,6 +1495,7 @@ tbody tr:last-child td {
   .local-ladder-grid label,
   .ma-rsi-grid label,
   .order-grid label,
+  .pe-volume-grid label,
   .risk-grid label {
     min-height: 48px;
     font-size: 14px;

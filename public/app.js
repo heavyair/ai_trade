@@ -102,6 +102,16 @@ const orderCapitalInput = document.querySelector("#orderCapitalInput");
 const orderAddDropInput = document.querySelector("#orderAddDropInput");
 const orderTakeProfitInput = document.querySelector("#orderTakeProfitInput");
 const orderMaxLotsInput = document.querySelector("#orderMaxLotsInput");
+const peVolumePanel = document.querySelector("#peVolumePanel");
+const peLookbackInput = document.querySelector("#peLookbackInput");
+const peLowPercentileInput = document.querySelector("#peLowPercentileInput");
+const peHighPercentileInput = document.querySelector("#peHighPercentileInput");
+const volumeMaDaysInput = document.querySelector("#volumeMaDaysInput");
+const volumeBuyMultiplierInput = document.querySelector("#volumeBuyMultiplierInput");
+const volumeSellMultiplierInput = document.querySelector("#volumeSellMultiplierInput");
+const peLowTargetInput = document.querySelector("#peLowTargetInput");
+const peNeutralTargetInput = document.querySelector("#peNeutralTargetInput");
+const peHighTargetInput = document.querySelector("#peHighTargetInput");
 const riskEnabledInput = document.querySelector("#riskEnabledInput");
 const riskLookbackInput = document.querySelector("#riskLookbackInput");
 const riskStalledInput = document.querySelector("#riskStalledInput");
@@ -143,6 +153,10 @@ const fields = {
   latestDate: document.querySelector("#latestDate"),
   tradeCount: document.querySelector("#tradeCount"),
   dataRange: document.querySelector("#dataRange"),
+  latestPe: document.querySelector("#latestPe"),
+  peAvailability: document.querySelector("#peAvailability"),
+  latestVolume: document.querySelector("#latestVolume"),
+  volumeAvailability: document.querySelector("#volumeAvailability"),
   chartTitle: document.querySelector("#chartTitle"),
   chartSubtitle: document.querySelector("#chartSubtitle"),
 };
@@ -246,6 +260,18 @@ const defaultOrderGridRule = {
   maxLots: 5,
 };
 
+const defaultPeVolumeRule = {
+  peLookbackDays: 252,
+  lowPePercentile: 30,
+  highPePercentile: 80,
+  volumeMaDays: 20,
+  volumeBuyMultiplier: 1.2,
+  volumeSellMultiplier: 0.7,
+  lowPeTarget: 80,
+  neutralTarget: 40,
+  highPeTarget: 0,
+};
+
 const strategyPresets = {
   optimized: {
     label: "513100 多周期优化策略",
@@ -339,6 +365,20 @@ const strategyPresets = {
       ...defaultNoNewHighExitRule,
     },
   },
+  peVolumeBase: {
+    label: "PE-成交量估值策略",
+    strategyType: "pe-volume",
+    waveThreshold: 5,
+    peVolumeRule: {
+      ...defaultPeVolumeRule,
+    },
+    buyRules: defaultBuyRules.map((rule) => ({ ...rule, enabled: false })),
+    sellRules: defaultSellRules.map((rule) => ({ ...rule, enabled: false })),
+    noNewHighExitRule: {
+      enabled: false,
+      ...defaultNoNewHighExitRule,
+    },
+  },
   original: {
     label: "原始分批加仓策略",
     strategyType: "wave",
@@ -388,6 +428,13 @@ const builtinPresetMetadata = {
     createdAt: "2026-08-12",
     updatedAt: "2026-08-12",
   },
+  peVolumeBase: {
+    targetSymbol: "A股个股",
+    provedPeriod: "待本地验证",
+    creator: "Codex",
+    createdAt: "2026-08-13",
+    updatedAt: "2026-08-13",
+  },
   original: {
     targetSymbol: "通用",
     provedPeriod: "原始规则",
@@ -429,7 +476,7 @@ function getPresetResearchName(name, preset) {
 
 function sanitizeStoredPreset(name, preset) {
   if (!preset || typeof preset !== "object") return null;
-  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(preset.strategyType)
+  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(preset.strategyType)
     ? preset.strategyType
     : "wave";
   return {
@@ -454,6 +501,10 @@ function sanitizeStoredPreset(name, preset) {
     orderGridRule: {
       ...defaultOrderGridRule,
       ...(preset.orderGridRule || {}),
+    },
+    peVolumeRule: {
+      ...defaultPeVolumeRule,
+      ...(preset.peVolumeRule || {}),
     },
     meta: {
       targetSymbol: String(preset.meta && preset.meta.targetSymbol || "通用").slice(0, 24),
@@ -592,7 +643,7 @@ function sanitizeRankingRecord(record) {
     endDate: String(record.endDate || "").slice(0, 16),
     presetName,
     presetLabel: String(record.presetLabel || presetName).slice(0, 100),
-    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(record.strategyType)
+    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
     returnRate: numberValue(record.returnRate),
@@ -785,6 +836,19 @@ function formatPercent(value) {
 
 function formatShares(value) {
   return Math.floor(Number(value)).toLocaleString("zh-CN");
+}
+
+function formatLargeNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "--";
+  if (number >= 100000000) return `${(number / 100000000).toFixed(2)}亿`;
+  if (number >= 10000) return `${(number / 10000).toFixed(2)}万`;
+  return Math.round(number).toLocaleString("zh-CN");
+}
+
+function formatOptionalNumber(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number.toFixed(digits) : "--";
 }
 
 function setStatus(message, isError = false) {
@@ -994,16 +1058,52 @@ function applyOrderGridRule(rule = defaultOrderGridRule) {
   orderMaxLotsInput.value = rule.maxLots;
 }
 
+function readPeVolumeRule() {
+  const readNumber = (input, fallback) => {
+    const value = Number(input && input.value);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const clampPercent = (value) => Math.min(100, Math.max(0, value));
+  const lowPercentile = Math.min(99, Math.max(1, readNumber(peLowPercentileInput, defaultPeVolumeRule.lowPePercentile)));
+  const highPercentile = Math.min(99, Math.max(lowPercentile + 1, readNumber(peHighPercentileInput, defaultPeVolumeRule.highPePercentile)));
+
+  return {
+    peLookbackDays: Math.max(20, Math.round(readNumber(peLookbackInput, defaultPeVolumeRule.peLookbackDays))),
+    lowPePercentile: lowPercentile,
+    highPePercentile: highPercentile,
+    volumeMaDays: Math.max(2, Math.round(readNumber(volumeMaDaysInput, defaultPeVolumeRule.volumeMaDays))),
+    volumeBuyMultiplier: Math.max(0.1, readNumber(volumeBuyMultiplierInput, defaultPeVolumeRule.volumeBuyMultiplier)),
+    volumeSellMultiplier: Math.max(0.1, readNumber(volumeSellMultiplierInput, defaultPeVolumeRule.volumeSellMultiplier)),
+    lowPeTarget: clampPercent(readNumber(peLowTargetInput, defaultPeVolumeRule.lowPeTarget)),
+    neutralTarget: clampPercent(readNumber(peNeutralTargetInput, defaultPeVolumeRule.neutralTarget)),
+    highPeTarget: clampPercent(readNumber(peHighTargetInput, defaultPeVolumeRule.highPeTarget)),
+  };
+}
+
+function applyPeVolumeRule(rule = defaultPeVolumeRule) {
+  peLookbackInput.value = rule.peLookbackDays;
+  peLowPercentileInput.value = rule.lowPePercentile;
+  peHighPercentileInput.value = rule.highPePercentile;
+  volumeMaDaysInput.value = rule.volumeMaDays;
+  volumeBuyMultiplierInput.value = rule.volumeBuyMultiplier;
+  volumeSellMultiplierInput.value = rule.volumeSellMultiplier;
+  peLowTargetInput.value = rule.lowPeTarget;
+  peNeutralTargetInput.value = rule.neutralTarget;
+  peHighTargetInput.value = rule.highPeTarget;
+}
+
 function updateIndicatorUi() {
   const strategyType = indicatorModelSelect.value;
   const isWave = strategyType === "wave";
   const isLocalLadder = strategyType === "local-high-ladder";
   const isMaRsiBand = strategyType === "ma-rsi-band";
   const isOrderGrid = strategyType === "order-grid";
+  const isPeVolume = strategyType === "pe-volume";
   document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", !isWave));
   localLadderPanel.classList.toggle("hidden", !isLocalLadder);
   maRsiBandPanel.classList.toggle("hidden", !isMaRsiBand);
   orderGridPanel.classList.toggle("hidden", !isOrderGrid);
+  peVolumePanel.classList.toggle("hidden", !isPeVolume);
   waveBuyPanel.classList.toggle("hidden", !isWave);
   waveSellPanel.classList.toggle("hidden", !isWave);
 
@@ -1019,6 +1119,10 @@ function updateIndicatorUi() {
     indicatorHighLegend.textContent = "近端高点";
     indicatorLowLegend.textContent = "订单买入";
     indicatorConfirmLegend.textContent = "订单参考";
+  } else if (isPeVolume) {
+    indicatorHighLegend.textContent = "降仓信号";
+    indicatorLowLegend.textContent = "加仓信号";
+    indicatorConfirmLegend.textContent = "PE/量能参考";
   } else {
     indicatorHighLegend.textContent = "波浪高点";
     indicatorLowLegend.textContent = "波浪低点";
@@ -1036,6 +1140,7 @@ function getStrategyTypeLabel(strategyType) {
   if (strategyType === "local-high-ladder") return "近端阶梯";
   if (strategyType === "ma-rsi-band") return "MA-RSI";
   if (strategyType === "order-grid") return "订单网格";
+  if (strategyType === "pe-volume") return "PE-成交量";
   return "波浪";
 }
 
@@ -1064,6 +1169,10 @@ function createConfigFromPreset(presetName, baseConfig) {
     orderGridRule: {
       ...defaultOrderGridRule,
       ...(preset.orderGridRule || {}),
+    },
+    peVolumeRule: {
+      ...defaultPeVolumeRule,
+      ...(preset.peVolumeRule || {}),
     },
     buyRules: cloneRules(preset.buyRules, defaultBuyRules)
       .filter((rule) => rule.enabled !== false)
@@ -1150,6 +1259,7 @@ function fillStrategyPresetControls(presetName) {
   applyLocalLadderRule(preset.localLadderRule || defaultLocalLadderRule);
   applyMaRsiBandRule(preset.maRsiBandRule || defaultMaRsiBandRule);
   applyOrderGridRule(preset.orderGridRule || defaultOrderGridRule);
+  applyPeVolumeRule(preset.peVolumeRule || defaultPeVolumeRule);
   updateIndicatorUi();
 
   if (riskEnabledInput && preset.noNewHighExitRule) {
@@ -1212,6 +1322,7 @@ function readBacktestConfig() {
     localLadderRule: readLocalLadderRule(),
     maRsiBandRule: readMaRsiBandRule(),
     orderGridRule: readOrderGridRule(),
+    peVolumeRule: readPeVolumeRule(),
     playSpeed: Math.max(10, Number(playSpeedInput.value)),
     tradeFee: Math.max(0, Number(tradeFeeInput.value) || 0),
     backtestWindowMode: backtestWindowModeSelect ? backtestWindowModeSelect.value : "all",
@@ -1480,6 +1591,61 @@ function getAtrPercentSeries(rows, days) {
   return values;
 }
 
+function getVolumeAverageSeries(rows, days) {
+  const values = new Array(rows.length).fill(null);
+  let sum = 0;
+  rows.forEach((row, index) => {
+    const volume = Number(row.volume);
+    sum += Number.isFinite(volume) ? volume : 0;
+    if (index >= days) {
+      const oldVolume = Number(rows[index - days].volume);
+      sum -= Number.isFinite(oldVolume) ? oldVolume : 0;
+    }
+    values[index] = index + 1 >= days ? sum / days : null;
+  });
+  return values;
+}
+
+function getPeValue(row) {
+  const pe = Number(row && (row.peTtm || row.pe));
+  return Number.isFinite(pe) && pe > 0 ? pe : null;
+}
+
+function percentile(sortedValues, percentileRank) {
+  if (!sortedValues.length) return null;
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.max(0, Math.round((percentileRank / 100) * (sortedValues.length - 1)))
+  );
+  return sortedValues[index];
+}
+
+function getPeBandSeries(rows, days, lowPercentile, highPercentile) {
+  return rows.map((row, index) => {
+    const start = Math.max(0, index - days + 1);
+    const values = rows
+      .slice(start, index + 1)
+      .map(getPeValue)
+      .filter((value) => value !== null)
+      .sort((a, b) => a - b);
+    if (values.length < Math.min(20, days)) {
+      return { low: null, high: null, sampleSize: values.length };
+    }
+    return {
+      low: percentile(values, lowPercentile),
+      high: percentile(values, highPercentile),
+      sampleSize: values.length,
+    };
+  });
+}
+
+function buildPeVolumeSeries(rows, rule) {
+  return {
+    volumeMa: getVolumeAverageSeries(rows, rule.volumeMaDays),
+    peBands: getPeBandSeries(rows, rule.peLookbackDays, rule.lowPePercentile, rule.highPePercentile),
+  };
+}
+
 function buildMaRsiBandSeries(rows, rule) {
   return {
     fastMa: getMovingAverageSeries(rows, rule.fastMa),
@@ -1552,6 +1718,87 @@ function getMaRsiBandDecision(row, index, series, rule) {
     atr,
     reason: reasons.join("；"),
   };
+}
+
+function getPeVolumeDecision(row, index, series, rule) {
+  const pe = getPeValue(row);
+  const volume = Number(row.volume);
+  const volumeMa = series.volumeMa[index];
+  const band = series.peBands[index] || {};
+  const reasons = [];
+
+  if (!pe || !volume || !volumeMa || !band.low || !band.high) {
+    return {
+      target: 0,
+      pe,
+      volume,
+      volumeMa,
+      peLow: band.low,
+      peHigh: band.high,
+      volumeRatio: null,
+      reason: "PE 或成交量样本不足，空仓等待",
+    };
+  }
+
+  const volumeRatio = volumeMa > 0 ? volume / volumeMa : 0;
+  let target = rule.neutralTarget;
+  reasons.push(`PE ${pe.toFixed(2)}，低分位 ${band.low.toFixed(2)}，高分位 ${band.high.toFixed(2)}；成交量为均量 ${volumeRatio.toFixed(2)} 倍`);
+
+  if (pe <= band.low && volumeRatio >= rule.volumeBuyMultiplier) {
+    target = rule.lowPeTarget;
+    reasons.push(`低 PE 且放量，目标 ${formatPercent(rule.lowPeTarget)}`);
+  } else if (pe >= band.high || volumeRatio <= rule.volumeSellMultiplier) {
+    target = rule.highPeTarget;
+    reasons.push(pe >= band.high
+      ? `高 PE，目标 ${formatPercent(rule.highPeTarget)}`
+      : `缩量，目标 ${formatPercent(rule.highPeTarget)}`);
+  } else {
+    reasons.push(`估值和量能中性，目标 ${formatPercent(rule.neutralTarget)}`);
+  }
+
+  return {
+    target: Math.min(100, Math.max(0, target)),
+    pe,
+    volume,
+    volumeMa,
+    peLow: band.low,
+    peHigh: band.high,
+    volumeRatio,
+    reason: reasons.join("；"),
+  };
+}
+
+function calculatePeVolumePoints(rows, rule) {
+  if (!rows || rows.length === 0) {
+    return { highs: [], lows: [] };
+  }
+
+  const series = buildPeVolumeSeries(rows, rule);
+  const highs = [];
+  const lows = [];
+  let previousTarget = 0;
+
+  rows.forEach((row, index) => {
+    const decision = getPeVolumeDecision(row, index, series, rule);
+    if (decision.target > previousTarget + 0.5) {
+      lows.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        version: lows.length + 1,
+      });
+    } else if (decision.target < previousTarget - 0.5) {
+      highs.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        version: highs.length + 1,
+      });
+    }
+    previousTarget = decision.target;
+  });
+
+  return { highs, lows };
 }
 
 function calculateMaRsiBandPoints(rows, rule) {
@@ -2441,6 +2688,67 @@ function buildOrderGridBacktestStates(rows, config) {
   return states;
 }
 
+function buildPeVolumeBacktestStates(rows, config) {
+  if (!rows || rows.length === 0) return [];
+
+  const rule = config.peVolumeRule || defaultPeVolumeRule;
+  const series = buildPeVolumeSeries(rows, rule);
+  const account = {
+    cash: config.initialCash,
+    shares: 0,
+    totalFees: 0,
+  };
+  const trades = [];
+  const states = [];
+  const targetDownSignals = [];
+  const targetUpSignals = [];
+  let previousTarget = 0;
+  let peakEquity = config.initialCash;
+  let maxDrawdown = 0;
+
+  rows.forEach((row, index) => {
+    const decision = getPeVolumeDecision(row, index, series, rule);
+
+    if (decision.target > previousTarget + 0.5) {
+      targetUpSignals.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        version: targetUpSignals.length + 1,
+      });
+    } else if (decision.target < previousTarget - 0.5) {
+      targetDownSignals.push({
+        date: row.date,
+        price: row.close,
+        rowIndex: index,
+        version: targetDownSignals.length + 1,
+      });
+    }
+
+    const currentRatio = getPositionRatio(account, row);
+    const reference = {
+      type: "pe-volume",
+      label: "PE-成交量",
+      date: row.date,
+      price: row.close,
+    };
+    const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
+    const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
+    rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
+    previousTarget = decision.target;
+
+    const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+    snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = targetDownSignals.slice();
+    snapshot.indicatorLows = targetUpSignals.slice();
+    states.push(snapshot);
+  });
+
+  return states;
+}
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "local-high-ladder") {
     return buildLocalLadderBacktestStates(rows, config);
@@ -2450,6 +2758,9 @@ function buildBacktestStates(rows, config) {
   }
   if (config.strategyType === "order-grid") {
     return buildOrderGridBacktestStates(rows, config);
+  }
+  if (config.strategyType === "pe-volume") {
+    return buildPeVolumeBacktestStates(rows, config);
   }
   return buildWaveBacktestStates(rows, config);
 }
@@ -2510,6 +2821,58 @@ function getCompareVerdict(state) {
   return "未跑赢";
 }
 
+function getModelDataRequirements(config) {
+  if (!config || config.strategyType !== "pe-volume") return [];
+  return ["pe", "volume"];
+}
+
+function getRowsDataAvailability(rows) {
+  const peCount = (rows || []).filter((row) => getPeValue(row) !== null).length;
+  const volumeCount = (rows || []).filter((row) => Number.isFinite(Number(row.volume)) && Number(row.volume) > 0).length;
+  return {
+    pe: peCount > 0,
+    volume: volumeCount > 0,
+    peCount,
+    volumeCount,
+  };
+}
+
+function validateBacktestDataRequirements(rows, entries) {
+  const availability = getRowsDataAvailability(rows);
+  const missing = new Set();
+  (entries || []).forEach((entry) => {
+    getModelDataRequirements(entry.config).forEach((requirement) => {
+      if (!availability[requirement]) missing.add(requirement);
+    });
+  });
+
+  if (missing.size === 0) return;
+  const names = Array.from(missing).map((item) => item === "pe" ? "PE" : "成交量").join("、");
+  const modelNames = (entries || [])
+    .filter((entry) => getModelDataRequirements(entry.config).some((requirement) => missing.has(requirement)))
+    .map((entry) => entry.label)
+    .join("、");
+  throw new Error(`当前股票缺少 ${names} 数据，不能运行需要这些指标的模型：${modelNames || "已选模型"}。请换股票或取消这些模型。`);
+}
+
+function buildRequirementEntries(config) {
+  const entries = [{
+    name: "__current__",
+    label: getCurrentConfigLabel(config),
+    config,
+  }];
+  getSelectedComparisonPresetNames().forEach((presetName) => {
+    const preset = strategyPresets[presetName];
+    if (!preset) return;
+    entries.push({
+      name: presetName,
+      label: preset.label,
+      config: createConfigFromPreset(presetName, config),
+    });
+  });
+  return entries;
+}
+
 function buildModelComparisonResults(rows, currentConfig) {
   if (!rows || rows.length === 0) return [];
 
@@ -2531,6 +2894,8 @@ function buildModelComparisonResults(rows, currentConfig) {
       config: createConfigFromPreset(presetName, currentConfig),
     });
   });
+
+  validateBacktestDataRequirements(rows, entries);
 
   return entries
     .map((entry) => {
@@ -2813,6 +3178,10 @@ function summarizePresetParameters(preset) {
     const rule = { ...defaultMaRsiBandRule, ...(preset.maRsiBandRule || {}) };
     return `快线${rule.fastMa}，慢线${rule.slowMa}，RSI买${rule.rsiBuy}，RSI卖${rule.rsiSell}，ATR${rule.atrDays}`;
   }
+  if (type === "pe-volume") {
+    const rule = { ...defaultPeVolumeRule, ...(preset.peVolumeRule || {}) };
+    return `PE${rule.peLookbackDays}日分位：低${rule.lowPePercentile}%/高${rule.highPePercentile}%；量均${rule.volumeMaDays}日，放量${rule.volumeBuyMultiplier}倍，目标${rule.lowPeTarget}/${rule.neutralTarget}/${rule.highPeTarget}%`;
+  }
   const buyText = cloneRules(preset.buyRules, defaultBuyRules)
     .filter((rule) => rule.enabled !== false)
     .map((rule) => `跌${rule.drop}%到${rule.target}%`)
@@ -2836,6 +3205,7 @@ function getSerializablePreset(preset) {
     localLadderRule: preset.localLadderRule || undefined,
     maRsiBandRule: preset.maRsiBandRule || undefined,
     orderGridRule: preset.orderGridRule || undefined,
+    peVolumeRule: preset.peVolumeRule || undefined,
     buyRules: preset.buyRules || undefined,
     sellRules: preset.sellRules || undefined,
     noNewHighExitRule: preset.noNewHighExitRule || undefined,
@@ -2943,6 +3313,7 @@ function numberNear(text, patterns, fallback) {
 }
 
 function inferStrategyTypeFromText(text) {
+  if (/PE|pe|市盈率|估值|成交量|放量|缩量/.test(text)) return "pe-volume";
   if (/订单|单子|每笔|每单|网格/.test(text)) return "order-grid";
   if (/RSI|rsi|均线|MA|ma|ATR|atr/.test(text)) return "ma-rsi-band";
   if (/近端|最近\d*天.*高点|阶梯/.test(text)) return "local-high-ladder";
@@ -2972,6 +3343,10 @@ function createPresetFromConfig(label, config, meta = {}) {
     orderGridRule: {
       ...defaultOrderGridRule,
       ...(config.orderGridRule || {}),
+    },
+    peVolumeRule: {
+      ...defaultPeVolumeRule,
+      ...(config.peVolumeRule || {}),
     },
     meta,
   };
@@ -3033,6 +3408,16 @@ function createSafePresetDraft(description) {
       rsiSell: numberNear(text, [/RSI.*?卖出.*?(\d+(?:\.\d+)?)/i, /高于\s*(\d+(?:\.\d+)?).*?卖出/], defaultMaRsiBandRule.rsiSell),
       fastMa: numberNear(text, [/快均线\s*(\d+)/, /MA\s*(\d+)/i], defaultMaRsiBandRule.fastMa),
       slowMa: numberNear(text, [/慢均线\s*(\d+)/], defaultMaRsiBandRule.slowMa),
+    };
+  } else if (strategyType === "pe-volume") {
+    config.peVolumeRule = {
+      ...defaultPeVolumeRule,
+      peLookbackDays: numberNear(text, [/PE.*?(\d+)\s*(?:天|日)/i, /市盈率.*?(\d+)\s*(?:天|日)/], defaultPeVolumeRule.peLookbackDays),
+      lowPePercentile: numberNear(text, [/低(?:PE|市盈率).*?(\d+(?:\.\d+)?)\s*%/i, /低估.*?(\d+(?:\.\d+)?)\s*%/], defaultPeVolumeRule.lowPePercentile),
+      highPePercentile: numberNear(text, [/高(?:PE|市盈率).*?(\d+(?:\.\d+)?)\s*%/i, /高估.*?(\d+(?:\.\d+)?)\s*%/], defaultPeVolumeRule.highPePercentile),
+      volumeMaDays: numberNear(text, [/成交量.*?(\d+)\s*(?:天|日)/, /量均.*?(\d+)\s*(?:天|日)/], defaultPeVolumeRule.volumeMaDays),
+      volumeBuyMultiplier: numberNear(text, [/放量.*?(\d+(?:\.\d+)?)\s*倍/, /成交量.*?(\d+(?:\.\d+)?)\s*倍.*?买/], defaultPeVolumeRule.volumeBuyMultiplier),
+      volumeSellMultiplier: numberNear(text, [/缩量.*?(\d+(?:\.\d+)?)\s*倍/, /成交量.*?(\d+(?:\.\d+)?)\s*倍.*?卖/], defaultPeVolumeRule.volumeSellMultiplier),
     };
   } else {
     const threshold = numberNear(text, [/波动\s*(\d+(?:\.\d+)?)\s*%/, /阈值\s*(\d+(?:\.\d+)?)\s*%/], defaultBuyRules[0].drop);
@@ -3139,6 +3524,29 @@ function buildOptimizationCandidates(basePreset, strategyType) {
                 rsiBuy,
                 rsiSell,
               },
+            });
+          });
+        });
+      });
+    });
+  } else if (strategyType === "pe-volume") {
+    [126, 252, 504].forEach((peLookbackDays) => {
+      [[20, 70], [30, 80], [40, 85]].forEach(([lowPePercentile, highPePercentile]) => {
+        [10, 20, 40].forEach((volumeMaDays) => {
+          [1.1, 1.3, 1.6].forEach((volumeBuyMultiplier) => {
+            [0.5, 0.7, 0.9].forEach((volumeSellMultiplier) => {
+              push({
+                ...base,
+                peVolumeRule: {
+                  ...defaultPeVolumeRule,
+                  peLookbackDays,
+                  lowPePercentile,
+                  highPePercentile,
+                  volumeMaDays,
+                  volumeBuyMultiplier,
+                  volumeSellMultiplier,
+                },
+              });
             });
           });
         });
@@ -3273,6 +3681,17 @@ function optimizePresetParameters(presetName) {
   const candidates = buildOptimizationCandidates(presetName, strategyType);
   if (candidates.length === 0) {
     setStatus("这个模型没有可尝试的参数组合。", true);
+    return;
+  }
+
+  try {
+    validateBacktestDataRequirements(rowsForTest, [{
+      name: presetName,
+      label: preset.label,
+      config: createConfigFromPreset(presetName, baseConfig),
+    }]);
+  } catch (error) {
+    setStatus(error.message || "当前数据不满足模型指标要求。", true);
     return;
   }
 
@@ -3957,12 +4376,23 @@ function recomputeBacktestWithLatestConfig() {
   const config = readBacktestConfig();
   stopBacktestReplay();
   const rowsForBacktest = activeBacktestRows || lastRows;
+  try {
+    validateBacktestDataRequirements(rowsForBacktest, buildRequirementEntries(config));
+  } catch (error) {
+    setStatus(error.message || "当前数据不满足模型指标要求。", true);
+    return;
+  }
   backtestStates = buildParallelBacktestStates(rowsForBacktest, config);
   backtestIndex = backtestStates.length;
   const finalState = backtestStates[backtestStates.length - 1];
   renderBacktestState(finalState, backtestStates.length - 1, backtestStates.length, { drawCharts: false });
-  comparisonResults = updateModelComparisonTable(rowsForBacktest, config);
-  recordRankingResultsForLoadedData(config);
+  try {
+    comparisonResults = updateModelComparisonTable(rowsForBacktest, config);
+    recordRankingResultsForLoadedData(config);
+  } catch (error) {
+    setStatus(error.message || "当前数据不满足模型指标要求。", true);
+    return;
+  }
   renderTradeLog(collectComparisonTrades(comparisonResults), getCurrentConfigLabel(config));
   selectedTradeForChart = null;
   selectedTradeChartStates = [];
@@ -3975,6 +4405,8 @@ function recomputeBacktestWithLatestConfig() {
       ? "已按 MA-RSI 波段参数同步重算表现和回测交易。"
       : config.strategyType === "order-grid"
         ? "已按近端高点订单网格参数同步重算表现和回测交易。"
+        : config.strategyType === "pe-volume"
+          ? "已按 PE-成交量参数同步重算表现和回测交易。"
       : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算表现和回测交易。`;
   setStatus(activeBacktestRangeLabel ? `${status} 回测区间：${activeBacktestRangeLabel}。` : status);
 }
@@ -4010,6 +4442,12 @@ function startBacktest() {
   stopBacktestReplay();
   activeBacktestRows = selected.rows;
   activeBacktestRangeLabel = selected.label;
+  try {
+    validateBacktestDataRequirements(activeBacktestRows, buildRequirementEntries(config));
+  } catch (error) {
+    setStatus(error.message || "当前数据不满足模型指标要求。", true);
+    return;
+  }
   backtestStates = buildParallelBacktestStates(activeBacktestRows, config);
   comparisonResults = updateModelComparisonTable(activeBacktestRows, config);
   recordRankingResultsForLoadedData(config);
@@ -4077,16 +4515,20 @@ function drawChart(rows, summary) {
   const isLocalLadder = indicatorType === "local-high-ladder";
   const isMaRsiBand = indicatorType === "ma-rsi-band";
   const isOrderGrid = indicatorType === "order-grid";
+  const isPeVolume = indicatorType === "pe-volume";
   const waveThreshold = getWaveThreshold();
   const localLadderRule = readLocalLadderRule();
   const maRsiBandRule = readMaRsiBandRule();
   const orderGridRule = readOrderGridRule();
+  const peVolumeRule = readPeVolumeRule();
   const indicatorPoints = isLocalLadder
     ? calculateLocalLadderPoints(rows, localLadderRule)
     : isMaRsiBand
       ? calculateMaRsiBandPoints(rows, maRsiBandRule)
       : isOrderGrid
         ? calculateOrderGridPoints(rows, orderGridRule)
+        : isPeVolume
+          ? calculatePeVolumePoints(rows, peVolumeRule)
       : calculateWavePoints(rows, waveThreshold);
   const priceTicks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
   const dateTickIndexes = Array.from(new Set([
@@ -4113,6 +4555,8 @@ function drawChart(rows, summary) {
         ? (isHigh ? "减仓" : "加仓")
         : isOrderGrid
           ? (isHigh ? "近端高" : "订单买")
+          : isPeVolume
+            ? (isHigh ? "降仓" : "加仓")
         : (isHigh ? "波浪高" : "波浪低");
     const baseY = isHigh ? y - 38 : y + 18;
     const labelX = Math.min(Math.max(x + 8, pad.left + 4), width - pad.right - 126);
@@ -4143,6 +4587,8 @@ function drawChart(rows, summary) {
       ? `MA-RSI：快 ${maRsiBandRule.fastMa} / 慢 ${maRsiBandRule.slowMa} / RSI ${maRsiBandRule.rsiDays}；加仓信号 ${indicatorPoints.lows.length}，减仓信号 ${indicatorPoints.highs.length}`
       : isOrderGrid
         ? `订单网格：${orderGridRule.lookbackDays}日高点回撤 ${formatPercent(orderGridRule.entryDrop)} 首单；每单 ${formatPercent(orderGridRule.orderCapitalPercent)} / 加仓跌幅 ${formatPercent(orderGridRule.addDrop)} / 单笔止盈 ${formatPercent(orderGridRule.takeProfit)}`
+        : isPeVolume
+          ? `PE-成交量：PE${peVolumeRule.peLookbackDays}日分位低${formatPercent(peVolumeRule.lowPePercentile)}高${formatPercent(peVolumeRule.highPePercentile)}；量均${peVolumeRule.volumeMaDays}日，信号 ${indicatorPoints.lows.length}/${indicatorPoints.highs.length}`
     : `波浪阈值 ${formatPercent(waveThreshold)}：高点 ${indicatorPoints.highs.length}，低点 ${indicatorPoints.lows.length}`;
 
   chart.style.width = `${width}px`;
@@ -4189,6 +4635,10 @@ function renderTable(rows) {
           <td>${formatPrice(row.low)}</td>
           <td>${formatPrice(row.close)}</td>
           <td class="${changeClass}">${row.changePercent.toFixed(2)}%</td>
+          <td>${formatLargeNumber(row.volume)}</td>
+          <td>${formatLargeNumber(row.amount)}</td>
+          <td>${formatOptionalNumber(row.turnover, 2)}%</td>
+          <td>${formatOptionalNumber(row.peTtm || row.pe, 2)}</td>
         </tr>
       `;
     })
@@ -4222,6 +4672,16 @@ function renderResult(result) {
   fields.latestDate.textContent = `${summary.latest.date} ${summary.latest.changePercent.toFixed(2)}%`;
   fields.tradeCount.textContent = String(summary.count);
   fields.dataRange.textContent = `${summary.startDate} 至 ${summary.endDate}`;
+  if (fields.latestPe) fields.latestPe.textContent = formatOptionalNumber(summary.latest.peTtm || summary.latest.pe, 2);
+  if (fields.peAvailability) {
+    const peInfo = summary.indicators && summary.indicators.pe;
+    fields.peAvailability.textContent = peInfo && peInfo.available ? `${peInfo.count} 日有 PE` : "PE 不可用";
+  }
+  if (fields.latestVolume) fields.latestVolume.textContent = formatLargeNumber(summary.latest.volume);
+  if (fields.volumeAvailability) {
+    const volumeInfo = summary.indicators && summary.indicators.volume;
+    fields.volumeAvailability.textContent = volumeInfo && volumeInfo.available ? `${volumeInfo.count} 日有成交量` : "成交量不可用";
+  }
   fields.chartTitle.textContent = displayName;
   fields.chartSubtitle.textContent = `${startInput.value} 至 ${endInput.value}`;
   renderCompanyInfo(result);
@@ -4478,6 +4938,8 @@ indicatorModelSelect.addEventListener("change", () => {
         ? "已切换到 MA-RSI 波段模型。"
         : strategyType === "order-grid"
           ? "已切换到近端高点订单网格模型。"
+          : strategyType === "pe-volume"
+            ? "已切换到 PE-成交量指标模型。"
         : "已切换到波浪模型。";
     refreshIndicatorView(message);
   }
@@ -4555,6 +5017,24 @@ waveThresholdInput.addEventListener("input", () => {
   input.addEventListener("input", () => {
     if (indicatorModelSelect.value === "order-grid") {
       refreshIndicatorView("已按近端高点订单网格参数刷新历史图表。");
+    }
+  });
+});
+
+[
+  peLookbackInput,
+  peLowPercentileInput,
+  peHighPercentileInput,
+  volumeMaDaysInput,
+  volumeBuyMultiplierInput,
+  volumeSellMultiplierInput,
+  peLowTargetInput,
+  peNeutralTargetInput,
+  peHighTargetInput,
+].forEach((input) => {
+  input.addEventListener("input", () => {
+    if (indicatorModelSelect.value === "pe-volume") {
+      refreshIndicatorView("已按 PE-成交量参数刷新历史图表。");
     }
   });
 });

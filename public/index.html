@@ -224,6 +224,16 @@
           <strong id="tradeCount">--</strong>
           <small id="dataRange">--</small>
         </article>
+        <article class="metric">
+          <span>最新 PE-TTM</span>
+          <strong id="latestPe">--</strong>
+          <small id="peAvailability">--</small>
+        </article>
+        <article class="metric">
+          <span>最新成交量</span>
+          <strong id="latestVolume">--</strong>
+          <small id="volumeAvailability">--</small>
+        </article>
       </section>
 
       <section class="chart-section" aria-label="价格走势图">
@@ -240,6 +250,7 @@
                 <option value="local-high-ladder">近端高点阶梯指标</option>
                 <option value="ma-rsi-band">MA-RSI 波段模型</option>
                 <option value="order-grid">近端高点订单网格模型</option>
+                <option value="pe-volume">PE-成交量指标模型</option>
               </select>
             </label>
             <label class="wave-param">
@@ -492,6 +503,51 @@
               </div>
             </div>
 
+            <div id="peVolumePanel" class="rule-panel hidden">
+              <div class="rule-head">
+                <h3>PE-成交量参数</h3>
+                <span>低估且放量加仓，高估或缩量降仓；需要 PE 和成交量数据</span>
+              </div>
+              <div class="pe-volume-grid">
+                <label>
+                  PE 分位天数
+                  <input id="peLookbackInput" type="number" min="20" max="1000" step="1" value="252">
+                </label>
+                <label>
+                  低 PE 分位 %
+                  <input id="peLowPercentileInput" type="number" min="1" max="99" step="1" value="30">
+                </label>
+                <label>
+                  高 PE 分位 %
+                  <input id="peHighPercentileInput" type="number" min="1" max="99" step="1" value="80">
+                </label>
+                <label>
+                  成交量均线天数
+                  <input id="volumeMaDaysInput" type="number" min="2" max="250" step="1" value="20">
+                </label>
+                <label>
+                  放量倍数
+                  <input id="volumeBuyMultiplierInput" type="number" min="0.1" max="10" step="0.1" value="1.2">
+                </label>
+                <label>
+                  缩量倍数
+                  <input id="volumeSellMultiplierInput" type="number" min="0.1" max="10" step="0.1" value="0.7">
+                </label>
+                <label>
+                  低估放量仓位 %
+                  <input id="peLowTargetInput" type="number" min="0" max="100" step="1" value="80">
+                </label>
+                <label>
+                  中性仓位 %
+                  <input id="peNeutralTargetInput" type="number" min="0" max="100" step="1" value="40">
+                </label>
+                <label>
+                  高估/缩量仓位 %
+                  <input id="peHighTargetInput" type="number" min="0" max="100" step="1" value="0">
+                </label>
+              </div>
+            </div>
+
             <div id="waveBuyPanel" class="rule-panel hidden">
               <div class="rule-head">
                 <h3>买入规则</h3>
@@ -704,6 +760,10 @@
                 <th>最低</th>
                 <th>收盘</th>
                 <th>涨跌幅</th>
+                <th>成交量</th>
+                <th>成交额</th>
+                <th>换手率</th>
+                <th>PE-TTM</th>
               </tr>
             </thead>
             <tbody id="dataTable"></tbody>

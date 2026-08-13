@@ -53,7 +53,7 @@ function normalizePresetKey(name) {
 
 function sanitizeServerPreset(name, preset) {
   if (!preset || typeof preset !== "object" || Array.isArray(preset)) return null;
-  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(preset.strategyType)
+  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(preset.strategyType)
     ? preset.strategyType
     : "wave";
   return {
@@ -124,7 +124,7 @@ function sanitizeServerRankingRecord(record) {
     endDate: String(record.endDate || "").slice(0, 16),
     presetName,
     presetLabel: String(record.presetLabel || presetName).slice(0, 100),
-    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid"].includes(record.strategyType)
+    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
     returnRate: toFiniteNumber(record.returnRate),
@@ -284,6 +284,9 @@ function parseEastMoneyKlineRow(row) {
     changePercent: Number(parts[8]),
     change: Number(parts[9]),
     turnover: Number(parts[10]),
+    pe: null,
+    peTtm: null,
+    pb: null,
   };
 }
 
@@ -302,6 +305,8 @@ function summarize(symbol, name, rows) {
   const highest = rows.reduce((best, item) => (item.high > best.high ? item : best), rows[0]);
   const lowest = rows.reduce((best, item) => (item.low < best.low ? item : best), rows[0]);
   const latest = rows[rows.length - 1];
+  const peRows = rows.filter((row) => Number.isFinite(row.peTtm) && row.peTtm > 0);
+  const volumeRows = rows.filter((row) => Number.isFinite(row.volume) && row.volume > 0);
 
   return {
     symbol,
@@ -323,6 +328,23 @@ function summarize(symbol, name, rows) {
       date: latest.date,
       close: latest.close,
       changePercent: latest.changePercent,
+      volume: latest.volume,
+      amount: latest.amount,
+      turnover: latest.turnover,
+      peTtm: latest.peTtm,
+      pe: latest.pe,
+      pb: latest.pb,
+    },
+    indicators: {
+      volume: {
+        available: volumeRows.length > 0,
+        count: volumeRows.length,
+      },
+      pe: {
+        available: peRows.length > 0,
+        count: peRows.length,
+        latest: latest.peTtm,
+      },
     },
   };
 }
@@ -394,6 +416,82 @@ function buildEastMoneyUrls({ code, market, start, end }) {
   });
 }
 
+function buildEastMoneyValuationUrls({ code }) {
+  return ["https:", "http:"].map((protocol) => {
+    const url = new URL(`${protocol}//datacenter-web.eastmoney.com/api/data/v1/get`);
+    url.searchParams.set("reportName", "RPT_VALUEANALYSIS_DET");
+    url.searchParams.set("columns", "SECURITY_CODE,TRADE_DATE,PE_TTM,PE_LAR,PB_MRQ,CLOSE_PRICE");
+    url.searchParams.set("filter", `(SECURITY_CODE="${code}")`);
+    url.searchParams.set("pageNumber", "1");
+    url.searchParams.set("pageSize", "6000");
+    url.searchParams.set("sortTypes", "1");
+    url.searchParams.set("sortColumns", "TRADE_DATE");
+    url.searchParams.set("source", "WEB");
+    url.searchParams.set("client", "WEB");
+    url.searchParams.set("_", String(Date.now()));
+    return url;
+  });
+}
+
+function parseDateOnly(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function parseEastMoneyValuationRows(payload, start, end) {
+  const data = payload && payload.result && Array.isArray(payload.result.data)
+    ? payload.result.data
+    : [];
+  return data
+    .map((item) => ({
+      date: parseDateOnly(item.TRADE_DATE),
+      peTtm: Number(item.PE_TTM),
+      pe: Number(item.PE_LAR),
+      pb: Number(item.PB_MRQ),
+      close: Number(item.CLOSE_PRICE),
+    }))
+    .filter((item) => item.date >= start && item.date <= end)
+    .filter((item) => Number.isFinite(item.peTtm) || Number.isFinite(item.pe) || Number.isFinite(item.pb))
+    .sort((a, b) => itemDateCompare(a.date, b.date));
+}
+
+function itemDateCompare(a, b) {
+  return String(a).localeCompare(String(b));
+}
+
+async function fetchEastMoneyValuations({ code, start, end }) {
+  try {
+    const payload = await getJsonWithRetry(buildEastMoneyValuationUrls({ code }), {
+      "User-Agent": "Mozilla/5.0 A-share local dashboard",
+      Referer: "https://data.eastmoney.com/gzfx/",
+    });
+    return parseEastMoneyValuationRows(payload, start, end);
+  } catch (error) {
+    return [];
+  }
+}
+
+function mergeValuationsIntoRows(rows, valuations) {
+  if (!Array.isArray(valuations) || valuations.length === 0) {
+    return rows.map((row) => ({ ...row, pe: null, peTtm: null, pb: null }));
+  }
+
+  let valuationIndex = 0;
+  let latestValuation = null;
+  return rows.map((row) => {
+    while (valuationIndex < valuations.length && valuations[valuationIndex].date <= row.date) {
+      latestValuation = valuations[valuationIndex];
+      valuationIndex += 1;
+    }
+
+    return {
+      ...row,
+      peTtm: latestValuation && Number.isFinite(latestValuation.peTtm) ? latestValuation.peTtm : null,
+      pe: latestValuation && Number.isFinite(latestValuation.pe) ? latestValuation.pe : null,
+      pb: latestValuation && Number.isFinite(latestValuation.pb) ? latestValuation.pb : null,
+    };
+  });
+}
+
 function toYahooSymbol(code, market) {
   if (market === "US") return code;
   if (market === "1") return `${code}.SS`;
@@ -427,6 +525,9 @@ function parseYahooRows(payload) {
         changePercent: 0,
         change: 0,
         turnover: 0,
+        pe: null,
+        peTtm: null,
+        pb: null,
       };
 
       if (index > 0 && Number.isFinite(row.close)) {
@@ -527,6 +628,11 @@ async function fetchKlines({ code, start, end }) {
     }
   }
 
+  const valuations = market === "US"
+    ? []
+    : await fetchEastMoneyValuations({ code, start, end });
+  const rows = mergeValuationsIntoRows(result.rows, valuations);
+
   return {
     source: result.source,
     code,
@@ -540,8 +646,8 @@ async function fetchKlines({ code, start, end }) {
       source: result.source,
       ...(result.info || {}),
     },
-    summary: summarize({ code, market, name: result.name }, result.name, result.rows),
-    rows: result.rows,
+    summary: summarize({ code, market, name: result.name }, result.name, rows),
+    rows,
   };
 }
 
