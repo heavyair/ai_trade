@@ -29,7 +29,7 @@ services:
       DATABASE_URL: postgres://ai_trade:ai_trade@postgres:5432/ai_trade
       AKSHARE_PYTHON: /opt/akshare-venv/bin/python
       RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_FROM: "${EMAIL_FROM:-AI Trade <onboarding@resend.dev>}"
+      EMAIL_FROM: "${EMAIL_FROM:-AI Trade <noreply@lesminis.ca>}"
       APP_PUBLIC_URL: "${APP_PUBLIC_URL:-http://172.105.9.107}"
     ports:
       - "80:3000"

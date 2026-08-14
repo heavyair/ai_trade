@@ -9,7 +9,7 @@ ENV RANKINGS_FILE=/app/data/ranking-records.json
 ENV USERS_FILE=/app/data/users.json
 ENV AKSHARE_PYTHON=/opt/akshare-venv/bin/python
 ENV DATABASE_URL=postgres://ai_trade:ai_trade@postgres:5432/ai_trade
-ENV EMAIL_FROM="AI Trade <onboarding@resend.dev>"
+ENV EMAIL_FROM="AI Trade <noreply@lesminis.ca>"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \

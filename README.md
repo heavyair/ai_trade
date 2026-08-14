@@ -44,7 +44,7 @@ docker compose up -d --build
 
 ```powershell
 $env:RESEND_API_KEY="你的 Resend API Key"
-$env:EMAIL_FROM="AI Trade <onboarding@resend.dev>"
+$env:EMAIL_FROM="AI Trade <noreply@lesminis.ca>"
 $env:APP_PUBLIC_URL="http://172.105.9.107"
 docker compose up -d --build
 ```

@@ -18,7 +18,7 @@ const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
-const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <onboarding@resend.dev>";
+const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
