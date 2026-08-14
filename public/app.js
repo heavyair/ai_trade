@@ -26,6 +26,7 @@ const authEmailInput = document.querySelector("#authEmailInput");
 const authPasswordInput = document.querySelector("#authPasswordInput");
 const authMessage = document.querySelector("#authMessage");
 const submitAuthButton = document.querySelector("#submitAuthButton");
+const forgotPasswordButton = document.querySelector("#forgotPasswordButton");
 const newModelAuthNote = document.querySelector("#newModelAuthNote");
 const chart = document.querySelector("#priceChart");
 const returnCompareChart = document.querySelector("#returnCompareChart");
@@ -232,10 +233,15 @@ const i18n = {
     freeRegister: "免费注册",
     email: "电子邮件",
     password: "密码",
+    forgotPassword: "忘记密码",
     registerHint: "注册后请验证电子邮件，然后可把新模型和优化参数保存到服务器端。",
+    enterEmail: "请输入电子邮件。",
     enterEmailPassword: "请输入电子邮件和密码。",
     registering: "正在注册...",
     loggingIn: "正在登录...",
+    sendingPasswordReset: "正在发送密码重置邮件...",
+    passwordResetSent: "如果这个邮箱已注册，密码重置邮件会发送到该邮箱。",
+    passwordResetEmailDisabled: "当前没有启用邮件发送服务，无法发送密码重置邮件。",
     authFailed: "账户操作失败。",
     verificationFailed: "验证邮件发送失败",
     verifyEmailToSave: "请到邮箱点击验证链接，验证后就可以保存模型。",
@@ -310,10 +316,15 @@ const i18n = {
     freeRegister: "Free Register",
     email: "Email",
     password: "Password",
+    forgotPassword: "Forgot password",
     registerHint: "After registration, please verify your email before saving new models or optimized parameters on the server.",
+    enterEmail: "Please enter an email.",
     enterEmailPassword: "Please enter an email and password.",
     registering: "Registering...",
     loggingIn: "Signing in...",
+    sendingPasswordReset: "Sending password reset email...",
+    passwordResetSent: "If this email is registered, a password reset email will be sent.",
+    passwordResetEmailDisabled: "Email sending is not enabled, so a reset email cannot be sent.",
     authFailed: "Account action failed.",
     verificationFailed: "Verification email failed",
     verifyEmailToSave: "Please open the verification link in your email. After verification, you can save models.",
@@ -1304,6 +1315,7 @@ function setAuthMode(mode) {
   if (authLoginTab) authLoginTab.classList.toggle("active", authMode === "login");
   if (authRegisterTab) authRegisterTab.classList.toggle("active", authMode === "register");
   if (submitAuthButton) submitAuthButton.textContent = authMode === "register" ? t("freeRegister") : t("login");
+  if (forgotPasswordButton) forgotPasswordButton.classList.toggle("hidden", authMode !== "login");
   setAuthMessage(authMode === "register" ? t("registerHint") : "", false);
 }
 
@@ -1369,6 +1381,33 @@ async function submitAuthForm() {
     setAuthMessage(error.message || t("authFailed"), true);
   } finally {
     if (submitAuthButton) submitAuthButton.disabled = false;
+  }
+}
+
+async function requestPasswordReset() {
+  if (!authEmailInput) return;
+  const email = authEmailInput.value.trim();
+  if (!email) {
+    setAuthMessage(t("enterEmail"), true);
+    authEmailInput.focus();
+    return;
+  }
+  if (forgotPasswordButton) forgotPasswordButton.disabled = true;
+  setAuthMessage(t("sendingPasswordReset"), false);
+  try {
+    const response = await fetch("/api/auth/forgot-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email }),
+    });
+    const payload = await readJsonResponse(response, t("authFailed"));
+    setAuthMessage(payload.emailEnabled === false ? t("passwordResetEmailDisabled") : t("passwordResetSent"), payload.emailEnabled === false);
+  } catch (error) {
+    setAuthMessage(error.message || t("authFailed"), true);
+  } finally {
+    if (forgotPasswordButton) forgotPasswordButton.disabled = false;
   }
 }
 
@@ -6272,6 +6311,12 @@ if (authForm) {
   authForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitAuthForm();
+  });
+}
+
+if (forgotPasswordButton) {
+  forgotPasswordButton.addEventListener("click", () => {
+    requestPasswordReset();
   });
 }
 

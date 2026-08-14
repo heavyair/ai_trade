@@ -99,6 +99,14 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS strategy_presets (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
@@ -571,6 +579,159 @@ async function verifyEmailToken(req, res, token) {
   }
 }
 
+async function sendPasswordResetEmail(req, email) {
+  if (!RESEND_API_KEY) {
+    return { sent: false, emailEnabled: false };
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  const userResult = await dbPool.query("SELECT id, email FROM users WHERE email = $1", [normalizedEmail]);
+  const user = userResult.rows[0];
+  if (!user) {
+    return { sent: false, emailEnabled: true };
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  await dbPool.query(`
+    INSERT INTO password_reset_tokens (token_hash, user_id, expires_at, created_at)
+    VALUES ($1, $2, $3, NOW())
+  `, [sha256(token), user.id, expiresAt]);
+
+  const resetUrl = `${getRequestOrigin(req)}/api/auth/reset-password?token=${encodeURIComponent(token)}`;
+  const escapedUrl = escapeHtml(resetUrl);
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>重置你的 AI Trade 密码</h2>
+      <p>请点击下面的按钮设置新密码。这个链接只能使用一次。</p>
+      <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;border-radius:6px;background:#1f7a8c;color:#fff;text-decoration:none">重置密码</a></p>
+      <p>如果按钮无法打开，请复制这个链接到浏览器：</p>
+      <p style="word-break:break-all">${escapedUrl}</p>
+      <p>这个链接将在 1 小时后失效。如果不是你本人操作，可以忽略这封邮件。</p>
+      <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
+      <h2>Reset your AI Trade password</h2>
+      <p>Click the button below to set a new password. This link can be used only once.</p>
+      <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;border-radius:6px;background:#1f7a8c;color:#fff;text-decoration:none">Reset password</a></p>
+      <p>If the button does not open, copy this link into your browser:</p>
+      <p style="word-break:break-all">${escapedUrl}</p>
+      <p>This link expires in 1 hour. If you did not request this, you can ignore this email.</p>
+    </div>
+  `;
+  const text = [
+    "重置你的 AI Trade 密码",
+    "",
+    "打开下面链接设置新密码。这个链接只能使用一次，并将在 1 小时后失效。",
+    resetUrl,
+    "",
+    "Reset your AI Trade password",
+    "",
+    "Open the link below to set a new password. This link can be used only once and expires in 1 hour.",
+    resetUrl,
+  ].join("\n");
+
+  await postJsonToResend({
+    from: EMAIL_FROM,
+    to: [normalizedEmail],
+    subject: "重置你的 AI Trade 密码",
+    html,
+    text,
+  });
+
+  return { sent: true, emailEnabled: true };
+}
+
+function sendPasswordResetForm(req, res, token) {
+  const escapedToken = escapeHtml(token);
+  const appUrl = escapeHtml(getRequestOrigin(req));
+  sendHtml(res, 200, `<!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>重置 AI Trade 密码</title>
+        <style>
+          body{font-family:Arial,sans-serif;margin:0;background:#f4fafb;color:#1f2937}
+          main{max-width:440px;margin:8vh auto;padding:24px;background:#fff;border:1px solid #d4e8ee;border-radius:8px}
+          label,button{display:block;width:100%;box-sizing:border-box}
+          input{width:100%;box-sizing:border-box;margin-top:6px;padding:11px;border:1px solid #cfd8e3;border-radius:6px}
+          button{margin-top:16px;padding:11px;border:0;border-radius:6px;background:#1f7a8c;color:#fff;font-weight:700}
+          p{line-height:1.5;color:#607182}
+          a{color:#1f7a8c}
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>重置密码</h1>
+          <p>请输入新密码，至少 8 个字符。提交后会自动登录。</p>
+          <form method="post" action="/api/auth/reset-password">
+            <input type="hidden" name="token" value="${escapedToken}">
+            <label>新密码
+              <input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" required>
+            </label>
+            <button type="submit">设置新密码</button>
+          </form>
+          <p><a href="${appUrl}">返回 AI Trade</a></p>
+        </main>
+      </body>
+    </html>`);
+}
+
+async function resetPasswordWithToken(req, res, token, password) {
+  const tokenHash = sha256(token);
+  const safePassword = sanitizePassword(password);
+  const salt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(safePassword, salt);
+  const client = await dbPool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      SELECT password_reset_tokens.user_id, users.email
+      FROM password_reset_tokens
+      JOIN users ON users.id = password_reset_tokens.user_id
+      WHERE password_reset_tokens.token_hash = $1
+        AND password_reset_tokens.used_at IS NULL
+        AND password_reset_tokens.expires_at > NOW()
+      FOR UPDATE
+    `, [tokenHash]);
+    if (result.rows.length === 0) {
+      await client.query("ROLLBACK");
+      sendHtml(res, 400, "<!doctype html><meta charset=\"utf-8\"><title>重置失败</title><p>重置链接无效或已过期，请回到 App 重新发送密码重置邮件。</p>");
+      return;
+    }
+
+    const row = result.rows[0];
+    await client.query(`
+      UPDATE users
+      SET salt = $1,
+          password_hash = $2,
+          email_verified_at = COALESCE(email_verified_at, NOW()),
+          updated_at = NOW()
+      WHERE id = $3
+    `, [salt, passwordHash, row.user_id]);
+    await client.query("UPDATE password_reset_tokens SET used_at = NOW() WHERE token_hash = $1", [tokenHash]);
+    await client.query("DELETE FROM sessions WHERE user_id = $1", [row.user_id]);
+    const session = createSessionToken();
+    await client.query(`
+      INSERT INTO sessions (token_hash, user_id, expires_at)
+      VALUES ($1, $2, $3)
+    `, [sha256(session.token), row.user_id, new Date(session.expiresAt)]);
+    await client.query("COMMIT");
+
+    setSessionCookie(res, session.token, session.expiresAt);
+    const appUrl = escapeHtml(getRequestOrigin(req));
+    sendHtml(res, 200, `<!doctype html><meta charset="utf-8"><title>密码已更新</title><p>密码已更新，并已自动登录。</p><p><a href="${appUrl}">返回 AI Trade</a></p>`);
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      // Ignore rollback failures after the original error.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function ensureDataDir(filePath = PRESETS_FILE) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -921,6 +1082,34 @@ async function handleAuthApi(req, res, action) {
       return;
     }
 
+    if (action === "reset-password" && req.method === "GET") {
+      const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      const token = String(requestUrl.searchParams.get("token") || "");
+      if (!token) {
+        sendHtml(res, 400, "<!doctype html><meta charset=\"utf-8\"><title>重置失败</title><p>重置链接缺少 token。</p>");
+        return;
+      }
+      sendPasswordResetForm(req, res, token);
+      return;
+    }
+
+    if (action === "reset-password" && req.method === "POST") {
+      const body = await readRequestBody(req);
+      const form = new URLSearchParams(body);
+      const token = String(form.get("token") || "");
+      const password = String(form.get("password") || "");
+      if (!token) {
+        sendHtml(res, 400, "<!doctype html><meta charset=\"utf-8\"><title>重置失败</title><p>重置链接缺少 token。</p>");
+        return;
+      }
+      try {
+        await resetPasswordWithToken(req, res, token, password);
+      } catch (error) {
+        sendHtml(res, error.statusCode || 400, `<!doctype html><meta charset="utf-8"><title>重置失败</title><p>${escapeHtml(error.message || "密码重置失败。")}</p>`);
+      }
+      return;
+    }
+
     if (action === "session" && req.method === "GET") {
       const user = await getCurrentUser(req);
       sendJson(res, 200, { authenticated: Boolean(user), user });
@@ -950,6 +1139,21 @@ async function handleAuthApi(req, res, action) {
         return;
       }
       sendJson(res, 200, { sent: result.sent, emailEnabled: result.emailEnabled });
+      return;
+    }
+
+    if (action === "forgot-password" && req.method === "POST") {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const email = normalizeEmail(payload.email);
+      const result = await sendPasswordResetEmail(req, email);
+      sendJson(res, 200, {
+        sent: result.sent,
+        emailEnabled: result.emailEnabled,
+        message: result.emailEnabled
+          ? "如果这个邮箱已注册，密码重置邮件会发送到该邮箱。"
+          : "当前没有启用邮件发送服务，无法发送密码重置邮件。",
+      });
       return;
     }
 
