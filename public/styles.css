@@ -209,12 +209,35 @@ body {
   padding: 18px;
 }
 
+.simulation-overview {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.simulation-state-grid,
+.simulation-action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.simulation-action-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr);
   gap: 24px;
   align-items: end;
   padding: 22px;
+}
+
+.dialog-section {
+  margin: 0;
+  border: 0;
+  box-shadow: none;
 }
 
 .brand {
@@ -883,6 +906,72 @@ button:disabled {
   gap: 10px;
 }
 
+.selected-model-summary {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+}
+
+.selected-model-summary strong {
+  font-size: 15px;
+}
+
+.selected-model-summary span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.model-selector-dialog {
+  width: min(1120px, calc(100% - 28px));
+}
+
+.data-selector-dialog {
+  width: min(980px, calc(100% - 28px));
+}
+
+.market-data-dialog,
+.results-dialog {
+  width: min(1180px, calc(100% - 28px));
+}
+
+.results-dialog .backtest-section,
+.market-data-dialog .chart-section,
+.market-data-dialog .company-card,
+.market-data-dialog .summary-grid {
+  margin: 0;
+}
+
+.results-dialog .backtest-section {
+  max-height: min(92vh, 920px);
+  overflow: auto;
+}
+
+.model-selector-dialog .param-dialog-body {
+  overflow-x: hidden;
+}
+
+.model-selector-subject {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) 84px minmax(0, 1.1fr) 78px 92px 132px;
+  gap: 10px;
+  align-items: center;
+  padding: 0 10px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-selector-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-height: min(58vh, 620px);
+  overflow: auto;
+}
+
 .current-config-option {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -905,14 +994,18 @@ button:disabled {
 
 .model-preset-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1.35fr) 84px minmax(0, 1.1fr) 78px 92px 58px 58px;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 10px;
   border: 1px solid #e5ebf3;
   border-radius: 8px;
   background: #fff;
   font-size: 12px;
+}
+
+.model-preset-card > * {
+  min-width: 0;
 }
 
 .model-preset-card label {
@@ -947,6 +1040,27 @@ button:disabled {
   grid-column: 2;
   color: var(--muted);
   font-weight: 700;
+}
+
+.model-selector-return,
+.model-selector-drawdown,
+.model-selector-date,
+.model-selector-range {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.model-selector-return,
+.model-selector-drawdown,
+.model-selector-date {
+  font-weight: 800;
+}
+
+.model-selector-range {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preset-param-button,
@@ -1961,6 +2075,17 @@ tbody tr:last-child td {
     display: none;
   }
 
+  .simulation-state-grid,
+  .simulation-action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog-section {
+    grid-template-columns: 1fr;
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+
   .company-card,
   .metric {
     border-radius: 0;
@@ -2054,12 +2179,38 @@ tbody tr:last-child td {
     border-radius: 0;
   }
 
+  .model-selector-subject {
+    display: none;
+  }
+
+  .model-selector-list {
+    max-height: none;
+    overflow: visible;
+  }
+
   .model-preset-card {
     grid-template-columns: 1fr 1fr;
   }
 
   .model-preset-card label {
     grid-column: 1 / -1;
+  }
+
+  .model-selector-range {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+
+  .model-selector-return::before,
+  .model-selector-range::before,
+  .model-selector-drawdown::before,
+  .model-selector-date::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
   }
 
   .param-dialog {
@@ -2071,6 +2222,12 @@ tbody tr:last-child td {
 
   .param-dialog-body {
     height: 100dvh;
+  }
+
+  .results-dialog .backtest-section {
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
   }
 
   .preset-param-button,

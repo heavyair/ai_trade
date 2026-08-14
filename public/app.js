@@ -49,6 +49,22 @@ const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
 const applyPresetButton = document.querySelector("#applyPresetButton");
 const compareCurrentConfigInput = document.querySelector("#compareCurrentConfigInput");
 const modelCompareOptions = document.querySelector("#modelCompareOptions");
+const openModelSelectorButton = document.querySelector("#openModelSelectorButton");
+const openDataSelectorButton = document.querySelector("#openDataSelectorButton");
+const openMarketDataButton = document.querySelector("#openMarketDataButton");
+const openResultsDialogButton = document.querySelector("#openResultsDialogButton");
+const closeModelSelectorButton = document.querySelector("#closeModelSelectorButton");
+const doneModelSelectorButton = document.querySelector("#doneModelSelectorButton");
+const modelSelectorDialog = document.querySelector("#modelSelectorDialog");
+const dataSelectorDialog = document.querySelector("#dataSelectorDialog");
+const closeDataSelectorButton = document.querySelector("#closeDataSelectorButton");
+const marketDataDialog = document.querySelector("#marketDataDialog");
+const closeMarketDataButton = document.querySelector("#closeMarketDataButton");
+const resultsDialog = document.querySelector("#resultsDialog");
+const closeResultsDialogButton = document.querySelector("#closeResultsDialogButton");
+const selectedModelSummary = document.querySelector("#selectedModelSummary");
+const selectedDataSummary = document.querySelector("#selectedDataSummary");
+const selectedResultSummary = document.querySelector("#selectedResultSummary");
 const modelCompareTable = document.querySelector("#modelCompareTable");
 const modelPerformancePanel = document.querySelector("#modelPerformancePanel");
 const showModelPerformanceButton = document.querySelector("#showModelPerformanceButton");
@@ -1195,6 +1211,16 @@ function setWizardPage(pageName) {
   if (nextPage === "ranking") {
     renderModelRanking();
   }
+  if (nextPage === "simulation") {
+    renderSimulationOverview();
+    window.setTimeout(() => {
+      if (getSelectedComparisonPresetNames().length === 0) {
+        openModelSelectorDialog();
+      } else if (!lastRows || !lastSummary) {
+        openDataSelectorDialog();
+      }
+    }, 80);
+  }
 
   window.requestAnimationFrame(() => {
     if (lastRows && lastSummary) {
@@ -1509,21 +1535,154 @@ function createConfigFromPreset(presetName, baseConfig) {
   };
 }
 
+function getPresetLatestRankingRecord(presetName) {
+  const records = rankingRecords
+    .filter((record) => record.presetName === presetName)
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return records[0] || null;
+}
+
+function getPresetDisplayDate(name, preset, record) {
+  if (record && record.updatedAt) return record.updatedAt;
+  const meta = getPresetMetadata(name, preset);
+  return meta.updatedAt || meta.createdAt || "";
+}
+
+function buildPresetSelectionRows() {
+  return Object.entries(strategyPresets)
+    .map(([name, preset]) => {
+      const record = getPresetLatestRankingRecord(name);
+      const displayDate = getPresetDisplayDate(name, preset, record);
+      return {
+        name,
+        preset,
+        record,
+        displayDate,
+        sortDate: Date.parse(displayDate) || 0,
+      };
+    })
+    .sort((a, b) => {
+      if (b.sortDate !== a.sortDate) return b.sortDate - a.sortDate;
+      return String(a.preset.label || a.name).localeCompare(String(b.preset.label || b.name), "zh-Hans-CN");
+    });
+}
+
+function getPresetTestRangeText(record) {
+  if (!record) return "暂无历史测试";
+  const symbol = `${record.symbol || ""}${record.symbolName ? ` ${record.symbolName}` : ""}`.trim();
+  const period = record.periodLabel || `${record.periodYears || ""}年`;
+  const range = record.startDate && record.endDate ? `${record.startDate} 至 ${record.endDate}` : "区间未记录";
+  return `${symbol} · ${period} · ${range}`;
+}
+
+function renderSelectedModelSummary() {
+  if (!selectedModelSummary) return;
+  const selectedNames = getSelectedComparisonPresetNames();
+  if (selectedNames.length === 0) {
+    selectedModelSummary.innerHTML = `
+      <strong>尚未选择模型</strong>
+      <span>点击“选择模型”，从弹窗中勾选需要参与历史模拟的预存模型。</span>
+    `;
+    return;
+  }
+
+  const labels = selectedNames
+    .map((name) => strategyPresets[name] ? strategyPresets[name].label : name)
+    .slice(0, 4)
+    .join("、");
+  const extra = selectedNames.length > 4 ? ` 等 ${selectedNames.length} 个` : "";
+  selectedModelSummary.innerHTML = `
+    <strong>已选择 ${selectedNames.length} 个模型</strong>
+    <span>${escapeHtml(labels)}${escapeHtml(extra)}</span>
+  `;
+}
+
+function renderSelectedDataSummary() {
+  if (!selectedDataSummary) return;
+  if (!lastRows || !lastSummary) {
+    selectedDataSummary.innerHTML = `
+      <strong>尚未加载历史数据</strong>
+      <span>点击“选择股票区间”，加载用于模拟的历史价格。</span>
+    `;
+    if (openMarketDataButton) openMarketDataButton.disabled = true;
+    return;
+  }
+
+  const info = lastSummary.symbol || {};
+  const label = info.name && info.code ? `${info.code} ${info.name}` : (info.code || codeInput.value || "--");
+  selectedDataSummary.innerHTML = `
+    <strong>${escapeHtml(label)}</strong>
+    <span>${escapeHtml(lastSummary.startDate)} 至 ${escapeHtml(lastSummary.endDate)} · ${lastSummary.count} 个交易日</span>
+  `;
+  if (openMarketDataButton) openMarketDataButton.disabled = false;
+}
+
+function renderSelectedResultSummary() {
+  if (!selectedResultSummary) return;
+  if (!comparisonResults || comparisonResults.length === 0) {
+    selectedResultSummary.innerHTML = `
+      <strong>尚未生成模拟表现</strong>
+      <span>选择模型并加载历史数据后会自动开始模拟。</span>
+    `;
+    if (openResultsDialogButton) openResultsDialogButton.disabled = true;
+    return;
+  }
+
+  const leading = comparisonResults[0];
+  selectedResultSummary.innerHTML = `
+    <strong>${escapeHtml(leading.label)}</strong>
+    <span>收益 ${formatPercent(leading.finalState.returnRate)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
+  `;
+  if (openResultsDialogButton) openResultsDialogButton.disabled = false;
+}
+
+function renderSimulationOverview() {
+  renderSelectedModelSummary();
+  renderSelectedDataSummary();
+  renderSelectedResultSummary();
+}
+
+function showDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "open");
+  }
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  if (dialog.open && typeof dialog.close === "function") {
+    dialog.close();
+  } else {
+    dialog.removeAttribute("open");
+  }
+}
+
 function renderModelCompareOptions() {
   if (!modelCompareOptions) return;
   const selectedNames = new Set(getSelectedComparisonPresetNames());
-  const presetEntries = Object.entries(strategyPresets);
+  const presetEntries = buildPresetSelectionRows();
 
   modelCompareOptions.innerHTML = presetEntries
-    .map(([name, preset]) => {
+    .map(({ name, preset, record, displayDate }) => {
       const checked = selectedNames.has(name) ? " checked" : "";
+      const rangeText = getPresetTestRangeText(record);
+      const returnText = record ? formatPercent(record.returnRate) : "--";
+      const drawdownText = record ? formatPercent(record.maxDrawdown) : "--";
+      const returnClass = record && record.returnRate >= 0 ? "up" : "down";
       return `
         <div class="model-preset-card" data-preset-name="${escapeHtml(name)}">
           <label>
             <input class="model-compare-enabled" type="checkbox" value="${escapeHtml(name)}"${checked}>
             <span>${escapeHtml(preset.label)}</span>
-            <small>${escapeHtml(getPresetResearchName(name, preset))}</small>
+            <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))} · ${escapeHtml(getPresetResearchName(name, preset))}</small>
           </label>
+          <strong class="model-selector-return ${returnClass}" data-label="回报率">${returnText}</strong>
+          <span class="model-selector-range" data-label="测试股票区间">${escapeHtml(rangeText)}</span>
+          <span class="model-selector-drawdown" data-label="回撤率">${drawdownText}</span>
+          <span class="model-selector-date" data-label="日期">${escapeHtml(displayDate || "--")}</span>
           <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
           <button class="preset-optimize-button" type="button" data-preset-name="${escapeHtml(name)}">优化</button>
         </div>
@@ -1534,6 +1693,42 @@ function renderModelCompareOptions() {
   if (presetEntries.length === 0) {
     modelCompareOptions.innerHTML = '<div class="ranking-empty">还没有预存模型。</div>';
   }
+  renderSimulationOverview();
+}
+
+function openModelSelectorDialog() {
+  renderModelCompareOptions();
+  showDialog(modelSelectorDialog);
+}
+
+function openDataSelectorDialog() {
+  showDialog(dataSelectorDialog);
+}
+
+function openMarketDataDialog() {
+  if (!lastRows || !lastSummary) {
+    openDataSelectorDialog();
+    return;
+  }
+  showDialog(marketDataDialog);
+  window.requestAnimationFrame(() => {
+    drawChart(lastRows, lastSummary);
+  });
+}
+
+function openResultsDialog() {
+  if (!comparisonResults || comparisonResults.length === 0) {
+    if (!lastRows || !lastSummary) {
+      openDataSelectorDialog();
+      return;
+    }
+    openModelSelectorDialog();
+    return;
+  }
+  showDialog(resultsDialog);
+  window.requestAnimationFrame(() => {
+    redrawVisibleBacktestCharts();
+  });
 }
 
 function getSelectedComparisonPresetNames() {
@@ -3259,6 +3454,7 @@ function renderModelComparisonTable(results) {
 
   if (!results || results.length === 0) {
     modelCompareTable.innerHTML = '<div class="ranking-empty">加载历史数据后，选择一个或多个预存模型即可显示表现。</div>';
+    renderSimulationOverview();
     return;
   }
 
@@ -3473,6 +3669,7 @@ function recordRankingResultsForLoadedData(currentConfig) {
   mergeRankingRecords(nextRecords);
   saveServerRankingRecords(nextRecords);
   renderModelRanking();
+  renderModelCompareOptions();
 }
 
 function renderModelRanking() {
@@ -3493,9 +3690,10 @@ function renderModelRanking() {
           <section class="ranking-table-section">
             <h3>${periodYears} 年排行</h3>
             <div class="ranking-empty">暂无 ${periodYears} 年记录。</div>
-          </section>
-        `;
-      }
+      </section>
+    `;
+  renderSimulationOverview();
+}
       return `
         <section class="ranking-table-section">
           <h3>${periodYears} 年排行</h3>
@@ -4961,6 +5159,7 @@ function resetBacktest() {
   renderTradeDetail(null);
   renderSelectedModelDetail(null);
   renderModelRanking();
+  renderSimulationOverview();
 }
 
 function selectBacktestRows(rows, config) {
@@ -5061,6 +5260,8 @@ function startBacktest() {
     renderSelectedModelDetail(null);
     setSimulationStep("models");
     setStatus("请至少选择一个预存模型进行历史模拟。");
+    renderSimulationOverview();
+    openModelSelectorDialog();
     return;
   }
 
@@ -5119,7 +5320,8 @@ function startBacktest() {
     }
   });
   setSimulationStep("results");
-  window.setTimeout(scrollToModelPerformance, 80);
+  renderSimulationOverview();
+  window.setTimeout(openResultsDialog, 80);
 }
 
 function pointX(index, count, left, width) {
@@ -5339,17 +5541,19 @@ function renderResult(result) {
   fields.chartSubtitle.textContent = `${startInput.value} 至 ${endInput.value}`;
   renderCompanyInfo(result);
   rememberLoadedSymbol(code);
+  closeDialog(dataSelectorDialog);
 
   drawChart(rows, summary);
   renderTable(rows);
   resetBacktest();
+  renderSimulationOverview();
   if (getSelectedComparisonPresetNames().length > 0) {
     setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
     startBacktest();
   } else {
-    setSimulationStep("results");
+    setSimulationStep("models");
     setStatus(`已更新 ${displayName}，数据源：${result.source}。请选择一个或多个预存模型进行历史模拟。`);
-    window.setTimeout(scrollToModelPerformance, 80);
+    window.setTimeout(openModelSelectorDialog, 80);
   }
 }
 
@@ -5428,11 +5632,16 @@ compareCurrentConfigInput.addEventListener("change", () => {
 });
 
 modelCompareOptions.addEventListener("change", () => {
+  renderSimulationOverview();
+  if (modelSelectorDialog && modelSelectorDialog.open) {
+    setSimulationStep(getSelectedComparisonPresetNames().length > 0 ? "data" : "models");
+    return;
+  }
   if (lastRows && lastRows.length > 0) {
     startBacktest();
   } else if (getSelectedComparisonPresetNames().length > 0) {
     setSimulationStep("data");
-    scrollToSimulationStep("data");
+    openDataSelectorDialog();
   } else {
     setSimulationStep("models");
   }
@@ -5456,6 +5665,67 @@ modelCompareOptions.addEventListener("click", (event) => {
   applyStrategyPreset(option.dataset.presetName);
 });
 
+if (openModelSelectorButton) {
+  openModelSelectorButton.addEventListener("click", () => {
+    openModelSelectorDialog();
+  });
+}
+
+if (openDataSelectorButton) {
+  openDataSelectorButton.addEventListener("click", () => {
+    openDataSelectorDialog();
+  });
+}
+
+if (openMarketDataButton) {
+  openMarketDataButton.addEventListener("click", () => {
+    openMarketDataDialog();
+  });
+}
+
+if (openResultsDialogButton) {
+  openResultsDialogButton.addEventListener("click", () => {
+    openResultsDialog();
+  });
+}
+
+if (closeModelSelectorButton && modelSelectorDialog) {
+  closeModelSelectorButton.addEventListener("click", () => {
+    closeDialog(modelSelectorDialog);
+  });
+}
+
+if (doneModelSelectorButton && modelSelectorDialog) {
+  doneModelSelectorButton.addEventListener("click", () => {
+    closeDialog(modelSelectorDialog);
+    if (getSelectedComparisonPresetNames().length > 0) {
+      if (lastRows && lastRows.length > 0) {
+        startBacktest();
+      } else {
+        window.setTimeout(openDataSelectorDialog, 80);
+      }
+    }
+  });
+}
+
+if (closeDataSelectorButton && dataSelectorDialog) {
+  closeDataSelectorButton.addEventListener("click", () => {
+    closeDialog(dataSelectorDialog);
+  });
+}
+
+if (closeMarketDataButton && marketDataDialog) {
+  closeMarketDataButton.addEventListener("click", () => {
+    closeDialog(marketDataDialog);
+  });
+}
+
+if (closeResultsDialogButton && resultsDialog) {
+  closeResultsDialogButton.addEventListener("click", () => {
+    closeDialog(resultsDialog);
+  });
+}
+
 wizardButtons.forEach((button) => {
   button.addEventListener("click", () => {
     if (button.dataset.wizardTarget === "new-model") {
@@ -5478,7 +5748,13 @@ simulationProgressButtons.forEach((button) => {
   button.addEventListener("click", () => {
     const stepName = button.dataset.simulationStep || activeSimulationStep;
     setSimulationStep(stepName);
-    scrollToSimulationStep(stepName);
+    if (stepName === "models") {
+      openModelSelectorDialog();
+    } else if (stepName === "data") {
+      openDataSelectorDialog();
+    } else {
+      openResultsDialog();
+    }
   });
 });
 
@@ -5564,7 +5840,7 @@ if (modelCompareTable) {
 if (showModelPerformanceButton) {
   showModelPerformanceButton.addEventListener("click", () => {
     setSimulationStep("results");
-    scrollToModelPerformance();
+    openResultsDialog();
   });
 }
 

@@ -171,25 +171,66 @@
         </button>
       </nav>
 
-      <section id="simulationModelsSection" class="simulation-step-section" aria-label="选择模拟模型">
+      <section id="simulationModelsSection" class="simulation-step-section simulation-overview" aria-label="历史模拟">
         <div class="section-head">
           <div>
-            <h2>1. 选择模拟模型</h2>
-            <p>直接选择需要模拟的预存模型；每个预存模型使用独立资金账户。</p>
+            <h2>历史模拟</h2>
+            <p>选择模型、股票和区间后，系统会直接生成模拟表现。</p>
           </div>
-          <button id="showModelPerformanceButton" class="ghost-button" type="button">查看模型表现</button>
+          <div class="section-actions">
+            <button id="openModelSelectorButton" type="button">选择模型</button>
+            <button id="openDataSelectorButton" class="ghost-button" type="button">选择股票区间</button>
+          </div>
         </div>
         <input id="compareCurrentConfigInput" class="hidden" type="checkbox">
-        <div id="modelCompareOptions" class="model-compare-options"></div>
+        <div class="simulation-state-grid">
+          <article id="selectedModelSummary" class="selected-model-summary">尚未选择模型。</article>
+          <article id="selectedDataSummary" class="selected-model-summary">
+            <strong>尚未加载历史数据</strong>
+            <span>点击“选择股票区间”，加载用于模拟的历史价格。</span>
+          </article>
+          <article id="selectedResultSummary" class="selected-model-summary">
+            <strong>尚未生成模拟表现</strong>
+            <span>选择模型并加载历史数据后会自动开始模拟。</span>
+          </article>
+        </div>
+        <div class="simulation-action-grid">
+          <button id="openMarketDataButton" class="ghost-button" type="button" disabled>查看行情曲线</button>
+          <button id="openResultsDialogButton" type="button" disabled>查看模型表现</button>
+        </div>
+        <dialog id="modelSelectorDialog" class="param-dialog model-selector-dialog">
+          <form method="dialog" class="param-dialog-body">
+            <div class="dialog-head">
+              <div>
+                <h2>选择模拟模型</h2>
+                <p>默认按最新测试日期排序。大量个人测试模型会优先显示最近使用过的结果。</p>
+              </div>
+              <button id="closeModelSelectorButton" type="button" class="ghost-button">关闭</button>
+            </div>
+            <div class="model-selector-subject">
+              <span>模型</span>
+              <span>回报率</span>
+              <span>测试股票区间</span>
+              <span>回撤率</span>
+              <span>日期</span>
+            </div>
+            <div id="modelCompareOptions" class="model-compare-options model-selector-list"></div>
+            <div class="dialog-actions">
+              <button id="doneModelSelectorButton" type="button">完成选择</button>
+            </div>
+          </form>
+        </dialog>
       </section>
 
-      <section id="simulationDataSection" class="toolbar" aria-label="查询条件">
+      <dialog id="dataSelectorDialog" class="param-dialog data-selector-dialog">
+      <section id="simulationDataSection" class="toolbar dialog-section" aria-label="查询条件">
         <div class="brand">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h1>2. 选择股票和时间区间</h1>
+            <h1>选择股票和时间区间</h1>
             <p>选择 A 股代码或美股 ticker，并加载用于模拟的历史价格。</p>
           </div>
+          <button id="closeDataSelectorButton" class="ghost-button" type="button">关闭</button>
         </div>
 
         <form id="queryForm" class="query-form">
@@ -230,10 +271,21 @@
           <button type="submit">查询</button>
         </form>
       </section>
+      </dialog>
 
       <section class="status-band" aria-live="polite">
         <div id="statusText">正在准备查询条件...</div>
       </section>
+
+      <dialog id="marketDataDialog" class="param-dialog market-data-dialog">
+      <div class="param-dialog-body">
+        <div class="dialog-head">
+          <div>
+            <h2>行情曲线</h2>
+            <p>查看已加载历史数据、价格曲线和指标标注。</p>
+          </div>
+          <button id="closeMarketDataButton" class="ghost-button" type="button">关闭</button>
+        </div>
 
       <section class="company-card hidden" data-history-panel aria-label="标的信息">
         <div>
@@ -337,15 +389,18 @@
           <svg id="priceChart" role="img" aria-label="价格走势图"></svg>
         </div>
       </section>
+      </div>
+      </dialog>
 
+      <dialog id="resultsDialog" class="param-dialog results-dialog">
       <section id="simulationResultsSection" class="backtest-section hidden" data-history-panel aria-label="模拟交易历史回测">
         <div class="section-head">
           <div>
-            <h2>3. 查看模型表现</h2>
+            <h2>模型表现</h2>
             <p>加载历史数据后先看排行榜；点击模型后再显示该模型的曲线、参数解释和交易记录。</p>
           </div>
           <div class="section-actions">
-            <button class="ghost-button return-nav-button" type="button">返回功能导航</button>
+            <button id="closeResultsDialogButton" class="ghost-button" type="button">关闭</button>
             <button id="startBacktestButton" type="button">开始模拟</button>
           </div>
         </div>
@@ -798,8 +853,9 @@
           </div>
         </div>
       </section>
+      </dialog>
 
-      <section class="table-section hidden" data-history-panel aria-label="关键数据">
+      <section class="table-section hidden" aria-label="关键数据">
         <div class="table-head">
           <h2>关键数据</h2>
         </div>
