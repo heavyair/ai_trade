@@ -673,12 +673,16 @@ button:disabled {
   min-width: 1120px;
 }
 
-.ranking-table tr[data-preset-name] {
-  cursor: pointer;
-}
-
 .ranking-table tr[data-preset-name]:hover {
   background: #eef8fa;
+}
+
+.ranking-param-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #cae3e8;
+  color: var(--accent);
+  background: #fff;
 }
 
 .ranking-card {

@@ -1180,13 +1180,15 @@ function mapRankingRow(row) {
   });
 }
 
-async function readRankingRecordsFromDb() {
+async function readRankingRecordsFromDb(ownerUserId = null) {
   const result = await dbQuery(`
     SELECT *
     FROM ranking_records
+    WHERE ($1::text IS NULL AND owner_user_id IS NULL)
+       OR ($1::text IS NOT NULL AND owner_user_id = $1)
     ORDER BY updated_at DESC
     LIMIT 3000
-  `);
+  `, [ownerUserId]);
   return result.rows.map(mapRankingRow).filter(Boolean);
 }
 
@@ -1298,7 +1300,16 @@ async function handleAdminPresetsApi(req, res) {
 async function handleRankingsApi(req, res) {
   try {
     if (req.method === "GET") {
-      sendJson(res, 200, { records: await readRankingRecordsFromDb() });
+      const user = await getCurrentUser(req);
+      if (!user) {
+        sendJson(res, 200, { authenticated: false, records: [] });
+        return;
+      }
+      sendJson(res, 200, {
+        authenticated: true,
+        user,
+        records: await readRankingRecordsFromDb(userIdForEmail(user.email)),
+      });
       return;
     }
 
@@ -1307,16 +1318,17 @@ async function handleRankingsApi(req, res) {
       return;
     }
 
+    const user = await requireVerifiedCurrentUser(req);
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
     const incoming = Array.isArray(payload.records) ? payload.records : [];
     for (const record of incoming) {
-      await upsertRankingRecord(record, null);
+      await upsertRankingRecord(record, userIdForEmail(user.email));
     }
-    const records = await readRankingRecordsFromDb();
-    sendJson(res, 200, { records, saved: incoming.length });
+    const records = await readRankingRecordsFromDb(userIdForEmail(user.email));
+    sendJson(res, 200, { authenticated: true, user, records, saved: incoming.length });
   } catch (error) {
-    sendJson(res, 400, { error: error.message || "排行记录保存失败。" });
+    sendJson(res, error.statusCode || 400, { error: error.message || "排行记录保存失败。" });
   }
 }
 

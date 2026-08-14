@@ -76,7 +76,6 @@ const modelPerformancePanel = document.querySelector("#modelPerformancePanel");
 const showModelPerformanceButton = document.querySelector("#showModelPerformanceButton");
 const selectedModelDetail = document.querySelector("#selectedModelDetail");
 const rankingPresetList = document.querySelector("#rankingPresetList");
-const optimizeSelectedModelButton = document.querySelector("#optimizeSelectedModelButton");
 const modelTradesTitle = document.querySelector("#modelTradesTitle");
 const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
 const modelTradesDetail = document.querySelector("#modelTradesDetail");
@@ -213,9 +212,8 @@ const i18n = {
     switchAccount: "切换账户",
     resendVerification: "重发验证邮件",
     logout: "退出",
-    rankingSubtitle: "按股票和 1 年、3 年、5 年区间分别记录模型表现。",
+    rankingSubtitle: "只显示当前 owner 自己保存的模型排行，按 1 年、3 年、5 年区间分别记录表现。",
     backToNav: "返回功能导航",
-    optimizeSelected: "优化选中模型",
     newModelSubtitle: "用文字描述买卖规则，系统会生成受限的客户端模型预设。",
     newModelAuthNote: "保存新模型需要免费注册、登录并验证电子邮件。模型会按电子邮件账户保存到服务器端。",
     modelDescription: "模型描述",
@@ -292,9 +290,8 @@ const i18n = {
     switchAccount: "Switch Account",
     resendVerification: "Resend Email",
     logout: "Sign Out",
-    rankingSubtitle: "Track model performance by ticker and by 1-year, 3-year, and 5-year windows.",
+    rankingSubtitle: "Show only models owned by the current owner, ranked by 1-year, 3-year, and 5-year windows.",
     backToNav: "Back to Navigation",
-    optimizeSelected: "Optimize Selected",
     newModelSubtitle: "Describe trading rules in plain language. The system will generate a restricted client-side preset.",
     newModelAuthNote: "Saving a new model requires a free account, sign-in, and email verification. Models are stored on the server by email account.",
     modelDescription: "Model Description",
@@ -929,6 +926,7 @@ async function fetchServerRankingRecords() {
 }
 
 async function saveServerRankingRecords(records) {
+  if (!currentUser || !currentUser.email) return;
   try {
     const response = await fetch("/api/rankings", {
       method: "POST",
@@ -3921,7 +3919,11 @@ function createRankingRecord(symbolInfo, periodYears, rowsForPeriod, result) {
 }
 
 function recordRankingResultsForLoadedData(currentConfig) {
-  const presetNames = getSelectedComparisonPresetNames();
+  const presetNames = getSelectedComparisonPresetNames()
+    .filter((presetName) => {
+      const preset = strategyPresets[presetName];
+      return preset && preset.meta && preset.meta.isOwner && isUserEditablePreset(presetName);
+    });
   if (!lastRows || lastRows.length < 2 || presetNames.length === 0) return;
   const symbolInfo = getActiveRankingSymbolInfo();
   if (!symbolInfo.symbol) return;
@@ -3943,17 +3945,23 @@ function recordRankingResultsForLoadedData(currentConfig) {
   renderModelCompareOptions();
 }
 
+function isOwnerRankingRecord(record) {
+  const preset = record && strategyPresets[record.presetName];
+  return Boolean(preset && preset.meta && preset.meta.isOwner && isUserEditablePreset(record.presetName));
+}
+
 function renderModelRanking() {
   if (!rankingPresetList) return;
+  const ownerRecords = rankingRecords.filter(isOwnerRankingRecord);
 
-  if (rankingRecords.length === 0) {
-    rankingPresetList.innerHTML = '<div class="ranking-empty">暂无排行记录。进入历史模拟，选择模型并加载历史数据后，会按 1 年、3 年、5 年分别记录成绩。</div>';
+  if (ownerRecords.length === 0) {
+    rankingPresetList.innerHTML = '<div class="ranking-empty">暂无你的模型排行。请先登录，保存自己的模型，然后进入历史模拟生成 1 年、3 年、5 年成绩。</div>';
     return;
   }
 
   rankingPresetList.innerHTML = rankingPeriods
     .map((periodYears) => {
-      const records = rankingRecords
+      const records = ownerRecords
         .filter((record) => record.periodYears === periodYears)
         .sort((a, b) => b.returnRate - a.returnRate);
       if (records.length === 0) {
@@ -3961,10 +3969,9 @@ function renderModelRanking() {
           <section class="ranking-table-section">
             <h3>${periodYears} 年排行</h3>
             <div class="ranking-empty">暂无 ${periodYears} 年记录。</div>
-      </section>
-    `;
-  renderSimulationOverview();
-}
+          </section>
+        `;
+      }
       return `
         <section class="ranking-table-section">
           <h3>${periodYears} 年排行</h3>
@@ -3986,6 +3993,7 @@ function renderModelRanking() {
                   <th>费用</th>
                   <th>交易</th>
                   <th>更新</th>
+                  <th>参数</th>
                 </tr>
               </thead>
               <tbody>
@@ -4005,6 +4013,7 @@ function renderModelRanking() {
                     <td>${formatMoney(record.totalFees || 0)}</td>
                     <td>${record.trades}</td>
                     <td>${escapeHtml(record.updatedAt)}</td>
+                    <td><button class="ranking-param-button" type="button" data-preset-name="${escapeHtml(record.presetName)}">参数</button></td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -4856,11 +4865,6 @@ function optimizePresetParameters(presetName) {
   };
 
   window.setTimeout(runChunk, 0);
-}
-
-function optimizeSelectedModel() {
-  const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
-  optimizePresetParameters(selectedPreset);
 }
 
 async function saveOptimizationPreset() {
@@ -6273,9 +6277,9 @@ if (authForm) {
 
 if (rankingPresetList) {
   rankingPresetList.addEventListener("click", (event) => {
-    const card = event.target && event.target.closest ? event.target.closest("[data-preset-name]") : null;
-    if (!card) return;
-    applyStrategyPreset(card.dataset.presetName);
+    const button = event.target && event.target.closest ? event.target.closest(".ranking-param-button") : null;
+    if (!button) return;
+    openPresetParamEditor(button.dataset.presetName);
   });
 }
 
@@ -6400,12 +6404,6 @@ if (saveGeneratedModelButton) {
     generatedPresetDraft = null;
     setWizardPage("ranking");
     setStatus(`已保存新模型预设：${strategyPresets[presetName].label}。`);
-  });
-}
-
-if (optimizeSelectedModelButton) {
-  optimizeSelectedModelButton.addEventListener("click", () => {
-    optimizeSelectedModel();
   });
 }
 
