@@ -1214,11 +1214,7 @@ function setWizardPage(pageName) {
   if (nextPage === "simulation") {
     renderSimulationOverview();
     window.setTimeout(() => {
-      if (getSelectedComparisonPresetNames().length === 0) {
-        openModelSelectorDialog();
-      } else if (!lastRows || !lastSummary) {
-        openDataSelectorDialog();
-      }
+      openModelSelectorDialog();
     }, 80);
   }
 
