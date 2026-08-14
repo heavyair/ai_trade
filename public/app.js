@@ -15,6 +15,7 @@ const authDialog = document.querySelector("#authDialog");
 const authForm = document.querySelector("#authForm");
 const authStatusText = document.querySelector("#authStatusText");
 const openAuthButton = document.querySelector("#openAuthButton");
+const openAdminButton = document.querySelector("#openAdminButton");
 const logoutButton = document.querySelector("#logoutButton");
 const resendVerificationButton = document.querySelector("#resendVerificationButton");
 const closeAuthButton = document.querySelector("#closeAuthButton");
@@ -29,6 +30,7 @@ const newModelAuthNote = document.querySelector("#newModelAuthNote");
 const chart = document.querySelector("#priceChart");
 const returnCompareChart = document.querySelector("#returnCompareChart");
 const tradePriceChart = document.querySelector("#tradePriceChart");
+const modelOrderPriceChart = document.querySelector("#modelOrderPriceChart");
 const tableBody = document.querySelector("#dataTable");
 const startBacktestButton = document.querySelector("#startBacktestButton");
 const priceZoomOutButton = document.querySelector("#priceZoomOutButton");
@@ -50,8 +52,6 @@ const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
 const applyPresetButton = document.querySelector("#applyPresetButton");
 const compareCurrentConfigInput = document.querySelector("#compareCurrentConfigInput");
 const modelCompareOptions = document.querySelector("#modelCompareOptions");
-const openModelSelectorButton = document.querySelector("#openModelSelectorButton");
-const openDataSelectorButton = document.querySelector("#openDataSelectorButton");
 const openMarketDataButton = document.querySelector("#openMarketDataButton");
 const openResultsDialogButton = document.querySelector("#openResultsDialogButton");
 const closeModelSelectorButton = document.querySelector("#closeModelSelectorButton");
@@ -88,6 +88,11 @@ const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
 const presetParamNameInput = document.querySelector("#presetParamNameInput");
 const presetParamNarrative = document.querySelector("#presetParamNarrative");
 const presetParamEditor = document.querySelector("#presetParamEditor");
+const presetOriginalText = document.querySelector("#presetOriginalText");
+const presetModelText = document.querySelector("#presetModelText");
+const adminDialog = document.querySelector("#adminDialog");
+const closeAdminButton = document.querySelector("#closeAdminButton");
+const adminPresetList = document.querySelector("#adminPresetList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -725,9 +730,14 @@ function sanitizeStoredPreset(name, preset) {
     meta: {
       targetSymbol: String(preset.meta && preset.meta.targetSymbol || "通用").slice(0, 24),
       provedPeriod: String(preset.meta && preset.meta.provedPeriod || "本地保存").slice(0, 40),
-      creator: String(preset.meta && preset.meta.creator || "user").slice(0, 32),
+      creator: String(preset.meta && preset.meta.creator || "user").slice(0, 80),
       createdAt: String(preset.meta && preset.meta.createdAt || todayText()).slice(0, 16),
       updatedAt: String(preset.meta && preset.meta.updatedAt || todayText()).slice(0, 16),
+      originalText: String(preset.meta && preset.meta.originalText || "").slice(0, 8000),
+      modelText: String(preset.meta && (preset.meta.modelText || preset.meta.originalText) || "").slice(0, 8000),
+      ownerEmail: String(preset.meta && preset.meta.ownerEmail || "").slice(0, 160),
+      isOwner: Boolean(preset.meta && preset.meta.isOwner),
+      isLegacy: Boolean(preset.meta && preset.meta.isLegacy),
     },
   };
 }
@@ -1029,6 +1039,77 @@ async function initializeServerRankingRecords() {
   }
 }
 
+function formatAdminDate(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toISOString().slice(0, 10);
+}
+
+function renderAdminPresetList(presets = []) {
+  if (!adminPresetList) return;
+  if (!presets.length) {
+    adminPresetList.innerHTML = '<div class="ranking-empty">服务器端还没有保存模型。</div>';
+    return;
+  }
+  adminPresetList.innerHTML = presets.map((preset) => {
+    const textPreview = String(preset.modelText || preset.originalText || "没有文字版本").slice(0, 160);
+    return `
+      <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
+        <div>
+          <strong>${escapeHtml(preset.label || preset.name)}</strong>
+          <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
+          <small>Owner: ${escapeHtml(preset.ownerEmail || "系统")} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
+          <p>${escapeHtml(textPreview)}</p>
+        </div>
+        <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
+      </article>
+    `;
+  }).join("");
+}
+
+async function loadAdminPresets() {
+  if (!adminPresetList) return;
+  adminPresetList.innerHTML = '<div class="ranking-empty">正在读取服务器模型...</div>';
+  try {
+    const response = await fetch("/api/admin/presets", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取 admin 模型列表失败。");
+    renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
+  } catch (error) {
+    adminPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function openAdminDialog() {
+  if (!currentUser || !currentUser.isAdmin || !adminDialog) return;
+  showDialog(adminDialog);
+  loadAdminPresets();
+}
+
+async function deleteAdminPreset(id, label) {
+  if (!id) return;
+  const ok = window.confirm(`确定删除模型“${label || id}”？这个操作会从服务器删除该模型。`);
+  if (!ok) return;
+  try {
+    const response = await fetch("/api/admin/presets", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ id }),
+    });
+    const payload = await readJsonResponse(response, "删除模型失败。");
+    const deletedName = payload.deleted && payload.deleted.name;
+    if (deletedName && strategyPresets[deletedName]) {
+      delete strategyPresets[deletedName];
+    }
+    await initializeServerCustomPresets();
+    await loadAdminPresets();
+    setStatus(`已删除模型：${label || deletedName || id}。`);
+  } catch (error) {
+    setStatus(`删除模型失败：${error.message}`, true);
+  }
+}
+
 rankingRecords = loadLocalRankingRecords();
 
 function formatDate(date) {
@@ -1205,6 +1286,7 @@ function renderAuthState() {
     openAuthButton.textContent = isSignedIn ? t("switchAccount") : t("registerLogin");
   }
   if (logoutButton) logoutButton.classList.toggle("hidden", !isSignedIn);
+  if (openAdminButton) openAdminButton.classList.toggle("hidden", !(isSignedIn && currentUser.isAdmin));
   if (resendVerificationButton) resendVerificationButton.classList.toggle("hidden", !needsVerification);
   if (newModelAuthNote) newModelAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
   if (customModelCreatorInput && isSignedIn) {
@@ -3723,7 +3805,7 @@ function renderModelComparisonTable(results) {
           </div>
           <div class="performance-actions">
             ${canEditPreset ? `<button class="result-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
-            ${canEditPreset ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化</button>` : ""}
+            <button class="result-trades-button" type="button" data-result-name="${escapeHtml(result.name)}">交易记录</button>
           </div>
         </article>
       `;
@@ -3992,6 +4074,13 @@ function openPresetParamEditor(presetName) {
     ? "这个账户预设会保存到服务器端。"
     : "这是内置预设，保存时会创建一个账户副本。";
   if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
+  const originalText = preset.meta && preset.meta.originalText ? preset.meta.originalText : "";
+  const modelText = preset.meta && preset.meta.modelText ? preset.meta.modelText : originalText;
+  if (presetOriginalText) presetOriginalText.value = originalText || "这个模型没有保存最初文字版本。";
+  if (presetModelText) {
+    presetModelText.value = modelText;
+    presetModelText.disabled = !isUserEditablePreset(presetName);
+  }
   renderPresetParamNarrative(presetName);
   presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
   if (typeof presetParamDialog.showModal === "function") {
@@ -4014,6 +4103,8 @@ async function saveEditedPresetParameters() {
 
   const existing = strategyPresets[editingPresetName];
   const existingLabel = String(existing && existing.label || editingPresetName);
+  const existingOriginalText = String(existing && existing.meta && existing.meta.originalText || "");
+  const nextModelText = String(presetModelText && !presetModelText.disabled ? presetModelText.value : existing && existing.meta && existing.meta.modelText || existingOriginalText || "").slice(0, 8000);
   const requestedLabel = String(
     presetParamNameInput && presetParamNameInput.value
       ? presetParamNameInput.value
@@ -4030,6 +4121,8 @@ async function saveEditedPresetParameters() {
     meta: {
       ...(existing && existing.meta ? existing.meta : {}),
       ...(parsed.meta || {}),
+      originalText: existingOriginalText || String(parsed.meta && parsed.meta.originalText || "").slice(0, 8000),
+      modelText: nextModelText || String(parsed.meta && parsed.meta.modelText || "").slice(0, 8000),
       updatedAt: now,
     },
   });
@@ -4209,6 +4302,8 @@ function createSafePresetDraft(description) {
     creator,
     createdAt: now,
     updatedAt: now,
+    originalText: text,
+    modelText: text,
   };
   const preset = createPresetFromConfig(label, config, meta);
   const code = `// Safe client-side strategy preset. No eval / Function is used.
@@ -4379,6 +4474,8 @@ function buildOptimizationPreset(presetName, config, rowsForTest) {
     creator: "auto",
     createdAt: now,
     updatedAt: now,
+    originalText: sourcePreset.meta && sourcePreset.meta.originalText || "",
+    modelText: sourcePreset.meta && sourcePreset.meta.modelText || sourcePreset.meta && sourcePreset.meta.originalText || "",
   });
 }
 
@@ -4549,7 +4646,7 @@ function renderSelectedModelDetail(result) {
   if (!result || !result.finalState) {
     selectedModelDetail.innerHTML = `
       <strong>选择排行榜中的模型查看详情</strong>
-      <span>点击模型卡片后，会弹出该模型的交易记录；点击记录后再查看交易详情和对应曲线。</span>
+      <span>点击交易记录按钮后，会弹出该模型的交易记录、收益对比曲线和下单价格曲线。</span>
     `;
     return;
   }
@@ -4925,11 +5022,16 @@ function renderModelResultCharts(result) {
   renderTradeLog(withTradeModelLabel(result.finalState.trades || [], result.label), result.label);
   renderTradeDetail(null);
   drawReturnComparison(result.states);
+  drawModelOrderPriceChart(result);
   drawTradePriceChart([]);
   if (modelTradesTitle) modelTradesTitle.textContent = `${result.label} 交易记录`;
   if (modelTradesSubtitle) modelTradesSubtitle.textContent = `${activeBacktestRangeLabel || "已完成模拟"}；点击一条交易查看详情和对应价格曲线。`;
   if (resultsDialog && resultsDialog.open) closeDialog(resultsDialog);
   showDialog(modelTradesDialog);
+  window.requestAnimationFrame(() => {
+    drawReturnComparison(result.states);
+    drawModelOrderPriceChart(result);
+  });
   setStatus(`已切换到 ${result.label}：交易记录已弹出。请选择一条交易查看对应价格、参考高低点和趋势。`);
 }
 
@@ -5292,6 +5394,89 @@ function drawTradePriceChart(states, options = {}) {
   `;
 }
 
+function drawModelOrderPriceChart(result) {
+  if (!modelOrderPriceChart) return;
+  const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
+  const rect = modelOrderPriceChart.parentElement
+    ? modelOrderPriceChart.parentElement.getBoundingClientRect()
+    : modelOrderPriceChart.getBoundingClientRect();
+  const viewportWidth = Math.max(720, Math.round(rect.width));
+  const width = Math.round(viewportWidth * 1.35);
+  const height = Math.max(280, Math.round(rect.height));
+  const pad = { top: 24, right: 74, bottom: 42, left: 58 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+
+  modelOrderPriceChart.style.width = `${width}px`;
+  modelOrderPriceChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  if (usableStates.length === 0) {
+    modelOrderPriceChart.innerHTML = `
+      <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
+      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">点击交易记录按钮后显示下单价格曲线</text>
+    `;
+    return;
+  }
+
+  const rows = usableStates.map((state) => state.row);
+  const trades = withTradeModelLabel(result.finalState.trades || [], result.label);
+  const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
+  trades.forEach((trade) => priceValues.push(trade.price));
+  const max = Math.max(...priceValues);
+  const min = Math.min(...priceValues);
+  const spread = max - min || max * 0.02 || 1;
+  const yMax = max + spread * 0.12;
+  const yMin = Math.max(0, min - spread * 0.12);
+  const scaleY = (value) => pad.top + ((yMax - value) / (yMax - yMin)) * innerHeight;
+  const xForIndex = (index) => pointX(index, rows.length, pad.left, innerWidth);
+  const pricePath = rows
+    .map((row, index) => `${index === 0 ? "M" : "L"}${xForIndex(index).toFixed(2)},${scaleY(row.close).toFixed(2)}`)
+    .join(" ");
+  const ticks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
+  const dateTickIndexes = Array.from(new Set([
+    0,
+    Math.floor((rows.length - 1) * 0.5),
+    rows.length - 1,
+  ]));
+  const tradeNodes = trades
+    .map((trade) => {
+      const rowIndex = Math.max(0, Math.min(Number(trade.rowIndex) || 0, rows.length - 1));
+      const x = xForIndex(rowIndex);
+      const y = scaleY(trade.price);
+      const color = trade.side === "buy" ? "#c2413b" : "#227a4f";
+      const label = `${trade.date} ${trade.label} ${formatPrice(trade.price)}`;
+      return `
+        <circle cx="${x}" cy="${y}" r="5.5" fill="${color}">
+          <title>${escapeHtml(label)}</title>
+        </circle>
+      `;
+    })
+    .join("");
+
+  modelOrderPriceChart.innerHTML = `
+    <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
+    ${ticks
+      .map((value) => {
+        const y = scaleY(value);
+        return `
+          <line class="grid" x1="${pad.left}" x2="${width - pad.right}" y1="${y}" y2="${y}"></line>
+          <text class="tick-label" x="${width - pad.right + 10}" y="${y + 4}">${formatPrice(value)}</text>
+        `;
+      })
+      .join("")}
+    <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
+    <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
+    <path class="price-line" d="${pricePath}"></path>
+    ${tradeNodes}
+    ${dateTickIndexes
+      .map((index) => {
+        const x = xForIndex(index);
+        return `<text class="tick-label" x="${x}" y="${height - 16}" text-anchor="middle">${rows[index].date.slice(5)}</text>`;
+      })
+      .join("")}
+  `;
+}
+
 function renderBacktestState(state, index, total, options = {}) {
   const shouldDrawCharts = options.drawCharts !== false;
   if (!state) {
@@ -5401,6 +5586,7 @@ function resetBacktest() {
   renderBacktestState(null, 0, 0);
   renderModelComparisonTable([]);
   renderTradeDetail(null);
+  drawModelOrderPriceChart(null);
   if (modelTradesDetail) modelTradesDetail.innerHTML = "";
   renderSelectedModelDetail(null);
   renderModelRanking();
@@ -5560,10 +5746,10 @@ function startBacktest() {
   const leadingText = leadingResult
     ? `当前排名第一：${leadingResult.label}，收益 ${formatPercent(leadingResult.finalState.returnRate)}，最大回撤 ${formatPercent(leadingResult.finalState.maxDrawdown)}。`
     : "";
-  setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现排行榜。${leadingText} 点击某个模型查看交易记录。`);
+  setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现排行榜。${leadingText} 点击交易记录按钮查看交易和曲线。`);
   saveBacktestRunToServer(config).then((saved) => {
     if (saved && saved.runId) {
-      setStatus(`模拟完成：${activeBacktestRangeLabel}；历史测试记录已保存到 Postgres。${leadingText} 点击某个模型查看交易记录。`);
+      setStatus(`模拟完成：${activeBacktestRangeLabel}；历史测试记录已保存到 Postgres。${leadingText} 点击交易记录按钮查看交易和曲线。`);
     }
   });
   setSimulationStep("results");
@@ -5904,18 +6090,6 @@ modelCompareOptions.addEventListener("click", (event) => {
   applyStrategyPreset(option.dataset.presetName);
 });
 
-if (openModelSelectorButton) {
-  openModelSelectorButton.addEventListener("click", () => {
-    openModelSelectorDialog();
-  });
-}
-
-if (openDataSelectorButton) {
-  openDataSelectorButton.addEventListener("click", () => {
-    openDataSelectorDialog();
-  });
-}
-
 if (openMarketDataButton) {
   openMarketDataButton.addEventListener("click", () => {
     openMarketDataDialog();
@@ -6032,6 +6206,26 @@ if (openAuthButton) {
   });
 }
 
+if (openAdminButton) {
+  openAdminButton.addEventListener("click", () => {
+    openAdminDialog();
+  });
+}
+
+if (closeAdminButton && adminDialog) {
+  closeAdminButton.addEventListener("click", () => {
+    closeDialog(adminDialog);
+  });
+}
+
+if (adminPresetList) {
+  adminPresetList.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;
+    if (!button) return;
+    deleteAdminPreset(button.dataset.presetId, button.dataset.presetLabel);
+  });
+}
+
 if (languageSelect) {
   languageSelect.addEventListener("change", () => {
     applyLanguage(languageSelect.value);
@@ -6093,23 +6287,25 @@ if (modelCompareTable) {
       openPresetParamEditor(paramButton.dataset.presetName);
       return;
     }
-    const optimizeButton = target && target.closest ? target.closest(".result-optimize-button") : null;
-    if (optimizeButton) {
-      optimizePresetParameters(optimizeButton.dataset.presetName);
+    const tradesButton = target && target.closest ? target.closest(".result-trades-button") : null;
+    if (tradesButton) {
+      const result = comparisonResults.find((item) => item.name === tradesButton.dataset.resultName);
+      if (!result) return;
+      modelCompareTable.querySelectorAll("[data-result-name]").forEach((item) => {
+        item.classList.toggle("selected", item.dataset.resultName === result.name);
+      });
+      if (result.name !== "__current__") {
+        applyStrategyPreset(result.name);
+      }
+      renderModelResultCharts(result);
       return;
     }
 
     const card = target && target.closest ? target.closest("[data-result-name]") : null;
     if (!card) return;
-    const result = comparisonResults.find((item) => item.name === card.dataset.resultName);
-    if (!result) return;
     modelCompareTable.querySelectorAll("[data-result-name]").forEach((item) => {
       item.classList.toggle("selected", item === card);
     });
-    if (result.name !== "__current__") {
-      applyStrategyPreset(result.name);
-    }
-    renderModelResultCharts(result);
   });
 }
 

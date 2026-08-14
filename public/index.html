@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-model-data-step">
+    <link rel="stylesheet" href="/styles.css?v=20260814-performance-trades">
   </head>
   <body>
     <main class="shell">
@@ -31,6 +31,7 @@
             <option value="en">English</option>
           </select>
           <button id="openAuthButton" class="ghost-button" type="button" data-i18n="registerLogin">注册 / 登录</button>
+          <button id="openAdminButton" class="ghost-button hidden" type="button">Admin</button>
           <button id="resendVerificationButton" class="ghost-button hidden" type="button" data-i18n="resendVerification">重发验证邮件</button>
           <button id="logoutButton" class="ghost-button hidden" type="button" data-i18n="logout">退出</button>
         </div>
@@ -99,6 +100,16 @@
             预设模型名称
             <input id="presetParamNameInput" type="text" maxlength="80" autocomplete="off">
           </label>
+          <div class="model-text-grid">
+            <label>
+              最初文字版本
+              <textarea id="presetOriginalText" rows="5" readonly spellcheck="false"></textarea>
+            </label>
+            <label>
+              当前文字版本
+              <textarea id="presetModelText" rows="5" maxlength="8000" spellcheck="false"></textarea>
+            </label>
+          </div>
           <label>
             参数 JSON
             <textarea id="presetParamEditor" rows="18" spellcheck="false"></textarea>
@@ -107,6 +118,19 @@
             <button id="savePresetParamButton" type="button">保存参数</button>
           </div>
           <div class="security-note">保存时会校验策略类型和参数范围。内置预设会保存为本地副本，避免覆盖系统预设。</div>
+        </form>
+      </dialog>
+
+      <dialog id="adminDialog" class="param-dialog admin-dialog">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>Admin Page</h2>
+              <p>管理员可以查看并删除服务器端保存的模型。</p>
+            </div>
+            <button id="closeAdminButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div id="adminPresetList" class="admin-preset-list"></div>
         </form>
       </dialog>
 
@@ -180,10 +204,6 @@
           <div>
             <h2 data-i18n="historySimulation">历史模拟</h2>
             <p data-i18n="simulationSubtitle">选择模型、股票和区间后，系统会直接生成模拟表现。</p>
-          </div>
-          <div class="section-actions">
-            <button id="openModelSelectorButton" type="button" data-i18n="selectModel">选择模型</button>
-            <button id="openDataSelectorButton" class="ghost-button" type="button" data-i18n="selectTickerRangeButton">选择股票区间</button>
           </div>
         </div>
         <input id="compareCurrentConfigInput" class="hidden" type="checkbox">
@@ -418,7 +438,7 @@
         <div class="section-head">
           <div>
             <h2>模型表现</h2>
-            <p>加载历史数据后直接显示排行榜；点击模型后弹出该模型的交易记录。</p>
+            <p>加载历史数据后只显示模型表现；需要看交易时点击对应模型的“交易记录”。</p>
           </div>
           <div class="section-actions">
             <button id="closeResultsDialogButton" class="ghost-button" type="button">关闭</button>
@@ -433,9 +453,9 @@
           <div id="modelCompareTable" class="model-performance-list"></div>
         </div>
 
-        <div id="selectedModelDetail" class="selected-model-detail" aria-live="polite">
+        <div id="selectedModelDetail" class="selected-model-detail hidden" aria-live="polite">
           <strong>选择排行榜中的模型查看详情</strong>
-          <span>点击模型卡片后，会弹出该模型的交易记录；点击记录后再查看交易详情和对应曲线。</span>
+          <span>点击交易记录按钮后，会弹出该模型的交易记录、收益对比曲线和下单价格曲线。</span>
         </div>
 
         <div class="backtest-layout hidden">
@@ -829,6 +849,19 @@
             <svg id="returnCompareChart" role="img" aria-label="模型收益和全仓收益对比曲线"></svg>
           </div>
         </div>
+        <div class="comparison-panel full-width-panel">
+          <div class="comparison-head">
+            <h3>下单价格曲线</h3>
+            <div class="legend">
+              <span><i class="line"></i>收盘价</span>
+              <span><i class="dot buy-dot"></i>买入</span>
+              <span><i class="dot sell-dot"></i>卖出</span>
+            </div>
+          </div>
+          <div class="trade-price-wrap">
+            <svg id="modelOrderPriceChart" role="img" aria-label="模型下单价格曲线"></svg>
+          </div>
+        </div>
         <div class="log-wrap model-trades-log">
           <div class="log-title">模型策略交易记录</div>
           <table>
@@ -919,6 +952,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260814-model-data-step"></script>
+    <script src="/app.js?v=20260814-performance-trades"></script>
   </body>
 </html>

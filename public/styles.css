@@ -1344,7 +1344,7 @@ button:disabled {
 
 .performance-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 8px;
 }
 
@@ -1413,6 +1413,58 @@ button:disabled {
 
 .current-data-panel button {
   min-width: 150px;
+}
+
+.model-text-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.model-text-grid textarea[readonly] {
+  color: var(--muted);
+  background: #f5f7fb;
+}
+
+.admin-preset-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-preset-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.admin-preset-card strong,
+.admin-preset-card span,
+.admin-preset-card small,
+.admin-preset-card p {
+  display: block;
+}
+
+.admin-preset-card span,
+.admin-preset-card small,
+.admin-preset-card p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-preset-card p {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+
+.admin-delete-preset-button {
+  border-color: #f0c7c3;
+  color: #a83a32;
+  background: #fff7f6;
 }
 
 .selected-model-detail > strong {
@@ -2082,6 +2134,15 @@ tbody tr:last-child td {
   }
 
   .current-data-panel button {
+    width: 100%;
+  }
+
+  .model-text-grid,
+  .admin-preset-card {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-delete-preset-button {
     width: 100%;
   }
 

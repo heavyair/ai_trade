@@ -20,6 +20,7 @@ const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "t
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
 const dbPool = new Pool({
@@ -46,6 +47,10 @@ function sha256(value) {
 
 function userIdForEmail(email) {
   return `user_${sha256(email).slice(0, 32)}`;
+}
+
+function isAdminEmail(email) {
+  return String(email || "").trim().toLowerCase() === ADMIN_EMAIL;
 }
 
 function toIsoDate(value) {
@@ -102,10 +107,15 @@ async function initializeDatabase() {
       strategy_type TEXT NOT NULL,
       config JSONB NOT NULL,
       meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+      original_text TEXT NOT NULL DEFAULT '',
+      model_text TEXT NOT NULL DEFAULT '',
       is_legacy BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS original_text TEXT NOT NULL DEFAULT '';
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS model_text TEXT NOT NULL DEFAULT '';
 
     CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_user_name_idx
       ON strategy_presets(owner_user_id, name)
@@ -574,17 +584,23 @@ function sanitizeServerPreset(name, preset) {
   const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(preset.strategyType)
     ? preset.strategyType
     : "wave";
+  const meta = preset.meta && typeof preset.meta === "object" && !Array.isArray(preset.meta) ? preset.meta : {};
   return {
     ...preset,
     label: String(preset.label || name).slice(0, 100),
     strategyType,
     waveThreshold: Math.max(0.1, Number(preset.waveThreshold || 5)),
     meta: {
-      targetSymbol: String(preset.meta && preset.meta.targetSymbol || "通用").slice(0, 32),
-      provedPeriod: String(preset.meta && preset.meta.provedPeriod || "服务器保存").slice(0, 60),
-      creator: String(preset.meta && preset.meta.creator || "user").slice(0, 40),
-      createdAt: String(preset.meta && preset.meta.createdAt || new Date().toISOString().slice(0, 10)).slice(0, 16),
-      updatedAt: String(preset.meta && preset.meta.updatedAt || new Date().toISOString().slice(0, 10)).slice(0, 16),
+      targetSymbol: String(meta.targetSymbol || "通用").slice(0, 32),
+      provedPeriod: String(meta.provedPeriod || "服务器保存").slice(0, 60),
+      creator: String(meta.creator || "user").slice(0, 80),
+      createdAt: String(meta.createdAt || new Date().toISOString().slice(0, 10)).slice(0, 16),
+      updatedAt: String(meta.updatedAt || new Date().toISOString().slice(0, 10)).slice(0, 16),
+      originalText: String(meta.originalText || "").slice(0, 8000),
+      modelText: String(meta.modelText || meta.originalText || "").slice(0, 8000),
+      ownerEmail: String(meta.ownerEmail || "").slice(0, 160),
+      isOwner: Boolean(meta.isOwner),
+      isLegacy: Boolean(meta.isLegacy),
     },
   };
 }
@@ -679,14 +695,16 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
   if (!key || !safePreset) return;
   await dbPool.query(`
     INSERT INTO strategy_presets (
-      id, owner_user_id, name, label, strategy_type, config, meta, is_legacy, created_at, updated_at
+      id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, created_at, updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE
       SET label = EXCLUDED.label,
           strategy_type = EXCLUDED.strategy_type,
           config = EXCLUDED.config,
           meta = EXCLUDED.meta,
+          original_text = COALESCE(NULLIF(strategy_presets.original_text, ''), EXCLUDED.original_text),
+          model_text = EXCLUDED.model_text,
           is_legacy = EXCLUDED.is_legacy,
           updated_at = NOW()
   `, [
@@ -697,6 +715,8 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
     safePreset.strategyType,
     JSON.stringify(safePreset),
     JSON.stringify(safePreset.meta || {}),
+    safePreset.meta && safePreset.meta.originalText ? safePreset.meta.originalText : "",
+    safePreset.meta && safePreset.meta.modelText ? safePreset.meta.modelText : "",
     Boolean(isLegacy),
   ]);
 }
@@ -704,11 +724,20 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
 function presetRowsToMap(rows) {
   return rows.reduce((next, row) => {
     const preset = row.config && typeof row.config === "object" ? row.config : {};
+    const rowMeta = row.meta && typeof row.meta === "object" ? row.meta : {};
     next[row.name] = sanitizeServerPreset(row.name, {
       ...preset,
       label: row.label,
       strategyType: row.strategy_type,
-      meta: row.meta || preset.meta,
+      meta: {
+        ...rowMeta,
+        ...(preset.meta || {}),
+        originalText: row.original_text || rowMeta.originalText || (preset.meta && preset.meta.originalText) || "",
+        modelText: row.model_text || rowMeta.modelText || (preset.meta && preset.meta.modelText) || row.original_text || "",
+        ownerEmail: row.owner_email || rowMeta.ownerEmail || "",
+        isOwner: Boolean(row.is_owner),
+        isLegacy: Boolean(row.is_legacy),
+      },
     });
     return next;
   }, {});
@@ -716,13 +745,15 @@ function presetRowsToMap(rows) {
 
 async function readUserPresets(email) {
   const legacyResult = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta
+    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy, ''::text AS owner_email, FALSE AS is_owner
     FROM strategy_presets
     WHERE owner_user_id IS NULL
     ORDER BY updated_at DESC
   `);
   const userResult = await dbQuery(`
-    SELECT strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config, strategy_presets.meta
+    SELECT strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
+      strategy_presets.meta, strategy_presets.original_text, strategy_presets.model_text, strategy_presets.is_legacy,
+      users.email AS owner_email, TRUE AS is_owner
     FROM strategy_presets
     JOIN users ON users.id = strategy_presets.owner_user_id
     WHERE users.email = $1
@@ -742,7 +773,7 @@ async function readUserPresets(email) {
 
 async function readVisiblePresetsForAnonymous() {
   const result = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta
+    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy, ''::text AS owner_email, FALSE AS is_owner
     FROM strategy_presets
     WHERE owner_user_id IS NULL
     ORDER BY updated_at DESC
@@ -843,6 +874,7 @@ async function getCurrentUser(req) {
     createdAt: result.rows[0].created_at,
     emailVerified: !RESEND_API_KEY || Boolean(result.rows[0].email_verified_at),
     emailEnabled: Boolean(RESEND_API_KEY),
+    isAdmin: isAdminEmail(result.rows[0].email),
   };
 }
 
@@ -860,6 +892,16 @@ async function requireVerifiedCurrentUser(req) {
   const user = await requireCurrentUser(req);
   if (RESEND_API_KEY && !user.emailVerified) {
     const error = new Error("请先验证电子邮件后再保存。");
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
+async function requireAdminUser(req) {
+  const user = await requireCurrentUser(req);
+  if (!isAdminEmail(user.email)) {
+    const error = new Error("只有管理员可以执行这个操作。");
     error.statusCode = 403;
     throw error;
   }
@@ -975,6 +1017,7 @@ async function handleAuthApi(req, res, action) {
         createdAt: userRow.created_at || null,
         emailVerified: !RESEND_API_KEY || Boolean(userRow.email_verified_at),
         emailEnabled: Boolean(RESEND_API_KEY),
+        isAdmin: isAdminEmail(email),
       },
     });
   } catch (error) {
@@ -1191,6 +1234,64 @@ async function handlePresetsApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "预设保存失败。" });
+  }
+}
+
+function mapAdminPresetRow(row) {
+  const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+  return {
+    id: row.id,
+    name: row.name,
+    label: row.label,
+    strategyType: row.strategy_type,
+    ownerEmail: row.owner_email || "",
+    isLegacy: Boolean(row.is_legacy),
+    originalText: row.original_text || meta.originalText || "",
+    modelText: row.model_text || meta.modelText || row.original_text || "",
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+async function handleAdminPresetsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+
+    if (req.method === "GET") {
+      const result = await dbQuery(`
+        SELECT strategy_presets.*, users.email AS owner_email
+        FROM strategy_presets
+        LEFT JOIN users ON users.id = strategy_presets.owner_user_id
+        ORDER BY strategy_presets.updated_at DESC
+        LIMIT 2000
+      `);
+      sendJson(res, 200, {
+        adminEmail: ADMIN_EMAIL,
+        presets: result.rows.map(mapAdminPresetRow),
+      });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const id = String(payload.id || "").trim();
+      if (!id) {
+        sendJson(res, 400, { error: "缺少模型 ID。" });
+        return;
+      }
+      const result = await dbQuery("DELETE FROM strategy_presets WHERE id = $1 RETURNING id, name, label", [id]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+        return;
+      }
+      sendJson(res, 200, { deleted: result.rows[0] });
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
   }
 }
 
@@ -2127,6 +2228,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/presets") {
     handlePresetsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/presets") {
+    handleAdminPresetsApi(req, res);
     return;
   }
 
