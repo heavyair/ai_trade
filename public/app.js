@@ -1160,20 +1160,6 @@ function hideHistoryPanels() {
   historyPanels.forEach((panel) => panel.classList.add("hidden"));
 }
 
-function scrollToModelPerformance() {
-  if (!modelPerformancePanel) return;
-  modelPerformancePanel.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  });
-}
-
-function getSimulationStepTarget(stepName) {
-  if (stepName === "data") return document.querySelector("#simulationDataSection");
-  if (stepName === "results") return document.querySelector("#simulationResultsSection");
-  return document.querySelector("#simulationModelsSection");
-}
-
 function setSimulationStep(stepName) {
   const order = ["models", "data", "results"];
   const nextStep = order.includes(stepName) ? stepName : "models";
@@ -1185,15 +1171,6 @@ function setSimulationStep(stepName) {
     button.classList.toggle("active", isActive);
     button.classList.toggle("complete", stepIndex >= 0 && stepIndex < activeIndex);
     button.setAttribute("aria-current", isActive ? "step" : "false");
-  });
-}
-
-function scrollToSimulationStep(stepName) {
-  const target = getSimulationStepTarget(stepName);
-  if (!target) return;
-  target.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
   });
 }
 
@@ -1640,11 +1617,17 @@ function renderSimulationOverview() {
 
 function showDialog(dialog) {
   if (!dialog) return;
+  const scrollLeft = window.scrollX;
+  const scrollTop = window.scrollY;
   if (typeof dialog.showModal === "function") {
     dialog.showModal();
   } else {
     dialog.setAttribute("open", "open");
   }
+  window.scrollTo(scrollLeft, scrollTop);
+  window.requestAnimationFrame(() => {
+    window.scrollTo(scrollLeft, scrollTop);
+  });
 }
 
 function closeDialog(dialog) {
