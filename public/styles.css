@@ -1380,6 +1380,18 @@ button:disabled {
   background: #f4fafb;
 }
 
+.simulation-top-config {
+  margin: 12px 0 14px;
+  padding: 12px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+}
+
+.simulation-top-config .settings-grid {
+  margin: 0;
+}
+
 .selected-model-detail > strong {
   font-size: 15px;
 }
@@ -1554,6 +1566,17 @@ button:disabled {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.model-trades-log {
+  height: min(46vh, 420px);
+}
+
+.trade-detail-dialog .param-dialog-body,
+.trade-detail-dialog .backtest-section,
+.results-dialog .backtest-section {
+  max-height: min(86vh, 920px);
+  overflow: auto;
 }
 
 .log-title {

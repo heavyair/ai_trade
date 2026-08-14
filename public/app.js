@@ -63,6 +63,10 @@ const marketDataDialog = document.querySelector("#marketDataDialog");
 const closeMarketDataButton = document.querySelector("#closeMarketDataButton");
 const resultsDialog = document.querySelector("#resultsDialog");
 const closeResultsDialogButton = document.querySelector("#closeResultsDialogButton");
+const modelTradesDialog = document.querySelector("#modelTradesDialog");
+const closeModelTradesButton = document.querySelector("#closeModelTradesButton");
+const tradeDetailDialog = document.querySelector("#tradeDetailDialog");
+const closeTradeDetailButton = document.querySelector("#closeTradeDetailButton");
 const selectedModelSummary = document.querySelector("#selectedModelSummary");
 const selectedDataSummary = document.querySelector("#selectedDataSummary");
 const selectedResultSummary = document.querySelector("#selectedResultSummary");
@@ -72,6 +76,9 @@ const showModelPerformanceButton = document.querySelector("#showModelPerformance
 const selectedModelDetail = document.querySelector("#selectedModelDetail");
 const rankingPresetList = document.querySelector("#rankingPresetList");
 const optimizeSelectedModelButton = document.querySelector("#optimizeSelectedModelButton");
+const modelTradesTitle = document.querySelector("#modelTradesTitle");
+const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
+const modelTradesDetail = document.querySelector("#modelTradesDetail");
 const presetParamDialog = document.querySelector("#presetParamDialog");
 const closePresetParamButton = document.querySelector("#closePresetParamButton");
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
@@ -1872,9 +1879,6 @@ function openResultsDialog() {
     return;
   }
   showDialog(resultsDialog);
-  window.requestAnimationFrame(() => {
-    redrawVisibleBacktestCharts();
-  });
 }
 
 function getSelectedComparisonPresetNames() {
@@ -3678,7 +3682,6 @@ function renderModelComparisonTable(results) {
             <span>交易 ${state.trades.length}</span>
           </div>
           <div class="performance-actions">
-            <button class="result-chart-button" type="button" data-result-name="${escapeHtml(result.name)}">查看曲线</button>
             ${canEditPreset ? `<button class="result-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
             ${canEditPreset ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化</button>` : ""}
           </div>
@@ -3822,7 +3825,7 @@ function renderModelRanking() {
   if (!rankingPresetList) return;
 
   if (rankingRecords.length === 0) {
-    rankingPresetList.innerHTML = '<div class="ranking-empty">暂无排行记录。进入历史模拟，选择模型并开始模拟后，会按 1 年、3 年、5 年分别记录成绩。</div>';
+    rankingPresetList.innerHTML = '<div class="ranking-empty">暂无排行记录。进入历史模拟，选择模型并加载历史数据后，会按 1 年、3 年、5 年分别记录成绩。</div>';
     return;
   }
 
@@ -4506,7 +4509,7 @@ function renderSelectedModelDetail(result) {
   if (!result || !result.finalState) {
     selectedModelDetail.innerHTML = `
       <strong>选择排行榜中的模型查看详情</strong>
-      <span>收益曲线、交易记录和这个模型的参数说明会显示在下方。</span>
+      <span>点击模型卡片后，会弹出该模型的交易记录；点击记录后再查看交易详情和对应曲线。</span>
     `;
     return;
   }
@@ -4798,6 +4801,54 @@ function renderTradeDetail(trade) {
   `;
 }
 
+function renderModelTradesDetail(result) {
+  if (!modelTradesDetail) return;
+  if (!result || !result.finalState) {
+    modelTradesDetail.innerHTML = "";
+    return;
+  }
+  const html = [];
+  const state = result.finalState;
+  const preset = result.name !== "__current__" ? strategyPresets[result.name] : null;
+  const narrative = describeOptimizationConfig(result.config);
+  const presetSummary = preset
+    ? summarizePresetParameters(preset)
+    : summarizePresetParameters(createPresetFromConfig(result.label, result.config));
+  html.push(`
+    <div class="selected-model-detail-head">
+      <div>
+        <span>当前查看模型</span>
+        <strong>${escapeHtml(result.label)}</strong>
+        <small>${escapeHtml(getStrategyTypeLabel(result.strategyType))} · ${escapeHtml(presetSummary)}</small>
+      </div>
+      ${preset ? `<button class="selected-model-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
+    </div>
+    <div class="selected-model-metrics">
+      <article><span>模型收益</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong></article>
+      <article><span>最大回撤</span><strong>${formatPercent(state.maxDrawdown)}</strong></article>
+      <article><span>全仓收益</span><strong>${formatPercent(state.buyHold.returnRate)}</strong></article>
+      <article><span>超额收益</span><strong class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</strong></article>
+      <article><span>交易费用</span><strong>${formatMoney(state.totalFees || 0)}</strong></article>
+      <article><span>交易次数</span><strong>${state.trades.length}</strong></article>
+    </div>
+    <div class="optimization-narrative">
+      <section>
+        <h3>${escapeHtml(narrative.title)}</h3>
+        <p>${escapeHtml(presetSummary)}</p>
+      </section>
+      <section>
+        <h4>如何使用这个模型建仓</h4>
+        ${renderNarrativeList(narrative.build)}
+      </section>
+      <section>
+        <h4>如何卖出或降仓</h4>
+        ${renderNarrativeList(narrative.exit)}
+      </section>
+    </div>
+  `);
+  modelTradesDetail.innerHTML = html.join("");
+}
+
 function findComparisonResultForTrade(trade) {
   if (!trade || !trade.modelLabel) return null;
   return comparisonResults.find((result) => result.label === trade.modelLabel) || null;
@@ -4830,11 +4881,16 @@ function renderModelResultCharts(result) {
   selectedTradeForChart = null;
   selectedTradeChartStates = [];
   renderSelectedModelDetail(result);
+  renderModelTradesDetail(result);
   renderTradeLog(withTradeModelLabel(result.finalState.trades || [], result.label), result.label);
   renderTradeDetail(null);
   drawReturnComparison(result.states);
   drawTradePriceChart([]);
-  setStatus(`已切换到 ${result.label}：下方只显示这个模型的交易记录。请选择一条交易查看对应价格、参考高低点和趋势。`);
+  if (modelTradesTitle) modelTradesTitle.textContent = `${result.label} 交易记录`;
+  if (modelTradesSubtitle) modelTradesSubtitle.textContent = `${activeBacktestRangeLabel || "已完成模拟"}；点击一条交易查看详情和对应价格曲线。`;
+  if (resultsDialog && resultsDialog.open) closeDialog(resultsDialog);
+  showDialog(modelTradesDialog);
+  setStatus(`已切换到 ${result.label}：交易记录已弹出。请选择一条交易查看对应价格、参考高低点和趋势。`);
 }
 
 function selectTradeLogRow(row) {
@@ -5286,8 +5342,10 @@ function stopBacktestReplay() {
     clearInterval(backtestTimer);
     backtestTimer = null;
   }
-  startBacktestButton.disabled = false;
-  startBacktestButton.textContent = "开始模拟";
+  if (startBacktestButton) {
+    startBacktestButton.disabled = false;
+    startBacktestButton.textContent = "开始模拟";
+  }
 }
 
 function resetBacktest() {
@@ -5303,6 +5361,7 @@ function resetBacktest() {
   renderBacktestState(null, 0, 0);
   renderModelComparisonTable([]);
   renderTradeDetail(null);
+  if (modelTradesDetail) modelTradesDetail.innerHTML = "";
   renderSelectedModelDetail(null);
   renderModelRanking();
   renderSimulationOverview();
@@ -5450,19 +5509,21 @@ function startBacktest() {
   renderTradeDetail(null);
   const leadingResult = comparisonResults[0];
   if (leadingResult) {
-    renderModelResultCharts(leadingResult);
+    renderSelectedModelDetail(leadingResult);
   } else {
     renderSelectedModelDetail(null);
   }
-  startBacktestButton.disabled = false;
-  startBacktestButton.textContent = "开始模拟";
+  if (startBacktestButton) {
+    startBacktestButton.disabled = false;
+    startBacktestButton.textContent = "开始模拟";
+  }
   const leadingText = leadingResult
     ? `当前排名第一：${leadingResult.label}，收益 ${formatPercent(leadingResult.finalState.returnRate)}，最大回撤 ${formatPercent(leadingResult.finalState.maxDrawdown)}。`
     : "";
-  setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现表和交易记录。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
+  setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现排行榜。${leadingText} 点击某个模型查看交易记录。`);
   saveBacktestRunToServer(config).then((saved) => {
     if (saved && saved.runId) {
-      setStatus(`模拟完成：${activeBacktestRangeLabel}；历史测试记录已保存到 Postgres。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
+      setStatus(`模拟完成：${activeBacktestRangeLabel}；历史测试记录已保存到 Postgres。${leadingText} 点击某个模型查看交易记录。`);
     }
   });
   setSimulationStep("results");
@@ -5869,6 +5930,18 @@ if (closeResultsDialogButton && resultsDialog) {
   });
 }
 
+if (closeModelTradesButton && modelTradesDialog) {
+  closeModelTradesButton.addEventListener("click", () => {
+    closeDialog(modelTradesDialog);
+  });
+}
+
+if (closeTradeDetailButton && tradeDetailDialog) {
+  closeTradeDetailButton.addEventListener("click", () => {
+    closeDialog(tradeDetailDialog);
+  });
+}
+
 wizardButtons.forEach((button) => {
   button.addEventListener("click", () => {
     if (button.dataset.wizardTarget === "new-model") {
@@ -6003,6 +6076,14 @@ if (selectedModelDetail) {
   });
 }
 
+if (modelTradesDetail) {
+  modelTradesDetail.addEventListener("click", (event) => {
+    const paramButton = event.target && event.target.closest ? event.target.closest(".selected-model-param-button") : null;
+    if (!paramButton || !paramButton.dataset.presetName || paramButton.dataset.presetName === "__current__") return;
+    openPresetParamEditor(paramButton.dataset.presetName);
+  });
+}
+
 if (backtestFields.tradeLog) {
   backtestFields.tradeLog.addEventListener("click", (event) => {
     const row = event.target && event.target.closest ? event.target.closest("[data-trade-index]") : null;
@@ -6011,7 +6092,10 @@ if (backtestFields.tradeLog) {
     if (!trade) return;
     selectTradeLogRow(row);
     renderTradeDetail(trade);
-    focusTradeOnChart(trade);
+    showDialog(tradeDetailDialog);
+    window.requestAnimationFrame(() => {
+      focusTradeOnChart(trade);
+    });
   });
 }
 
@@ -6077,9 +6161,11 @@ if (optimizeSelectedModelButton) {
   });
 }
 
-startBacktestButton.addEventListener("click", () => {
-  startBacktest();
-});
+if (startBacktestButton) {
+  startBacktestButton.addEventListener("click", () => {
+    startBacktest();
+  });
+}
 
 applyPresetButton.addEventListener("click", () => {
   applyStrategyPreset(strategyPresetSelect.value);
@@ -6236,6 +6322,15 @@ tradeZoomResetButton.addEventListener("click", () => {
 
 tradeZoomInButton.addEventListener("click", () => {
   setTradePriceZoom(tradePriceZoom + 1);
+});
+
+[initialCashInput, tradeFeeInput].forEach((input) => {
+  if (!input) return;
+  input.addEventListener("change", () => {
+    if (lastRows && lastRows.length > 0 && getSelectedComparisonPresetNames().length > 0) {
+      startBacktest();
+    }
+  });
 });
 
 window.addEventListener("resize", () => {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-bilingual-prompts">
+    <link rel="stylesheet" href="/styles.css?v=20260814-simulation-popups">
   </head>
   <body>
     <main class="shell">
@@ -187,6 +187,18 @@
           </div>
         </div>
         <input id="compareCurrentConfigInput" class="hidden" type="checkbox">
+        <form id="backtestForm" class="simulation-config-form simulation-top-config">
+          <div class="settings-grid">
+            <label>
+              初始现金
+              <input id="initialCashInput" type="number" min="1000" step="1000" value="100000">
+            </label>
+            <label>
+              每笔交易费
+              <input id="tradeFeeInput" type="number" min="0" step="0.01" value="5">
+            </label>
+          </div>
+        </form>
         <div class="simulation-state-grid">
           <article id="selectedModelSummary" class="selected-model-summary" data-i18n="noModelSelected">尚未选择模型。</article>
           <article id="selectedDataSummary" class="selected-model-summary">
@@ -197,10 +209,6 @@
             <strong data-i18n="simulationNotReady">尚未生成模拟表现</strong>
             <span data-i18n="simulationNotReadyHint">选择模型并加载历史数据后会自动开始模拟。</span>
           </article>
-        </div>
-        <div class="simulation-action-grid">
-          <button id="openMarketDataButton" class="ghost-button" type="button" disabled data-i18n="viewMarketChart">查看行情曲线</button>
-          <button id="openResultsDialogButton" type="button" disabled data-i18n="viewModelPerformance">查看模型表现</button>
         </div>
         <dialog id="modelSelectorDialog" class="param-dialog model-selector-dialog">
           <form method="dialog" class="param-dialog-body">
@@ -401,11 +409,10 @@
         <div class="section-head">
           <div>
             <h2>模型表现</h2>
-            <p>加载历史数据后先看排行榜；点击模型后再显示该模型的曲线、参数解释和交易记录。</p>
+            <p>加载历史数据后直接显示排行榜；点击模型后弹出该模型的交易记录。</p>
           </div>
           <div class="section-actions">
             <button id="closeResultsDialogButton" class="ghost-button" type="button">关闭</button>
-            <button id="startBacktestButton" type="button">开始模拟</button>
           </div>
         </div>
 
@@ -419,11 +426,11 @@
 
         <div id="selectedModelDetail" class="selected-model-detail" aria-live="polite">
           <strong>选择排行榜中的模型查看详情</strong>
-          <span>收益曲线、交易记录和这个模型的参数说明会显示在下方。</span>
+          <span>点击模型卡片后，会弹出该模型的交易记录；点击记录后再查看交易详情和对应曲线。</span>
         </div>
 
-        <div class="backtest-layout">
-          <form id="backtestForm" class="backtest-form simulation-config-form">
+        <div class="backtest-layout hidden">
+          <div class="backtest-form simulation-config-form">
             <div class="preset-panel hidden">
               <label>
                 策略预设
@@ -432,18 +439,10 @@
               <button id="applyPresetButton" type="button">套用</button>
             </div>
 
-            <div class="settings-grid">
-              <label>
-                初始现金
-                <input id="initialCashInput" type="number" min="1000" step="1000" value="100000">
-              </label>
+            <div class="settings-grid hidden">
               <label class="hidden">
                 交易速度
                 <input id="playSpeedInput" type="number" min="10" max="1000" step="10" value="80">
-              </label>
-              <label>
-                每笔交易费
-                <input id="tradeFeeInput" type="number" min="0" step="0.01" value="5">
               </label>
               <label class="hidden">
                 回测抽样
@@ -718,7 +717,7 @@
               </div>
               <div class="condition-note">风控平仓：持仓后，连续指定天数未突破前 N 日高点时，按设置比例平仓。</div>
             </div>
-          </form>
+          </div>
 
           <div class="account-panel">
             <div class="account-strip hidden">
@@ -792,48 +791,74 @@
               </article>
             </div>
 
-            <div class="comparison-panel">
-              <div class="comparison-head">
-                <h3>模型收益 vs 全仓收益</h3>
-                <div class="legend">
-                  <span><i class="line model-line"></i>模型收益</span>
-                  <span><i class="line hold-line"></i>全仓持有收益</span>
-                </div>
-              </div>
-              <div class="comparison-wrap">
-                <svg id="returnCompareChart" role="img" aria-label="模型收益和全仓收益对比曲线"></svg>
-              </div>
-            </div>
-
-            <div class="log-wrap">
-              <div class="log-title">模型策略交易记录</div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>日期</th>
-                    <th>模型</th>
-                    <th>操作</th>
-                    <th>价格</th>
-                    <th>数量</th>
-                    <th>仓位</th>
-                    <th>账户现金</th>
-                    <th>账户总资产</th>
-                    <th>费用</th>
-                    <th>参考点</th>
-                    <th>触发条件</th>
-                  </tr>
-                </thead>
-                <tbody id="tradeLog"></tbody>
-              </table>
-            </div>
-
-            <div id="tradeDetailPanel" class="trade-detail-panel" aria-live="polite">
-              <strong>交易详情</strong>
-              <span>点击交易记录后，会显示触发条件并把下方价格图放大到对应区间。</span>
-            </div>
           </div>
         </div>
+      </section>
+      </dialog>
 
+      <dialog id="modelTradesDialog" class="param-dialog results-dialog">
+      <section class="backtest-section" aria-label="模型交易记录">
+        <div class="section-head">
+          <div>
+            <h2 id="modelTradesTitle">模型交易记录</h2>
+            <p id="modelTradesSubtitle">选择一条交易记录查看详情和对应价格曲线。</p>
+          </div>
+          <div class="section-actions">
+            <button id="closeModelTradesButton" class="ghost-button" type="button">关闭</button>
+          </div>
+        </div>
+        <div id="modelTradesDetail" class="selected-model-detail" aria-live="polite"></div>
+        <div class="comparison-panel">
+          <div class="comparison-head">
+            <h3>模型收益 vs 全仓收益</h3>
+            <div class="legend">
+              <span><i class="line model-line"></i>模型收益</span>
+              <span><i class="line hold-line"></i>全仓持有收益</span>
+            </div>
+          </div>
+          <div class="comparison-wrap">
+            <svg id="returnCompareChart" role="img" aria-label="模型收益和全仓收益对比曲线"></svg>
+          </div>
+        </div>
+        <div class="log-wrap model-trades-log">
+          <div class="log-title">模型策略交易记录</div>
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>模型</th>
+                <th>操作</th>
+                <th>价格</th>
+                <th>数量</th>
+                <th>仓位</th>
+                <th>账户现金</th>
+                <th>账户总资产</th>
+                <th>费用</th>
+                <th>参考点</th>
+                <th>触发条件</th>
+              </tr>
+            </thead>
+            <tbody id="tradeLog"></tbody>
+          </table>
+        </div>
+      </section>
+      </dialog>
+
+      <dialog id="tradeDetailDialog" class="param-dialog trade-detail-dialog">
+      <section class="backtest-section" aria-label="交易详情和价格曲线">
+        <div class="section-head">
+          <div>
+            <h2>交易详情</h2>
+            <p>显示该笔交易的触发条件、参考高低点和对应价格区间。</p>
+          </div>
+          <div class="section-actions">
+            <button id="closeTradeDetailButton" class="ghost-button" type="button">关闭</button>
+          </div>
+        </div>
+        <div id="tradeDetailPanel" class="trade-detail-panel" aria-live="polite">
+          <strong>交易详情</strong>
+          <span>点击交易记录后，会显示触发条件并把下方价格图放大到对应区间。</span>
+        </div>
         <div class="comparison-panel full-width-panel">
           <div class="comparison-head">
             <h3>价格波动与交易参考点</h3>
@@ -885,6 +910,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260814-bilingual-prompts"></script>
+    <script src="/app.js?v=20260814-simulation-popups"></script>
   </body>
 </html>
