@@ -61,6 +61,43 @@ body {
   gap: 12px;
 }
 
+.auth-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+}
+
+.auth-panel div {
+  min-width: 0;
+}
+
+.auth-panel span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-panel strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-panel button {
+  flex: 0 0 auto;
+}
+
 .wizard-action {
   height: 74px;
   min-width: 0;
@@ -405,6 +442,13 @@ button:disabled {
   gap: 16px;
   align-items: flex-start;
   margin-bottom: 14px;
+}
+
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .chart-head h2,
@@ -1537,6 +1581,41 @@ button:disabled {
   gap: 12px;
 }
 
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.auth-tabs button {
+  height: 42px;
+  color: var(--accent);
+  background: #eef8fa;
+  border: 1px solid #cae3e8;
+}
+
+.auth-tabs button.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.auth-required-note {
+  padding: 10px 12px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #f4fafb;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.auth-required-note.error {
+  border-color: #f3b7b2;
+  background: #fff4f2;
+  color: #9a3412;
+}
+
 textarea {
   width: 100%;
   min-height: 138px;
@@ -1791,17 +1870,20 @@ tbody tr:last-child td {
   .research-head,
   .comparison-head,
   .dialog-head,
-  .baseline-note {
+  .baseline-note,
+  .auth-panel {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .research-actions,
-  .dialog-actions {
+  .dialog-actions,
+  .section-actions {
     width: 100%;
   }
 
-  .dialog-actions {
+  .dialog-actions,
+  .section-actions {
     display: grid;
     grid-template-columns: 1fr;
   }
@@ -1899,6 +1981,10 @@ tbody tr:last-child td {
 
   .wizard-action {
     height: 64px;
+  }
+
+  .auth-panel button {
+    width: 100%;
   }
 
   .chart-tools {

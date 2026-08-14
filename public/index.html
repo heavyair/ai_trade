@@ -21,6 +21,15 @@
           <button id="wizardNewModelButton" class="wizard-action" type="button" data-wizard-target="new-model" aria-selected="false">新建模型</button>
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false">历史模拟</button>
         </div>
+        <div class="auth-panel" aria-live="polite">
+          <div>
+            <span>账户</span>
+            <strong id="authStatusText">未登录</strong>
+          </div>
+          <button id="openAuthButton" class="ghost-button" type="button">注册 / 登录</button>
+          <button id="resendVerificationButton" class="ghost-button hidden" type="button">重发验证邮件</button>
+          <button id="logoutButton" class="ghost-button hidden" type="button">退出</button>
+        </div>
       </section>
 
       <section id="rankingPage" class="wizard-page" data-wizard-page="ranking" aria-label="模型排行">
@@ -31,6 +40,7 @@
               <p>按股票和 1 年、3 年、5 年区间分别记录模型表现。</p>
             </div>
             <div class="research-actions">
+              <button class="ghost-button return-nav-button" type="button">返回功能导航</button>
               <button id="optimizeSelectedModelButton" type="button">优化选中模型</button>
             </div>
           </div>
@@ -45,7 +55,9 @@
               <h2>新建模型</h2>
               <p>用文字描述买卖规则，系统会生成受限的客户端模型预设。</p>
             </div>
+            <button class="ghost-button return-nav-button" type="button">返回功能导航</button>
           </div>
+          <div id="newModelAuthNote" class="auth-required-note hidden">保存新模型需要免费注册、登录并验证电子邮件。模型会按电子邮件账户保存到服务器端。</div>
           <label>
             模型描述
             <textarea id="customModelPrompt" rows="6" placeholder="例如：最近3天高点回撤2%买入20%，之后每下跌2%再买20%，每笔上涨2%卖出"></textarea>
@@ -108,6 +120,34 @@
           <pre id="optimizationParamPreview" class="code-preview">等待结果...</pre>
           <div class="dialog-actions">
             <button id="saveOptimizationButton" type="button" disabled>保存优化参数</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="authDialog" class="param-dialog">
+        <form id="authForm" method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="authDialogTitle">注册 / 登录</h2>
+              <p>免费账户只需要电子邮件和密码。验证邮箱后，可在服务器端保存模型参数。</p>
+            </div>
+            <button id="closeAuthButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div class="auth-tabs" role="tablist" aria-label="账户操作">
+            <button id="authLoginTab" class="active" type="button" data-auth-mode="login">登录</button>
+            <button id="authRegisterTab" type="button" data-auth-mode="register">注册</button>
+          </div>
+          <label>
+            电子邮件
+            <input id="authEmailInput" type="email" maxlength="160" autocomplete="email" required>
+          </label>
+          <label>
+            密码
+            <input id="authPasswordInput" type="password" minlength="8" maxlength="200" autocomplete="current-password" required>
+          </label>
+          <div id="authMessage" class="auth-required-note hidden"></div>
+          <div class="dialog-actions">
+            <button id="submitAuthButton" type="submit">登录</button>
           </div>
         </form>
       </dialog>
@@ -195,7 +235,7 @@
         <div id="statusText">正在准备查询条件...</div>
       </section>
 
-      <section class="company-card" aria-label="标的信息">
+      <section class="company-card hidden" data-history-panel aria-label="标的信息">
         <div>
           <span>标的信息</span>
           <strong id="companyName">--</strong>
@@ -224,7 +264,7 @@
         </dl>
       </section>
 
-      <section class="summary-grid" aria-label="高低点摘要">
+      <section class="summary-grid hidden" data-history-panel aria-label="高低点摘要">
         <article class="metric high">
           <span>最高点</span>
           <strong id="highestPrice">--</strong>
@@ -257,7 +297,7 @@
         </article>
       </section>
 
-      <section class="chart-section" aria-label="价格走势图">
+      <section class="chart-section hidden" data-history-panel aria-label="价格走势图">
         <div class="chart-head">
           <div>
             <h2 id="chartTitle">513100</h2>
@@ -298,13 +338,16 @@
         </div>
       </section>
 
-      <section id="simulationResultsSection" class="backtest-section" aria-label="模拟交易历史回测">
+      <section id="simulationResultsSection" class="backtest-section hidden" data-history-panel aria-label="模拟交易历史回测">
         <div class="section-head">
           <div>
             <h2>3. 查看模型表现</h2>
             <p>加载历史数据后先看排行榜；点击模型后再显示该模型的曲线、参数解释和交易记录。</p>
           </div>
-          <button id="startBacktestButton" type="button">开始模拟</button>
+          <div class="section-actions">
+            <button class="ghost-button return-nav-button" type="button">返回功能导航</button>
+            <button id="startBacktestButton" type="button">开始模拟</button>
+          </div>
         </div>
 
         <div id="modelPerformancePanel" class="log-wrap model-performance-wrap">
@@ -756,7 +799,7 @@
         </div>
       </section>
 
-      <section class="table-section" aria-label="关键数据">
+      <section class="table-section hidden" data-history-panel aria-label="关键数据">
         <div class="table-head">
           <h2>关键数据</h2>
         </div>

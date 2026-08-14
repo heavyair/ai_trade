@@ -9,6 +9,22 @@ const statusText = document.querySelector("#statusText");
 const wizardButtons = Array.from(document.querySelectorAll("[data-wizard-target]"));
 const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
 const simulationProgressButtons = Array.from(document.querySelectorAll("[data-simulation-step]"));
+const historyPanels = Array.from(document.querySelectorAll("[data-history-panel]"));
+const returnNavButtons = Array.from(document.querySelectorAll(".return-nav-button"));
+const authDialog = document.querySelector("#authDialog");
+const authForm = document.querySelector("#authForm");
+const authStatusText = document.querySelector("#authStatusText");
+const openAuthButton = document.querySelector("#openAuthButton");
+const logoutButton = document.querySelector("#logoutButton");
+const resendVerificationButton = document.querySelector("#resendVerificationButton");
+const closeAuthButton = document.querySelector("#closeAuthButton");
+const authLoginTab = document.querySelector("#authLoginTab");
+const authRegisterTab = document.querySelector("#authRegisterTab");
+const authEmailInput = document.querySelector("#authEmailInput");
+const authPasswordInput = document.querySelector("#authPasswordInput");
+const authMessage = document.querySelector("#authMessage");
+const submitAuthButton = document.querySelector("#submitAuthButton");
+const newModelAuthNote = document.querySelector("#newModelAuthNote");
 const chart = document.querySelector("#priceChart");
 const returnCompareChart = document.querySelector("#returnCompareChart");
 const tradePriceChart = document.querySelector("#tradePriceChart");
@@ -141,6 +157,8 @@ let editingPresetName = null;
 let activeOptimizationId = 0;
 let optimizationPresetDraft = null;
 let activeSimulationStep = "models";
+let currentUser = null;
+let authMode = "login";
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
@@ -539,11 +557,15 @@ function loadLocalCustomStrategyPresets() {
 }
 
 function saveCustomStrategyPresets() {
+  if (!requireSignedInForSave()) return Promise.resolve(false);
   const customPresets = Object.fromEntries(
     Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
   );
-  localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
-  saveServerCustomStrategyPresets(customPresets);
+  return saveServerCustomStrategyPresets(customPresets).then((payload) => {
+    if (!payload) return false;
+    localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
+    return true;
+  });
 }
 
 async function fetchServerCustomStrategyPresets() {
@@ -552,6 +574,8 @@ async function fetchServerCustomStrategyPresets() {
   if (!response.ok) {
     throw new Error(payload.error || "读取服务器预设失败。");
   }
+  currentUser = payload.authenticated ? payload.user : currentUser;
+  renderAuthState();
   return payload.presets && typeof payload.presets === "object" ? payload.presets : {};
 }
 
@@ -568,13 +592,21 @@ async function saveServerCustomStrategyPresets(customPresets) {
     if (!response.ok) {
       throw new Error(payload.error || "保存服务器预设失败。");
     }
+    if (payload.user) {
+      currentUser = payload.user;
+      renderAuthState();
+    }
     if (payload.presets && typeof payload.presets === "object") {
+      removeCustomStrategyPresets();
       Object.assign(strategyPresets, normalizeCustomPresetMap(payload.presets));
       localStorage.setItem(customPresetStorageKey, JSON.stringify(getCurrentCustomPresets()));
     }
     return payload;
   } catch (error) {
-    setStatus(`服务器预设保存失败，已保留浏览器本地备份：${error.message}`, true);
+    if (/注册|登录|401/.test(error.message)) {
+      openAuthDialog("register", error.message);
+    }
+    setStatus(`服务器预设保存失败：${error.message}`, true);
     return null;
   }
 }
@@ -595,18 +627,30 @@ function getCurrentCustomPresets() {
   );
 }
 
+function removeCustomStrategyPresets() {
+  Object.keys(strategyPresets).forEach((name) => {
+    if (name.startsWith("custom_") || name.startsWith("auto_")) {
+      delete strategyPresets[name];
+    }
+  });
+}
+
 async function initializeServerCustomPresets() {
   const localPresets = loadLocalCustomStrategyPresets();
   const hasLocalPresets = Object.keys(localPresets).length > 0;
   try {
-    const serverPresets = normalizeCustomPresetMap(await fetchServerCustomStrategyPresets());
+    const serverPayload = await fetchServerCustomStrategyPresets();
+    const serverPresets = normalizeCustomPresetMap(serverPayload);
+    removeCustomStrategyPresets();
     Object.assign(strategyPresets, serverPresets);
 
-    if (hasLocalPresets && localStorage.getItem(customPresetMigrationKey) !== "true") {
+    if (currentUser && hasLocalPresets && localStorage.getItem(customPresetMigrationKey) !== "true") {
       Object.assign(strategyPresets, localPresets);
       await saveServerCustomStrategyPresets(getCurrentCustomPresets());
       localStorage.setItem(customPresetMigrationKey, "true");
-      setStatus("已将浏览器本地自定义模型迁移到服务器端保存。");
+      setStatus(`已将浏览器本地自定义模型迁移到 ${currentUser.email} 的服务器账户。`);
+    } else if (!currentUser && hasLocalPresets && localStorage.getItem(customPresetMigrationKey) !== "true") {
+      setStatus("检测到浏览器本地旧模型；登录后会迁移到你的服务器账户。");
     } else {
       localStorage.setItem(customPresetStorageKey, JSON.stringify(getCurrentCustomPresets()));
     }
@@ -617,14 +661,7 @@ async function initializeServerCustomPresets() {
     const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
     renderStrategyPresetOptions(selectedType, selectedPreset);
   } catch (error) {
-    if (hasLocalPresets) {
-      Object.assign(strategyPresets, localPresets);
-      renderModelCompareOptions();
-      renderModelRanking();
-      setStatus(`服务器预设读取失败，暂时使用浏览器本地备份：${error.message}`, true);
-    } else {
-      setStatus(`服务器预设读取失败：${error.message}`, true);
-    }
+    setStatus(`服务器预设读取失败：${error.message}`, true);
   }
 }
 
@@ -721,6 +758,87 @@ async function saveServerRankingRecords(records) {
   }
 }
 
+function serializeTradeForBacktestSave(trade) {
+  return {
+    date: trade.date,
+    side: trade.side,
+    label: trade.label,
+    price: Number(trade.price) || 0,
+    shares: Number(trade.shares) || 0,
+    positionRatio: Number(trade.positionRatio) || 0,
+    accountCash: Number(trade.accountCash) || 0,
+    accountEquity: Number(trade.accountEquity) || 0,
+    fee: Number(trade.fee) || 0,
+    reason: trade.reason || "",
+    reference: trade.reference || null,
+  };
+}
+
+function serializeResultForBacktestSave(result, rank) {
+  const state = result.finalState || {};
+  const buyHold = state.buyHold || {};
+  return {
+    name: result.name,
+    label: result.label,
+    strategyType: result.strategyType || "wave",
+    rank,
+    config: result.config || {},
+    finalState: {
+      equity: Number(state.equity) || 0,
+      returnRate: Number(state.returnRate) || 0,
+      maxDrawdown: Number(state.maxDrawdown) || 0,
+      excessReturn: Number(state.excessReturn) || 0,
+      drawdownDiff: Number(state.drawdownDiff) || 0,
+      totalFees: Number(state.totalFees) || 0,
+      buyHold: {
+        returnRate: Number(buyHold.returnRate) || 0,
+        maxDrawdown: Number(buyHold.maxDrawdown) || 0,
+        totalFees: Number(buyHold.totalFees) || 0,
+      },
+    },
+    trades: (state.trades || []).map(serializeTradeForBacktestSave),
+  };
+}
+
+async function saveBacktestRunToServer(config) {
+  if (!currentUser || !comparisonResults || comparisonResults.length === 0 || !activeBacktestRows || activeBacktestRows.length === 0) {
+    return null;
+  }
+  const symbolInfo = getActiveRankingSymbolInfo();
+  const payload = {
+    symbol: symbolInfo.symbol,
+    symbolName: symbolInfo.symbolName,
+    market: lastSummary && lastSummary.symbol ? lastSummary.symbol.market : "",
+    startDate: activeBacktestRows[0].date,
+    endDate: activeBacktestRows[activeBacktestRows.length - 1].date,
+    rangeLabel: activeBacktestRangeLabel,
+    initialCash: config.initialCash,
+    tradeFee: config.tradeFee,
+    config,
+    summary: {
+      rowCount: activeBacktestRows.length,
+      source: lastSummary && lastSummary.source ? lastSummary.source : "",
+    },
+    results: comparisonResults.map((result, index) => serializeResultForBacktestSave(result, index + 1)),
+  };
+
+  try {
+    const response = await fetch("/api/backtests", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "回测记录保存失败。");
+    return result;
+  } catch (error) {
+    setStatus(`模拟完成，但历史测试记录保存失败：${error.message}`, true);
+    return null;
+  }
+}
+
 async function initializeServerRankingRecords() {
   rankingRecords = loadLocalRankingRecords();
   renderModelRanking();
@@ -733,7 +851,6 @@ async function initializeServerRankingRecords() {
   }
 }
 
-Object.assign(strategyPresets, loadLocalCustomStrategyPresets());
 rankingRecords = loadLocalRankingRecords();
 
 function formatDate(date) {
@@ -865,6 +982,166 @@ function setStatus(message, isError = false) {
 
 function setLoading(isLoading) {
   form.querySelector("button").disabled = isLoading;
+}
+
+function renderAuthState() {
+  const isSignedIn = Boolean(currentUser && currentUser.email);
+  const needsVerification = isSignedIn && currentUser.emailEnabled && currentUser.emailVerified === false;
+  if (authStatusText) {
+    authStatusText.textContent = isSignedIn
+      ? `${currentUser.email}${needsVerification ? "（待验证）" : ""}`
+      : "未登录";
+  }
+  if (openAuthButton) {
+    openAuthButton.textContent = isSignedIn ? "切换账户" : "注册 / 登录";
+  }
+  if (logoutButton) logoutButton.classList.toggle("hidden", !isSignedIn);
+  if (resendVerificationButton) resendVerificationButton.classList.toggle("hidden", !needsVerification);
+  if (newModelAuthNote) newModelAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
+  if (customModelCreatorInput && isSignedIn) {
+    customModelCreatorInput.value = currentUser.email;
+  }
+}
+
+function setAuthMessage(message, isError = false) {
+  if (!authMessage) return;
+  authMessage.textContent = message || "";
+  authMessage.classList.toggle("hidden", !message);
+  authMessage.classList.toggle("error", isError);
+}
+
+function setAuthMode(mode) {
+  authMode = mode === "register" ? "register" : "login";
+  if (authLoginTab) authLoginTab.classList.toggle("active", authMode === "login");
+  if (authRegisterTab) authRegisterTab.classList.toggle("active", authMode === "register");
+  if (submitAuthButton) submitAuthButton.textContent = authMode === "register" ? "免费注册" : "登录";
+  setAuthMessage(authMode === "register" ? "注册后请验证电子邮件，然后可把新模型和优化参数保存到服务器端。" : "", false);
+}
+
+function openAuthDialog(mode = "login", message = "") {
+  setAuthMode(mode);
+  if (message) setAuthMessage(message, true);
+  if (!authDialog) return;
+  if (typeof authDialog.showModal === "function") {
+    authDialog.showModal();
+  } else {
+    authDialog.setAttribute("open", "open");
+  }
+  if (authEmailInput) authEmailInput.focus();
+}
+
+async function fetchAuthSession() {
+  try {
+    const response = await fetch("/api/auth/session", { cache: "no-store" });
+    const payload = await response.json();
+    currentUser = payload.authenticated ? payload.user : null;
+    renderAuthState();
+    return currentUser;
+  } catch (error) {
+    currentUser = null;
+    renderAuthState();
+    return null;
+  }
+}
+
+async function submitAuthForm() {
+  if (!authEmailInput || !authPasswordInput) return;
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value;
+  if (!email || !password) {
+    setAuthMessage("请输入电子邮件和密码。", true);
+    return;
+  }
+  if (submitAuthButton) submitAuthButton.disabled = true;
+  setAuthMessage(authMode === "register" ? "正在注册..." : "正在登录...", false);
+
+  try {
+    const response = await fetch(`/api/auth/${authMode}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email, password }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "账户操作失败。");
+    }
+    currentUser = payload.user;
+    renderAuthState();
+    await initializeServerCustomPresets();
+    if (authDialog && authDialog.open) authDialog.close();
+    if (currentUser.emailEnabled && currentUser.emailVerified === false) {
+      const emailStatus = payload.verificationEmail && payload.verificationEmail.error
+        ? `验证邮件发送失败：${payload.verificationEmail.error}`
+        : "请到邮箱点击验证链接，验证后就可以保存模型。";
+      setStatus(`${currentUser.email} 已登录。${emailStatus}`, payload.verificationEmail && payload.verificationEmail.error);
+    } else {
+      setStatus(`${currentUser.email} 已登录，服务器端模型已加载。`);
+    }
+  } catch (error) {
+    setAuthMessage(error.message || "账户操作失败。", true);
+  } finally {
+    if (submitAuthButton) submitAuthButton.disabled = false;
+  }
+}
+
+async function logout() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch (error) {
+    // The local UI can still reset even if the logout request is interrupted.
+  }
+  currentUser = null;
+  renderAuthState();
+  removeCustomStrategyPresets();
+  await initializeServerCustomPresets();
+  setStatus("已退出账户。需要保存模型时请重新登录。");
+}
+
+function requireSignedInForSave() {
+  if (currentUser && currentUser.email && !(currentUser.emailEnabled && currentUser.emailVerified === false)) return true;
+  if (currentUser && currentUser.email) {
+    setStatus("保存到服务器前，请先验证电子邮件。可以点击账户区域的“重发验证邮件”。", true);
+    return false;
+  }
+  openAuthDialog("register", "保存模型需要先免费注册或登录。");
+  setStatus("保存模型需要先注册或登录。", true);
+  return false;
+}
+
+async function resendVerificationEmail() {
+  if (!currentUser || !currentUser.email) {
+    openAuthDialog("register", "请先注册或登录。");
+    return;
+  }
+  if (resendVerificationButton) resendVerificationButton.disabled = true;
+  setStatus("正在发送验证邮件...");
+  try {
+    const response = await fetch("/api/auth/resend-verification", { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "验证邮件发送失败。");
+    }
+    if (payload.alreadyVerified) {
+      await fetchAuthSession();
+      setStatus("电子邮件已经验证，可以保存模型。");
+      return;
+    }
+    setStatus("验证邮件已发送，请检查邮箱。");
+  } catch (error) {
+    setStatus(error.message || "验证邮件发送失败。", true);
+  } finally {
+    if (resendVerificationButton) resendVerificationButton.disabled = false;
+  }
+}
+
+function revealHistoryPanels() {
+  historyPanels.forEach((panel) => panel.classList.remove("hidden"));
+}
+
+function hideHistoryPanels() {
+  historyPanels.forEach((panel) => panel.classList.add("hidden"));
 }
 
 function scrollToModelPerformance() {
@@ -3325,8 +3602,8 @@ function openPresetParamEditor(presetName) {
   editingPresetName = presetName;
   if (presetParamTitle) presetParamTitle.textContent = "编辑预设模型";
   if (presetParamSubtitle) presetParamSubtitle.textContent = isUserEditablePreset(presetName)
-    ? "这个本地预设会直接保存修改。"
-    : "这是内置预设，保存时会创建一个本地副本。";
+    ? "这个账户预设会保存到服务器端。"
+    : "这是内置预设，保存时会创建一个账户副本。";
   if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
   renderPresetParamNarrative(presetName);
   presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
@@ -3337,8 +3614,9 @@ function openPresetParamEditor(presetName) {
   }
 }
 
-function saveEditedPresetParameters() {
+async function saveEditedPresetParameters() {
   if (!editingPresetName || !presetParamEditor) return;
+  if (!requireSignedInForSave()) return;
   let parsed;
   try {
     parsed = JSON.parse(presetParamEditor.value);
@@ -3390,7 +3668,8 @@ function saveEditedPresetParameters() {
     };
   }
 
-  saveCustomStrategyPresets();
+  const saved = await saveCustomStrategyPresets();
+  if (!saved) return;
   renderModelCompareOptions();
   renderModelRanking();
   fillStrategyPresetControls(savedName);
@@ -3550,11 +3829,18 @@ const modelPreset = ${JSON.stringify(preset, null, 2)};`;
   return { preset, code };
 }
 
-function saveGeneratedPreset(preset) {
+async function saveGeneratedPreset(preset) {
+  if (!requireSignedInForSave()) return null;
   const keyPrefix = preset.meta && preset.meta.creator === "auto" ? "auto" : "custom";
   const presetName = `${keyPrefix}_${Date.now()}`;
   strategyPresets[presetName] = sanitizeStoredPreset(presetName, preset);
-  saveCustomStrategyPresets();
+  const saved = await saveCustomStrategyPresets();
+  if (!saved) {
+    delete strategyPresets[presetName];
+    renderModelCompareOptions();
+    renderModelRanking();
+    return null;
+  }
   renderModelCompareOptions();
   renderStrategyPresetOptions(strategyPresets[presetName].strategyType, presetName);
   applyStrategyPreset(presetName);
@@ -4093,12 +4379,13 @@ function optimizeSelectedModel() {
   optimizePresetParameters(selectedPreset);
 }
 
-function saveOptimizationPreset() {
+async function saveOptimizationPreset() {
   if (!optimizationPresetDraft) {
     setStatus("没有可保存的优化参数。", true);
     return;
   }
-  const presetName = saveGeneratedPreset(optimizationPresetDraft);
+  const presetName = await saveGeneratedPreset(optimizationPresetDraft);
+  if (!presetName) return;
   const checkbox = Array.from(document.querySelectorAll(".model-compare-enabled"))
     .find((input) => input.value === presetName);
   if (checkbox) checkbox.checked = true;
@@ -4826,6 +5113,11 @@ function startBacktest() {
     ? `当前排名第一：${leadingResult.label}，收益 ${formatPercent(leadingResult.finalState.returnRate)}，最大回撤 ${formatPercent(leadingResult.finalState.maxDrawdown)}。`
     : "";
   setStatus(`模拟完成：${activeBacktestRangeLabel}；已生成表现表和交易记录。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
+  saveBacktestRunToServer(config).then((saved) => {
+    if (saved && saved.runId) {
+      setStatus(`模拟完成：${activeBacktestRangeLabel}；历史测试记录已保存到 Postgres。${leadingText} 点击某个模型查看收益曲线，点击交易记录查看对应价格高低点。`);
+    }
+  });
   setSimulationStep("results");
   window.setTimeout(scrollToModelPerformance, 80);
 }
@@ -5023,6 +5315,7 @@ function renderResult(result) {
   const displayName = name ? `${code} ${name}` : code;
   lastRows = rows;
   lastSummary = summary;
+  revealHistoryPanels();
 
   fields.highestPrice.textContent = formatPrice(summary.highest.price);
   fields.highestDate.textContent = `${summary.highest.date} 收盘 ${formatPrice(summary.highest.close)}`;
@@ -5172,6 +5465,15 @@ wizardButtons.forEach((button) => {
   });
 });
 
+returnNavButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelector(".wizard-hero").scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+});
+
 simulationProgressButtons.forEach((button) => {
   button.addEventListener("click", () => {
     const stepName = button.dataset.simulationStep || activeSimulationStep;
@@ -5179,6 +5481,49 @@ simulationProgressButtons.forEach((button) => {
     scrollToSimulationStep(stepName);
   });
 });
+
+if (openAuthButton) {
+  openAuthButton.addEventListener("click", () => {
+    openAuthDialog(currentUser ? "login" : "register");
+  });
+}
+
+if (logoutButton) {
+  logoutButton.addEventListener("click", () => {
+    logout();
+  });
+}
+
+if (resendVerificationButton) {
+  resendVerificationButton.addEventListener("click", () => {
+    resendVerificationEmail();
+  });
+}
+
+if (closeAuthButton && authDialog) {
+  closeAuthButton.addEventListener("click", () => {
+    authDialog.close();
+  });
+}
+
+if (authLoginTab) {
+  authLoginTab.addEventListener("click", () => {
+    setAuthMode("login");
+  });
+}
+
+if (authRegisterTab) {
+  authRegisterTab.addEventListener("click", () => {
+    setAuthMode("register");
+  });
+}
+
+if (authForm) {
+  authForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAuthForm();
+  });
+}
 
 if (rankingPresetList) {
   rankingPresetList.addEventListener("click", (event) => {
@@ -5289,9 +5634,10 @@ if (generateModelCodeButton) {
 }
 
 if (saveGeneratedModelButton) {
-  saveGeneratedModelButton.addEventListener("click", () => {
+  saveGeneratedModelButton.addEventListener("click", async () => {
     if (!generatedPresetDraft) return;
-    const presetName = saveGeneratedPreset(generatedPresetDraft.preset);
+    const presetName = await saveGeneratedPreset(generatedPresetDraft.preset);
+    if (!presetName) return;
     generatedPresetDraft = null;
     setWizardPage("ranking");
     setStatus(`已保存新模型预设：${strategyPresets[presetName].label}。`);
@@ -5474,14 +5820,21 @@ window.addEventListener("resize", () => {
   }
 });
 
-recentSymbolPresets = loadRecentSymbols();
-renderSymbolPresetOptions(codeInput.value);
-renderModelCompareOptions();
-renderModelRanking();
-setSimulationStep("models");
-applyStrategyPreset("optimized", false);
-initializeDates();
-updateBacktestWindowUi();
-initializeServerCustomPresets();
-initializeServerRankingRecords();
-loadData();
+async function initializeApp() {
+  recentSymbolPresets = loadRecentSymbols();
+  renderSymbolPresetOptions(codeInput.value);
+  renderModelCompareOptions();
+  renderModelRanking();
+  setSimulationStep("models");
+  hideHistoryPanels();
+  applyStrategyPreset("optimized", false);
+  initializeDates();
+  updateBacktestWindowUi();
+  renderAuthState();
+  await fetchAuthSession();
+  await initializeServerCustomPresets();
+  initializeServerRankingRecords();
+  setStatus("请选择功能、模型和股票区间；页面不会自动加载历史数据。");
+}
+
+initializeApp();

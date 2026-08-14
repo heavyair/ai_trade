@@ -20,46 +20,71 @@ http://localhost:3000
 $env:PORT=3001; npm start
 ```
 
-## 服务端预设保存与迁移
+## Postgres 数据库与迁移
 
-用户新建模型、优化后保存的模型参数会写入服务器端 JSON 文件：
+服务端现在使用 Postgres 保存用户、模型、历史行情、排行和历史回测记录。默认连接：
 
 ```text
-data/custom-presets.json
-data/ranking-records.json
+postgres://postgres:postgres@localhost:5432/ai_trade
 ```
 
-也可以用环境变量修改保存位置：
+可以用环境变量修改连接：
 
 ```powershell
-$env:PRESETS_FILE="D:\ai_trade_data\custom-presets.json"; $env:RANKINGS_FILE="D:\ai_trade_data\ranking-records.json"; npm start
+$env:DATABASE_URL="postgres://ai_trade:ai_trade@localhost:5432/ai_trade"; npm start
 ```
 
-旧版本曾把自定义预设保存到浏览器 `localStorage` 的 `aiTradeCustomStrategyPresets`。新版页面启动后会自动读取旧本地数据，并通过 `/api/presets` 上传到服务器端保存一次。迁移成功后，同一服务器上的其他浏览器也能读取这些预设。
+Docker Compose 会同时启动 Postgres 和 App：
 
-Docker 部署时请挂载持久目录：
-
-```bash
-docker run -d --name ai_trade -p 80:3000 -v /opt/ai_trade_data:/app/data ai_trade:latest
+```powershell
+docker compose up -d --build
 ```
 
-迁移服务器时，复制 `/opt/ai_trade_data/custom-presets.json` 和 `/opt/ai_trade_data/ranking-records.json` 即可保留用户保存的模型参数和模型排行记录。
+如果要启用注册验证邮件，需要给 App 配置 Resend：
+
+```powershell
+$env:RESEND_API_KEY="你的 Resend API Key"
+$env:EMAIL_FROM="AI Trade <onboarding@resend.dev>"
+$env:APP_PUBLIC_URL="http://172.105.9.107"
+docker compose up -d --build
+```
+
+`RESEND_API_KEY` 不应写入 git。生产服务器建议放在发布目录的 `.env` 文件或宿主机环境变量中；迁移到新服务器时重新配置即可。
+
+Postgres 数据默认挂载在 `/opt/ai_trade_pgdata`，旧 JSON 数据仍可作为迁移来源保留在 `/opt/ai_trade_data`。服务启动时会尝试把旧版 `custom-presets.json`、`ranking-records.json` 和 `users.json` 导入 Postgres；导入成功后不会删除 JSON 文件。
+
+迁移服务器时，复制 `/opt/ai_trade_pgdata` 即可保留主要业务数据；如仍有旧 JSON 迁移需求，也复制 `/opt/ai_trade_data`。
+
+主要表：
+
+- `users` / `sessions`：免费邮箱账户和登录会话
+- `email_verification_tokens`：邮箱验证链接的安全哈希和过期时间
+- `strategy_presets`：按用户保存的新建模型、优化模型和旧版全局模型
+- `symbols` / `daily_prices` / `daily_valuations`：股票信息、历史 OHLCV、PE/PB
+- `ranking_records`：按股票和区间保存的模型排行
+- `backtest_runs` / `backtest_results` / `backtest_trades`：历史测试运行、各模型表现和交易明细
 
 ## 功能
 
 - 修改 6 位 A 股代码或美股 ticker，例如 `NET`、`QQQ`、`AMD`
+- 页面启动后默认不加载任何历史股票数据；用户选择股票和区间并点击查询后才会请求行情
 - 常用代码预设：`588000`、`513100`、`NET`、`QQQ`、`AMD`；用户成功加载的新 ticker 会自动记录到浏览器本地最近使用列表
 - 加载行情后显示标的信息，包括代码、名称、市场、交易所、币种和数据源
 - 修改开始日期和结束日期，也可以一键选择最近 4 周或最近 1/3/5/8/10 年历史区间
 - 展示区间最高价、最低价、最新收盘价、交易日数
-- 历史日线包含成交量、成交额、换手率；A 股个股会尽量合并东方财富估值分析里的历史 `PE_TTM` / `PB`，无法提供历史 PE 时会显示不可用
+- 历史日线包含成交量、成交额、换手率；A 股个股会尽量合并东方财富估值分析里的历史 `PE_TTM` / `PB`，若东方财富 PE 缺失会用 AKShare `stock_a_lg_indicator` 补充；无法提供历史 PE 时会显示不可用
+- 每次成功加载历史行情后，会把股票信息、OHLCV 日线和 PE/PB 写入 Postgres，逐步形成本地历史数据缓存
 - 导入行情后立即按“波浪确认波动”阈值计算并标注波浪高点和波浪低点；小于阈值的波动不计入波浪，阈值可随时调整并实时刷新历史曲线；图上同时标注用于确认该高低点的触发价格点
 - 支持在主图切换“波浪模型”和“近端高点阶梯指标”；每次导入行情后默认显示波浪模型高低点，切换到近端高点阶梯指标后会改为标注近端高点和阶梯买入触发低点，并显示该指标使用的参数
 - 支持 `MA-RSI 波段模型`（`ma-rsi-band`）：按快慢均线趋势、RSI 超跌/过热和 ATR 高波动条件每日计算目标仓位；切换到该模型后显示 MA/RSI/ATR 参数，并在历史图和回测图上标注加仓/减仓信号
 - 支持 `近端高点订单网格模型`（`order-grid`）：空仓时按最近 N 天高点回撤建首单，之后按上一单买入价下跌阈值追加订单；每单固定投入初始资金的一定比例，每笔订单达到独立止盈阈值时只卖出该订单
 - 支持 `PE-成交量指标模型`（`pe-volume`）：按历史 PE 分位和成交量均线调仓；低 PE 且放量加仓，高 PE 或缩量降仓。若当前股票没有 PE 或成交量，使用此模型回测/优化时会提示并停止
+- Docker 镜像内置 AKShare Python 环境；当东方财富 A 股日线失败时，会尝试使用 AKShare 日线接口作为后备源
+- 用户必须免费注册、登录并验证电子邮件后才能保存新建模型、修改参数或保存优化参数；模型按电子邮件账户保存在服务器端，便于迁移
+- 登录用户完成历史模拟后，会把本次回测、每个模型表现和交易明细保存到 Postgres
 - 历史模拟直接列出全部预存模型；模型类型和参数由各预设保存，点击预设旁的“参数”按钮可修改
 - 历史模拟使用“选择模型 / 加载历史 / 查看表现”三步向导；回测完成后会自动进入模型表现排行榜
+- 历史模拟中未使用的行情摘要、价格曲线、表现排行榜和关键数据默认隐藏，加载历史数据后才展开；每个工作页都可以返回顶部功能导航
 - 模型表现排行榜作为历史模拟结果区的第一屏，使用响应式卡片展示；每个模型的收益、回撤、全仓对比、交易费用和操作按钮都能直接看到，不需要左右滚动；卡片上可直接“查看参数”或“优化”
 - 点击排行榜模型后，下方只显示该模型的收益曲线、交易记录和参数文字说明，方便继续查看交易触发原因或优化参数
 - 多模型对比区中，每个模型使用独立模拟资金账户；预设项的勾选表示参与并行回测，点击某个预设会把历史图切换到该模型对应的指标标注

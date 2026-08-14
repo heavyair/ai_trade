@@ -2,12 +2,31 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+const { execFile } = require("child_process");
+const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = path.join(__dirname, "data");
 const PRESETS_FILE = process.env.PRESETS_FILE || path.join(DATA_DIR, "custom-presets.json");
 const RANKINGS_FILE = process.env.RANKINGS_FILE || path.join(DATA_DIR, "ranking-records.json");
+const USERS_FILE = process.env.USERS_FILE || path.join(DATA_DIR, "users.json");
+const AKSHARE_PYTHON = process.env.AKSHARE_PYTHON || "python3";
+const AKSHARE_TIMEOUT_MS = Math.max(3000, Number(process.env.AKSHARE_TIMEOUT_MS || 18000));
+const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
+const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
+const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
+const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
+const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <onboarding@resend.dev>";
+const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
+const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
+const dbPool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_SSL ? { rejectUnauthorized: false } : false,
+});
+let dbReady = null;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -17,6 +36,296 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
 };
 
+function randomId(prefix) {
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function userIdForEmail(email) {
+  return `user_${sha256(email).slice(0, 32)}`;
+}
+
+function toIsoDate(value) {
+  const text = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+async function dbQuery(text, params = []) {
+  await ensureDbReady();
+  return dbPool.query(text, params);
+}
+
+async function ensureDbReady() {
+  if (!dbReady) dbReady = initializeDatabase();
+  return dbReady;
+}
+
+async function initializeDatabase() {
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      salt TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      email_verified_at TIMESTAMPTZ,
+      email_verification_sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS strategy_presets (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      config JSONB NOT NULL,
+      meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+      is_legacy BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_user_name_idx
+      ON strategy_presets(owner_user_id, name)
+      WHERE owner_user_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_legacy_name_idx
+      ON strategy_presets(name)
+      WHERE owner_user_id IS NULL;
+
+    CREATE TABLE IF NOT EXISTS ranking_records (
+      key TEXT PRIMARY KEY,
+      owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      symbol TEXT NOT NULL,
+      symbol_name TEXT NOT NULL,
+      period_years INTEGER NOT NULL,
+      period_label TEXT NOT NULL,
+      start_date DATE,
+      end_date DATE,
+      preset_name TEXT NOT NULL,
+      preset_label TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+      annualized_return DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+      excess_return DOUBLE PRECISION NOT NULL DEFAULT 0,
+      max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+      drawdown_diff DOUBLE PRECISION NOT NULL DEFAULT 0,
+      total_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+      trades INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS symbols (
+      symbol TEXT NOT NULL,
+      market TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      info JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(symbol, market)
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_prices (
+      symbol TEXT NOT NULL,
+      market TEXT NOT NULL,
+      trade_date DATE NOT NULL,
+      open DOUBLE PRECISION NOT NULL,
+      high DOUBLE PRECISION NOT NULL,
+      low DOUBLE PRECISION NOT NULL,
+      close DOUBLE PRECISION NOT NULL,
+      volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+      amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+      amplitude DOUBLE PRECISION NOT NULL DEFAULT 0,
+      change_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+      change_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+      turnover DOUBLE PRECISION NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(symbol, market, trade_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_valuations (
+      symbol TEXT NOT NULL,
+      market TEXT NOT NULL,
+      trade_date DATE NOT NULL,
+      pe DOUBLE PRECISION,
+      pe_ttm DOUBLE PRECISION,
+      pb DOUBLE PRECISION,
+      source TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(symbol, market, trade_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS data_fetch_logs (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      market TEXT NOT NULL,
+      start_date DATE,
+      end_date DATE,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      row_count INTEGER NOT NULL DEFAULT 0,
+      message TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      symbol TEXT NOT NULL,
+      symbol_name TEXT NOT NULL DEFAULT '',
+      market TEXT NOT NULL DEFAULT '',
+      start_date DATE,
+      end_date DATE,
+      range_label TEXT NOT NULL DEFAULT '',
+      initial_cash DOUBLE PRECISION NOT NULL DEFAULT 0,
+      trade_fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS backtest_results (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE,
+      preset_name TEXT NOT NULL,
+      preset_label TEXT NOT NULL,
+      strategy_type TEXT NOT NULL,
+      rank INTEGER NOT NULL DEFAULT 0,
+      final_equity DOUBLE PRECISION NOT NULL DEFAULT 0,
+      return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+      max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
+      excess_return DOUBLE PRECISION NOT NULL DEFAULT 0,
+      drawdown_diff DOUBLE PRECISION NOT NULL DEFAULT 0,
+      total_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+      trades_count INTEGER NOT NULL DEFAULT 0,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+
+    CREATE TABLE IF NOT EXISTS backtest_trades (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE,
+      result_id TEXT REFERENCES backtest_results(id) ON DELETE CASCADE,
+      preset_name TEXT NOT NULL,
+      trade_index INTEGER NOT NULL,
+      trade_date DATE,
+      side TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '',
+      price DOUBLE PRECISION NOT NULL DEFAULT 0,
+      shares DOUBLE PRECISION NOT NULL DEFAULT 0,
+      position_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+      account_cash DOUBLE PRECISION NOT NULL DEFAULT 0,
+      account_equity DOUBLE PRECISION NOT NULL DEFAULT 0,
+      fee DOUBLE PRECISION NOT NULL DEFAULT 0,
+      reason TEXT NOT NULL DEFAULT '',
+      reference JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+  `);
+
+  await migrateJsonStateToPostgres();
+}
+
+function jsonFileExists(filePath) {
+  return filePath && fs.existsSync(filePath);
+}
+
+async function migrateJsonStateToPostgres() {
+  if (jsonFileExists(USERS_FILE)) {
+    const authStore = readAuthStore();
+    for (const [email, user] of Object.entries(authStore.users || {})) {
+      try {
+        const normalizedEmail = normalizeEmail(email);
+        const userId = userIdForEmail(normalizedEmail);
+        await dbPool.query(`
+          INSERT INTO users (id, email, salt, password_hash, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, NOW()), NOW())
+          ON CONFLICT (email) DO UPDATE
+            SET salt = EXCLUDED.salt,
+                password_hash = EXCLUDED.password_hash,
+                updated_at = NOW()
+        `, [
+          userId,
+          normalizedEmail,
+          user.salt || crypto.randomBytes(16).toString("hex"),
+          user.passwordHash || user.password_hash || hashPassword(crypto.randomBytes(16).toString("hex"), user.salt || "imported"),
+          user.createdAt || null,
+        ]);
+      } catch (error) {
+        console.warn(`Skipping malformed user during Postgres migration: ${email}`);
+      }
+    }
+
+    for (const [token, session] of Object.entries(authStore.sessions || {})) {
+      try {
+        if (!session || !session.email || !session.expiresAt || session.expiresAt <= Date.now()) continue;
+        const email = normalizeEmail(session.email);
+        await dbPool.query(`
+          INSERT INTO sessions (token_hash, user_id, expires_at)
+          SELECT $1, id, $2
+          FROM users
+          WHERE email = $3
+          ON CONFLICT (token_hash) DO UPDATE
+            SET expires_at = EXCLUDED.expires_at
+        `, [sha256(token), new Date(session.expiresAt), email]);
+      } catch (error) {
+        console.warn("Skipping malformed session during Postgres migration.");
+      }
+    }
+  }
+
+  if (jsonFileExists(PRESETS_FILE)) {
+    const store = readPresetStore();
+    for (const [name, preset] of Object.entries(store.legacyPresets || {})) {
+      await upsertPreset(null, name, preset, true);
+    }
+
+    for (const [email, value] of Object.entries(store.users || {})) {
+      const normalizedEmail = normalizeEmail(email);
+      const userId = userIdForEmail(normalizedEmail);
+      await ensureImportedUser(normalizedEmail);
+      for (const [name, preset] of Object.entries(value.presets || {})) {
+        await upsertPreset(userId, name, preset, false);
+      }
+    }
+  }
+
+  if (jsonFileExists(RANKINGS_FILE)) {
+    const records = readRankingRecords();
+    for (const record of records) {
+      await upsertRankingRecord(record, null);
+    }
+  }
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -24,6 +333,23 @@ function sendJson(res, statusCode, payload) {
     "Cache-Control": "no-store",
   });
   res.end(body);
+}
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(html);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function readRequestBody(req, limit = 1024 * 1024) {
@@ -41,6 +367,174 @@ function readRequestBody(req, limit = 1024 * 1024) {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+
+function getRequestOrigin(req) {
+  if (APP_PUBLIC_URL) return APP_PUBLIC_URL;
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  const protocol = req.headers["x-forwarded-proto"] || (req.socket && req.socket.encrypted ? "https" : "http");
+  return `${String(protocol).split(",")[0]}://${String(host).split(",")[0]}`.replace(/\/+$/, "");
+}
+
+function postJsonToResend(payload) {
+  if (!RESEND_API_KEY) {
+    const error = new Error("邮件服务还没有配置。");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const request = https.request({
+      method: "POST",
+      hostname: "api.resend.com",
+      path: "/emails",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 12000,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(responseBody);
+          return;
+        }
+        const error = new Error(`邮件服务返回 ${response.statusCode}`);
+        error.statusCode = 502;
+        reject(error);
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error("邮件服务请求超时。"));
+    });
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+async function sendVerificationEmail(req, userId, email, force = false) {
+  if (!RESEND_API_KEY) {
+    return { sent: false, emailEnabled: false };
+  }
+
+  const userResult = await dbPool.query(`
+    SELECT email_verified_at, email_verification_sent_at
+    FROM users
+    WHERE id = $1
+  `, [userId]);
+  const user = userResult.rows[0];
+  if (!user) {
+    const error = new Error("账户不存在。");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (user.email_verified_at) {
+    return { sent: false, alreadyVerified: true, emailEnabled: true };
+  }
+  if (!force && user.email_verification_sent_at) {
+    const elapsed = Date.now() - new Date(user.email_verification_sent_at).getTime();
+    if (elapsed < EMAIL_RESEND_COOLDOWN_MS) {
+      return { sent: false, cooldownSeconds: Math.ceil((EMAIL_RESEND_COOLDOWN_MS - elapsed) / 1000), emailEnabled: true };
+    }
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+  await dbPool.query(`
+    INSERT INTO email_verification_tokens (token_hash, user_id, expires_at, created_at)
+    VALUES ($1, $2, $3, NOW())
+  `, [sha256(token), userId, expiresAt]);
+
+  const verifyUrl = `${getRequestOrigin(req)}/api/auth/verify?token=${encodeURIComponent(token)}`;
+  const escapedUrl = escapeHtml(verifyUrl);
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>验证你的 AI Trade 账户</h2>
+      <p>请点击下面的按钮完成电子邮件验证。验证后就可以保存模型、优化参数和历史回测记录。</p>
+      <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;border-radius:6px;background:#1f7a8c;color:#fff;text-decoration:none">验证电子邮件</a></p>
+      <p>如果按钮无法打开，请复制这个链接到浏览器：</p>
+      <p style="word-break:break-all">${escapedUrl}</p>
+      <p>这个链接将在 24 小时后失效。</p>
+    </div>
+  `;
+  const text = [
+    "验证你的 AI Trade 账户",
+    "",
+    "打开下面链接完成电子邮件验证。验证后就可以保存模型、优化参数和历史回测记录。",
+    verifyUrl,
+    "",
+    "这个链接将在 24 小时后失效。",
+  ].join("\n");
+
+  await postJsonToResend({
+    from: EMAIL_FROM,
+    to: [email],
+    subject: "验证你的 AI Trade 账户",
+    html,
+    text,
+  });
+
+  await dbPool.query(`
+    UPDATE users
+    SET email_verification_sent_at = NOW(), updated_at = NOW()
+    WHERE id = $1
+  `, [userId]);
+  return { sent: true, emailEnabled: true };
+}
+
+async function verifyEmailToken(req, res, token) {
+  const tokenHash = sha256(token);
+  const client = await dbPool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(`
+      SELECT email_verification_tokens.user_id, users.email
+      FROM email_verification_tokens
+      JOIN users ON users.id = email_verification_tokens.user_id
+      WHERE email_verification_tokens.token_hash = $1
+        AND email_verification_tokens.used_at IS NULL
+        AND email_verification_tokens.expires_at > NOW()
+      FOR UPDATE
+    `, [tokenHash]);
+    if (result.rows.length === 0) {
+      await client.query("ROLLBACK");
+      sendHtml(res, 400, "<!doctype html><meta charset=\"utf-8\"><title>验证失败</title><p>验证链接无效或已过期，请回到 App 重新发送验证邮件。</p>");
+      return;
+    }
+
+    const row = result.rows[0];
+    await client.query("UPDATE users SET email_verified_at = NOW(), updated_at = NOW() WHERE id = $1", [row.user_id]);
+    await client.query("UPDATE email_verification_tokens SET used_at = NOW() WHERE token_hash = $1", [tokenHash]);
+    await client.query("COMMIT");
+
+    const session = createSessionToken();
+    await dbQuery(`
+      INSERT INTO sessions (token_hash, user_id, expires_at)
+      VALUES ($1, $2, $3)
+    `, [sha256(session.token), row.user_id, new Date(session.expiresAt)]);
+    setSessionCookie(res, session.token, session.expiresAt);
+
+    const appUrl = escapeHtml(getRequestOrigin(req));
+    sendHtml(res, 200, `<!doctype html><meta charset="utf-8"><title>验证成功</title><p>电子邮件已验证成功。</p><p><a href="${appUrl}">返回 AI Trade</a></p>`);
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      // Ignore rollback failures after the original error.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function ensureDataDir(filePath = PRESETS_FILE) {
@@ -72,26 +566,396 @@ function sanitizeServerPreset(name, preset) {
 }
 
 function readCustomPresets() {
+  return readPresetStore().legacyPresets;
+}
+
+function normalizePresetMap(presets) {
+  if (!presets || typeof presets !== "object" || Array.isArray(presets)) return {};
+  return Object.entries(presets).reduce((next, [name, preset]) => {
+    const key = normalizePresetKey(name);
+    const safePreset = sanitizeServerPreset(key, preset);
+    if (key && safePreset) next[key] = safePreset;
+    return next;
+  }, {});
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
+    throw new Error("请输入有效电子邮件。");
+  }
+  return email;
+}
+
+function readPresetStore() {
   try {
-    if (!fs.existsSync(PRESETS_FILE)) return {};
+    if (!fs.existsSync(PRESETS_FILE)) {
+      return { version: 2, legacyPresets: {}, users: {} };
+    }
     const parsed = JSON.parse(fs.readFileSync(PRESETS_FILE, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.entries(parsed).reduce((next, [name, preset]) => {
-      const key = normalizePresetKey(name);
-      const safePreset = sanitizeServerPreset(key, preset);
-      if (key && safePreset) next[key] = safePreset;
-      return next;
-    }, {});
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { version: 2, legacyPresets: {}, users: {} };
+    }
+
+    if (parsed.version === 2 && parsed.users && typeof parsed.users === "object") {
+      const users = {};
+      Object.entries(parsed.users).forEach(([email, value]) => {
+        try {
+          const key = normalizeEmail(email);
+          users[key] = {
+            presets: normalizePresetMap(value && value.presets),
+          };
+        } catch (error) {
+          // Skip malformed migrated user keys.
+        }
+      });
+      return {
+        version: 2,
+        legacyPresets: normalizePresetMap(parsed.legacyPresets),
+        users,
+      };
+    }
+
+    return {
+      version: 2,
+      legacyPresets: normalizePresetMap(parsed),
+      users: {},
+    };
   } catch (error) {
-    return {};
+    return { version: 2, legacyPresets: {}, users: {} };
   }
 }
 
-function writeCustomPresets(presets) {
+function writePresetStore(store) {
   ensureDataDir(PRESETS_FILE);
   const tmpFile = `${PRESETS_FILE}.tmp`;
-  fs.writeFileSync(tmpFile, `${JSON.stringify(presets, null, 2)}\n`, "utf8");
+  fs.writeFileSync(tmpFile, `${JSON.stringify({
+    version: 2,
+    legacyPresets: store.legacyPresets || {},
+    users: store.users || {},
+  }, null, 2)}\n`, "utf8");
   fs.renameSync(tmpFile, PRESETS_FILE);
+}
+
+async function ensureImportedUser(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const id = userIdForEmail(normalizedEmail);
+  const salt = crypto.randomBytes(16).toString("hex");
+  await dbPool.query(`
+    INSERT INTO users (id, email, salt, password_hash, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, NOW(), NOW())
+    ON CONFLICT (email) DO NOTHING
+  `, [id, normalizedEmail, salt, hashPassword(crypto.randomBytes(16).toString("hex"), salt)]);
+  return id;
+}
+
+async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
+  const key = normalizePresetKey(name);
+  const safePreset = sanitizeServerPreset(key, preset);
+  if (!key || !safePreset) return;
+  await dbPool.query(`
+    INSERT INTO strategy_presets (
+      id, owner_user_id, name, label, strategy_type, config, meta, is_legacy, created_at, updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NOW(), NOW())
+    ON CONFLICT (id) DO UPDATE
+      SET label = EXCLUDED.label,
+          strategy_type = EXCLUDED.strategy_type,
+          config = EXCLUDED.config,
+          meta = EXCLUDED.meta,
+          is_legacy = EXCLUDED.is_legacy,
+          updated_at = NOW()
+  `, [
+    ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`,
+    ownerUserId,
+    key,
+    safePreset.label,
+    safePreset.strategyType,
+    JSON.stringify(safePreset),
+    JSON.stringify(safePreset.meta || {}),
+    Boolean(isLegacy),
+  ]);
+}
+
+function presetRowsToMap(rows) {
+  return rows.reduce((next, row) => {
+    const preset = row.config && typeof row.config === "object" ? row.config : {};
+    next[row.name] = sanitizeServerPreset(row.name, {
+      ...preset,
+      label: row.label,
+      strategyType: row.strategy_type,
+      meta: row.meta || preset.meta,
+    });
+    return next;
+  }, {});
+}
+
+async function readUserPresets(email) {
+  const legacyResult = await dbQuery(`
+    SELECT name, label, strategy_type, config, meta
+    FROM strategy_presets
+    WHERE owner_user_id IS NULL
+    ORDER BY updated_at DESC
+  `);
+  const userResult = await dbQuery(`
+    SELECT strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config, strategy_presets.meta
+    FROM strategy_presets
+    JOIN users ON users.id = strategy_presets.owner_user_id
+    WHERE users.email = $1
+    ORDER BY strategy_presets.updated_at DESC
+  `, [email]);
+  const legacyPresets = presetRowsToMap(legacyResult.rows);
+  const userPresets = presetRowsToMap(userResult.rows);
+  return {
+    legacyPresets,
+    userPresets,
+    presets: {
+      ...legacyPresets,
+      ...userPresets,
+    },
+  };
+}
+
+async function readVisiblePresetsForAnonymous() {
+  const result = await dbQuery(`
+    SELECT name, label, strategy_type, config, meta
+    FROM strategy_presets
+    WHERE owner_user_id IS NULL
+    ORDER BY updated_at DESC
+  `);
+  const legacyPresets = presetRowsToMap(result.rows);
+  return {
+    legacyPresets,
+    userPresets: {},
+    presets: legacyPresets,
+  };
+}
+
+function readAuthStore() {
+  try {
+    if (!fs.existsSync(USERS_FILE)) return { version: 1, users: {}, sessions: {} };
+    const parsed = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { version: 1, users: {}, sessions: {} };
+    }
+    return {
+      version: 1,
+      users: parsed.users && typeof parsed.users === "object" ? parsed.users : {},
+      sessions: parsed.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {},
+    };
+  } catch (error) {
+    return { version: 1, users: {}, sessions: {} };
+  }
+}
+
+function writeAuthStore(store) {
+  ensureDataDir(USERS_FILE);
+  const tmpFile = `${USERS_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, `${JSON.stringify({
+    version: 1,
+    users: store.users || {},
+    sessions: store.sessions || {},
+  }, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpFile, USERS_FILE);
+}
+
+function hashPassword(password, salt) {
+  return crypto.pbkdf2Sync(password, salt, 120000, 32, "sha256").toString("hex");
+}
+
+function sanitizePassword(value) {
+  const password = String(value || "");
+  if (password.length < 8) {
+    throw new Error("密码至少需要 8 位。");
+  }
+  if (password.length > 200) {
+    throw new Error("密码太长。");
+  }
+  return password;
+}
+
+function createSessionToken() {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+  return { token, expiresAt };
+}
+
+function parseCookies(req) {
+  const header = String(req.headers.cookie || "");
+  return header.split(";").reduce((cookies, part) => {
+    const index = part.indexOf("=");
+    if (index < 0) return cookies;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function setSessionCookie(res, token, expiresAt) {
+  const maxAge = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+  res.setHeader("Set-Cookie", `ai_trade_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", "ai_trade_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+}
+
+async function getCurrentUser(req) {
+  const token = parseCookies(req).ai_trade_session;
+  if (!token) return null;
+  const result = await dbQuery(`
+    SELECT users.email, users.created_at, users.email_verified_at
+    FROM sessions
+    JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = $1
+      AND sessions.expires_at > NOW()
+  `, [sha256(token)]);
+  if (result.rows.length === 0) {
+    return null;
+  }
+  return {
+    email: result.rows[0].email,
+    createdAt: result.rows[0].created_at,
+    emailVerified: !RESEND_API_KEY || Boolean(result.rows[0].email_verified_at),
+    emailEnabled: Boolean(RESEND_API_KEY),
+  };
+}
+
+async function requireCurrentUser(req) {
+  const user = await getCurrentUser(req);
+  if (!user) {
+    const error = new Error("请先注册或登录后再保存模型。");
+    error.statusCode = 401;
+    throw error;
+  }
+  return user;
+}
+
+async function requireVerifiedCurrentUser(req) {
+  const user = await requireCurrentUser(req);
+  if (RESEND_API_KEY && !user.emailVerified) {
+    const error = new Error("请先验证电子邮件后再保存。");
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
+async function handleAuthApi(req, res, action) {
+  try {
+    if (action === "verify" && req.method === "GET") {
+      const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      const token = String(requestUrl.searchParams.get("token") || "");
+      if (!token) {
+        sendHtml(res, 400, "<!doctype html><meta charset=\"utf-8\"><title>验证失败</title><p>验证链接缺少 token。</p>");
+        return;
+      }
+      await verifyEmailToken(req, res, token);
+      return;
+    }
+
+    if (action === "session" && req.method === "GET") {
+      const user = await getCurrentUser(req);
+      sendJson(res, 200, { authenticated: Boolean(user), user });
+      return;
+    }
+
+    if (action === "logout" && req.method === "POST") {
+      const token = parseCookies(req).ai_trade_session;
+      if (token) {
+        await dbQuery("DELETE FROM sessions WHERE token_hash = $1", [sha256(token)]);
+      }
+      clearSessionCookie(res);
+      sendJson(res, 200, { authenticated: false });
+      return;
+    }
+
+    if (action === "resend-verification" && req.method === "POST") {
+      const user = await requireCurrentUser(req);
+      const userId = userIdForEmail(user.email);
+      const result = await sendVerificationEmail(req, userId, user.email, false);
+      if (result.alreadyVerified) {
+        sendJson(res, 200, { sent: false, alreadyVerified: true, message: "电子邮件已经验证。" });
+        return;
+      }
+      if (result.cooldownSeconds) {
+        sendJson(res, 429, { error: `请 ${result.cooldownSeconds} 秒后再重新发送。` });
+        return;
+      }
+      sendJson(res, 200, { sent: result.sent, emailEnabled: result.emailEnabled });
+      return;
+    }
+
+    if (!["register", "login"].includes(action) || req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const email = normalizeEmail(payload.email);
+    const password = sanitizePassword(payload.password);
+
+    if (action === "register") {
+      const existing = await dbQuery("SELECT id FROM users WHERE email = $1", [email]);
+      if (existing.rows.length > 0) {
+        throw new Error("这个电子邮件已经注册，请直接登录。");
+      }
+      const salt = crypto.randomBytes(16).toString("hex");
+      await dbQuery(`
+        INSERT INTO users (id, email, salt, password_hash, email_verified_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      `, [
+        userIdForEmail(email),
+        email,
+        salt,
+        hashPassword(password, salt),
+        RESEND_API_KEY ? null : new Date(),
+      ]);
+    } else {
+      const result = await dbQuery("SELECT id, salt, password_hash, created_at, email_verified_at FROM users WHERE email = $1", [email]);
+      const user = result.rows[0];
+      if (!user || user.password_hash !== hashPassword(password, user.salt)) {
+        throw new Error("电子邮件或密码不正确。");
+      }
+    }
+
+    const session = createSessionToken();
+    await dbQuery(`
+      INSERT INTO sessions (token_hash, user_id, expires_at)
+      SELECT $1, id, $2
+      FROM users
+      WHERE email = $3
+    `, [sha256(session.token), new Date(session.expiresAt), email]);
+    setSessionCookie(res, session.token, session.expiresAt);
+    let verificationEmail = { sent: false, emailEnabled: Boolean(RESEND_API_KEY) };
+    if (action === "register") {
+      try {
+        verificationEmail = await sendVerificationEmail(req, userIdForEmail(email), email, true);
+      } catch (error) {
+        verificationEmail = {
+          sent: false,
+          emailEnabled: Boolean(RESEND_API_KEY),
+          error: error.message || "验证邮件发送失败。",
+        };
+      }
+    }
+    const userResult = await dbQuery("SELECT created_at, email_verified_at FROM users WHERE email = $1", [email]);
+    const userRow = userResult.rows[0] || {};
+    sendJson(res, 200, {
+      authenticated: true,
+      verificationEmail,
+      user: {
+        email,
+        createdAt: userRow.created_at || null,
+        emailVerified: !RESEND_API_KEY || Boolean(userRow.email_verified_at),
+        emailEnabled: Boolean(RESEND_API_KEY),
+      },
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "账户操作失败。" });
+  }
 }
 
 function toFiniteNumber(value, fallback = 0) {
@@ -160,10 +1024,119 @@ function writeRankingRecords(records) {
   fs.renameSync(tmpFile, RANKINGS_FILE);
 }
 
+async function upsertRankingRecord(record, ownerUserId = null) {
+  const safeRecord = sanitizeServerRankingRecord(record);
+  if (!safeRecord) return;
+  await dbPool.query(`
+    INSERT INTO ranking_records (
+      key, owner_user_id, symbol, symbol_name, period_years, period_label, start_date, end_date,
+      preset_name, preset_label, strategy_type, return_rate, annualized_return, buy_hold_return_rate,
+      excess_return, max_drawdown, buy_hold_max_drawdown, drawdown_diff, total_fees, buy_hold_fees,
+      trades, updated_at
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7::date, $8::date,
+      $9, $10, $11, $12, $13, $14,
+      $15, $16, $17, $18, $19, $20,
+      $21, COALESCE($22::timestamptz, NOW())
+    )
+    ON CONFLICT (key) DO UPDATE
+      SET symbol = EXCLUDED.symbol,
+          symbol_name = EXCLUDED.symbol_name,
+          period_years = EXCLUDED.period_years,
+          period_label = EXCLUDED.period_label,
+          start_date = EXCLUDED.start_date,
+          end_date = EXCLUDED.end_date,
+          preset_name = EXCLUDED.preset_name,
+          preset_label = EXCLUDED.preset_label,
+          strategy_type = EXCLUDED.strategy_type,
+          return_rate = EXCLUDED.return_rate,
+          annualized_return = EXCLUDED.annualized_return,
+          buy_hold_return_rate = EXCLUDED.buy_hold_return_rate,
+          excess_return = EXCLUDED.excess_return,
+          max_drawdown = EXCLUDED.max_drawdown,
+          buy_hold_max_drawdown = EXCLUDED.buy_hold_max_drawdown,
+          drawdown_diff = EXCLUDED.drawdown_diff,
+          total_fees = EXCLUDED.total_fees,
+          buy_hold_fees = EXCLUDED.buy_hold_fees,
+          trades = EXCLUDED.trades,
+          updated_at = EXCLUDED.updated_at
+  `, [
+    safeRecord.key,
+    ownerUserId,
+    safeRecord.symbol,
+    safeRecord.symbolName,
+    safeRecord.periodYears,
+    safeRecord.periodLabel,
+    toIsoDate(safeRecord.startDate),
+    toIsoDate(safeRecord.endDate),
+    safeRecord.presetName,
+    safeRecord.presetLabel,
+    safeRecord.strategyType,
+    safeRecord.returnRate,
+    safeRecord.annualizedReturn,
+    safeRecord.buyHoldReturnRate,
+    safeRecord.excessReturn,
+    safeRecord.maxDrawdown,
+    safeRecord.buyHoldMaxDrawdown,
+    safeRecord.drawdownDiff,
+    safeRecord.totalFees,
+    safeRecord.buyHoldFees,
+    safeRecord.trades,
+    safeRecord.updatedAt,
+  ]);
+}
+
+function mapRankingRow(row) {
+  return sanitizeServerRankingRecord({
+    key: row.key,
+    symbol: row.symbol,
+    symbolName: row.symbol_name,
+    periodYears: row.period_years,
+    periodLabel: row.period_label,
+    startDate: row.start_date ? new Date(row.start_date).toISOString().slice(0, 10) : "",
+    endDate: row.end_date ? new Date(row.end_date).toISOString().slice(0, 10) : "",
+    presetName: row.preset_name,
+    presetLabel: row.preset_label,
+    strategyType: row.strategy_type,
+    returnRate: row.return_rate,
+    annualizedReturn: row.annualized_return,
+    buyHoldReturnRate: row.buy_hold_return_rate,
+    excessReturn: row.excess_return,
+    maxDrawdown: row.max_drawdown,
+    buyHoldMaxDrawdown: row.buy_hold_max_drawdown,
+    drawdownDiff: row.drawdown_diff,
+    totalFees: row.total_fees,
+    buyHoldFees: row.buy_hold_fees,
+    trades: row.trades,
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString().slice(0, 10) : "",
+  });
+}
+
+async function readRankingRecordsFromDb() {
+  const result = await dbQuery(`
+    SELECT *
+    FROM ranking_records
+    ORDER BY updated_at DESC
+    LIMIT 3000
+  `);
+  return result.rows.map(mapRankingRow).filter(Boolean);
+}
+
 async function handlePresetsApi(req, res) {
   try {
     if (req.method === "GET") {
-      sendJson(res, 200, { presets: readCustomPresets() });
+      const user = await getCurrentUser(req);
+      const presets = user
+        ? await readUserPresets(user.email)
+        : await readVisiblePresetsForAnonymous();
+      sendJson(res, 200, {
+        authenticated: Boolean(user),
+        user,
+        presets: presets.presets,
+        legacyPresets: presets.legacyPresets,
+        userPresets: presets.userPresets,
+      });
       return;
     }
 
@@ -172,30 +1145,35 @@ async function handlePresetsApi(req, res) {
       return;
     }
 
+    const user = await requireVerifiedCurrentUser(req);
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
     const incoming = payload && payload.presets && typeof payload.presets === "object"
       ? payload.presets
       : {};
-    const merged = readCustomPresets();
+    const userId = userIdForEmail(user.email);
 
-    Object.entries(incoming).forEach(([name, preset]) => {
-      const key = normalizePresetKey(name);
-      const safePreset = sanitizeServerPreset(key, preset);
-      if (key && safePreset) merged[key] = safePreset;
+    for (const [name, preset] of Object.entries(incoming)) {
+      await upsertPreset(userId, name, preset, false);
+    }
+    const presets = await readUserPresets(user.email);
+    sendJson(res, 200, {
+      authenticated: true,
+      user,
+      presets: presets.presets,
+      userPresets: presets.userPresets,
+      legacyPresets: presets.legacyPresets,
+      saved: Object.keys(incoming).length,
     });
-
-    writeCustomPresets(merged);
-    sendJson(res, 200, { presets: merged, saved: Object.keys(incoming).length });
   } catch (error) {
-    sendJson(res, 400, { error: error.message || "预设保存失败。" });
+    sendJson(res, error.statusCode || 400, { error: error.message || "预设保存失败。" });
   }
 }
 
 async function handleRankingsApi(req, res) {
   try {
     if (req.method === "GET") {
-      sendJson(res, 200, { records: readRankingRecords() });
+      sendJson(res, 200, { records: await readRankingRecordsFromDb() });
       return;
     }
 
@@ -207,21 +1185,175 @@ async function handleRankingsApi(req, res) {
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
     const incoming = Array.isArray(payload.records) ? payload.records : [];
-    const merged = new Map(readRankingRecords().map((record) => [record.key, record]));
-
-    incoming.forEach((record) => {
-      const safeRecord = sanitizeServerRankingRecord(record);
-      if (safeRecord) merged.set(safeRecord.key, safeRecord);
-    });
-
-    const records = Array.from(merged.values())
-      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
-      .slice(0, 3000);
-
-    writeRankingRecords(records);
+    for (const record of incoming) {
+      await upsertRankingRecord(record, null);
+    }
+    const records = await readRankingRecordsFromDb();
     sendJson(res, 200, { records, saved: incoming.length });
   } catch (error) {
     sendJson(res, 400, { error: error.message || "排行记录保存失败。" });
+  }
+}
+
+function sanitizeBacktestPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("回测记录格式无效。");
+  }
+  const symbol = String(payload.symbol || "").trim().toUpperCase().slice(0, 16);
+  if (!symbol) throw new Error("回测记录缺少股票代码。");
+  const results = Array.isArray(payload.results) ? payload.results.slice(0, 50) : [];
+  if (results.length === 0) throw new Error("回测记录缺少模型结果。");
+  return {
+    symbol,
+    symbolName: String(payload.symbolName || symbol).slice(0, 100),
+    market: String(payload.market || "").slice(0, 20),
+    startDate: toIsoDate(payload.startDate),
+    endDate: toIsoDate(payload.endDate),
+    rangeLabel: String(payload.rangeLabel || "").slice(0, 120),
+    initialCash: toFiniteNumber(payload.initialCash),
+    tradeFee: toFiniteNumber(payload.tradeFee),
+    config: payload.config && typeof payload.config === "object" ? payload.config : {},
+    summary: payload.summary && typeof payload.summary === "object" ? payload.summary : {},
+    results,
+  };
+}
+
+async function handleBacktestsApi(req, res) {
+  try {
+    if (req.method === "GET") {
+      const user = await requireCurrentUser(req);
+      const result = await dbQuery(`
+        SELECT id, symbol, symbol_name, market, start_date, end_date, range_label,
+               initial_cash, trade_fee, summary, created_at
+        FROM backtest_runs
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 100
+      `, [userIdForEmail(user.email)]);
+      sendJson(res, 200, {
+        runs: result.rows.map((row) => ({
+          id: row.id,
+          symbol: row.symbol,
+          symbolName: row.symbol_name,
+          market: row.market,
+          startDate: row.start_date ? new Date(row.start_date).toISOString().slice(0, 10) : "",
+          endDate: row.end_date ? new Date(row.end_date).toISOString().slice(0, 10) : "",
+          rangeLabel: row.range_label,
+          initialCash: row.initial_cash,
+          tradeFee: row.trade_fee,
+          summary: row.summary || {},
+          createdAt: row.created_at,
+        })),
+      });
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const user = await requireVerifiedCurrentUser(req);
+    const body = await readRequestBody(req, 8 * 1024 * 1024);
+    const payload = sanitizeBacktestPayload(body ? JSON.parse(body) : {});
+    const client = await dbPool.connect();
+    const runId = randomId("run");
+
+    try {
+      await client.query("BEGIN");
+      await client.query(`
+        INSERT INTO backtest_runs (
+          id, user_id, symbol, symbol_name, market, start_date, end_date,
+          range_label, initial_cash, trade_fee, config, summary, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::date, $7::date, $8, $9, $10, $11::jsonb, $12::jsonb, NOW())
+      `, [
+        runId,
+        userIdForEmail(user.email),
+        payload.symbol,
+        payload.symbolName,
+        payload.market,
+        payload.startDate,
+        payload.endDate,
+        payload.rangeLabel,
+        payload.initialCash,
+        payload.tradeFee,
+        JSON.stringify(payload.config),
+        JSON.stringify(payload.summary),
+      ]);
+
+      for (let resultIndex = 0; resultIndex < payload.results.length; resultIndex += 1) {
+        const item = payload.results[resultIndex] || {};
+        const finalState = item.finalState || {};
+        const buyHold = finalState.buyHold || {};
+        const resultId = randomId("result");
+        const trades = Array.isArray(item.trades) ? item.trades.slice(0, 2000) : [];
+        await client.query(`
+          INSERT INTO backtest_results (
+            id, run_id, preset_name, preset_label, strategy_type, rank, final_equity,
+            return_rate, max_drawdown, buy_hold_return_rate, buy_hold_max_drawdown,
+            excess_return, drawdown_diff, total_fees, buy_hold_fees, trades_count, config
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
+        `, [
+          resultId,
+          runId,
+          String(item.name || "").slice(0, 80),
+          String(item.label || item.name || "").slice(0, 120),
+          String(item.strategyType || "wave").slice(0, 40),
+          resultIndex + 1,
+          toFiniteNumber(finalState.equity),
+          toFiniteNumber(finalState.returnRate),
+          toFiniteNumber(finalState.maxDrawdown),
+          toFiniteNumber(buyHold.returnRate),
+          toFiniteNumber(buyHold.maxDrawdown),
+          toFiniteNumber(finalState.excessReturn),
+          toFiniteNumber(finalState.drawdownDiff),
+          toFiniteNumber(finalState.totalFees),
+          toFiniteNumber(buyHold.totalFees),
+          trades.length,
+          JSON.stringify(item.config || {}),
+        ]);
+
+        for (let tradeIndex = 0; tradeIndex < trades.length; tradeIndex += 1) {
+          const trade = trades[tradeIndex] || {};
+          await client.query(`
+            INSERT INTO backtest_trades (
+              id, run_id, result_id, preset_name, trade_index, trade_date, side, label,
+              price, shares, position_ratio, account_cash, account_equity, fee, reason, reference
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+          `, [
+            randomId("trade"),
+            runId,
+            resultId,
+            String(item.name || "").slice(0, 80),
+            tradeIndex,
+            toIsoDate(trade.date),
+            String(trade.side || "").slice(0, 20),
+            String(trade.label || "").slice(0, 80),
+            toFiniteNumber(trade.price),
+            toFiniteNumber(trade.shares),
+            toFiniteNumber(trade.positionRatio),
+            toFiniteNumber(trade.accountCash),
+            toFiniteNumber(trade.accountEquity),
+            toFiniteNumber(trade.fee),
+            String(trade.reason || "").slice(0, 1000),
+            JSON.stringify(trade.reference || {}),
+          ]);
+        }
+      }
+
+      await client.query("COMMIT");
+      sendJson(res, 200, { saved: true, runId, results: payload.results.length });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "回测记录保存失败。" });
   }
 }
 
@@ -349,6 +1481,97 @@ function summarize(symbol, name, rows) {
   };
 }
 
+async function persistKlineData({ code, market, name, source, info, rows }) {
+  try {
+    await ensureDbReady();
+    await dbPool.query(`
+      INSERT INTO symbols (symbol, market, name, source, info, updated_at)
+      VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+      ON CONFLICT (symbol, market) DO UPDATE
+        SET name = EXCLUDED.name,
+            source = EXCLUDED.source,
+            info = EXCLUDED.info,
+            updated_at = NOW()
+    `, [code, market, name || code, source || "", JSON.stringify(info || {})]);
+
+    for (const row of rows || []) {
+      const tradeDate = toIsoDate(row.date);
+      if (!tradeDate || !isValidKlineRow(row)) continue;
+      await dbPool.query(`
+        INSERT INTO daily_prices (
+          symbol, market, trade_date, open, high, low, close, volume, amount,
+          amplitude, change_percent, change_value, turnover, source, updated_at
+        )
+        VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+        ON CONFLICT (symbol, market, trade_date) DO UPDATE
+          SET open = EXCLUDED.open,
+              high = EXCLUDED.high,
+              low = EXCLUDED.low,
+              close = EXCLUDED.close,
+              volume = EXCLUDED.volume,
+              amount = EXCLUDED.amount,
+              amplitude = EXCLUDED.amplitude,
+              change_percent = EXCLUDED.change_percent,
+              change_value = EXCLUDED.change_value,
+              turnover = EXCLUDED.turnover,
+              source = EXCLUDED.source,
+              updated_at = NOW()
+      `, [
+        code,
+        market,
+        tradeDate,
+        row.open,
+        row.high,
+        row.low,
+        row.close,
+        Number(row.volume || 0),
+        Number(row.amount || 0),
+        Number(row.amplitude || 0),
+        Number(row.changePercent || 0),
+        Number(row.change || 0),
+        Number(row.turnover || 0),
+        source || "",
+      ]);
+
+      if (Number.isFinite(Number(row.peTtm)) || Number.isFinite(Number(row.pe)) || Number.isFinite(Number(row.pb))) {
+        await dbPool.query(`
+          INSERT INTO daily_valuations (symbol, market, trade_date, pe, pe_ttm, pb, source, updated_at)
+          VALUES ($1, $2, $3::date, $4, $5, $6, $7, NOW())
+          ON CONFLICT (symbol, market, trade_date) DO UPDATE
+            SET pe = EXCLUDED.pe,
+                pe_ttm = EXCLUDED.pe_ttm,
+                pb = EXCLUDED.pb,
+                source = EXCLUDED.source,
+                updated_at = NOW()
+        `, [
+          code,
+          market,
+          tradeDate,
+          Number.isFinite(Number(row.pe)) ? Number(row.pe) : null,
+          Number.isFinite(Number(row.peTtm)) ? Number(row.peTtm) : null,
+          Number.isFinite(Number(row.pb)) ? Number(row.pb) : null,
+          source || "",
+        ]);
+      }
+    }
+
+    await dbPool.query(`
+      INSERT INTO data_fetch_logs (id, symbol, market, start_date, end_date, source, status, row_count, message)
+      VALUES ($1, $2, $3, $4::date, $5::date, $6, 'ok', $7, '')
+    `, [
+      randomId("fetch"),
+      code,
+      market,
+      rows && rows[0] ? rows[0].date : null,
+      rows && rows.length > 0 ? rows[rows.length - 1].date : null,
+      source || "",
+      rows ? rows.length : 0,
+    ]);
+  } catch (error) {
+    console.warn(`Postgres market data save skipped for ${code}: ${error.message}`);
+  }
+}
+
 function getJson(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const client = url.protocol === "http:" ? http : https;
@@ -398,6 +1621,116 @@ async function getJsonWithRetry(urls, headers = {}, attempts = 1) {
   }
 
   throw lastError;
+}
+
+function runAkshareBridge(mode, payload) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(AKSHARE_BRIDGE)) {
+      reject(new Error("AKShare bridge script not found."));
+      return;
+    }
+
+    const child = execFile(
+      AKSHARE_PYTHON,
+      [AKSHARE_BRIDGE],
+      {
+        timeout: AKSHARE_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message || "AKShare 调用失败。"));
+          return;
+        }
+
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseError) {
+          reject(new Error("AKShare 返回的数据不是有效 JSON。"));
+        }
+      }
+    );
+
+    child.stdin.end(JSON.stringify({ mode, ...payload }));
+  });
+}
+
+function toValidNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseAkshareValuationRows(payload, start, end) {
+  const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  return rows
+    .map((item) => ({
+      date: parseDateOnly(item.date || item.trade_date),
+      peTtm: toValidNumberOrNull(item.peTtm !== undefined ? item.peTtm : item.pe_ttm),
+      pe: toValidNumberOrNull(item.pe),
+      pb: toValidNumberOrNull(item.pb),
+      close: toValidNumberOrNull(item.close),
+      source: "AKShare",
+    }))
+    .filter((item) => item.date >= start && item.date <= end)
+    .filter((item) => Number.isFinite(item.peTtm) || Number.isFinite(item.pe) || Number.isFinite(item.pb))
+    .sort((a, b) => itemDateCompare(a.date, b.date));
+}
+
+async function fetchAkshareValuations({ code, start, end }) {
+  try {
+    const payload = await runAkshareBridge("valuations", { code, start, end });
+    return parseAkshareValuationRows(payload, start, end);
+  } catch (error) {
+    console.warn(`AKShare PE fallback skipped for ${code}: ${error.message}`);
+    return [];
+  }
+}
+
+function parseAkshareKlineRows(payload) {
+  const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  return rows
+    .map((item) => ({
+      date: parseDateOnly(item.date),
+      open: Number(item.open),
+      close: Number(item.close),
+      high: Number(item.high),
+      low: Number(item.low),
+      volume: Number(item.volume || 0),
+      amount: Number(item.amount || 0),
+      amplitude: Number(item.amplitude || 0),
+      changePercent: Number(item.changePercent || 0),
+      change: Number(item.change || 0),
+      turnover: Number(item.turnover || 0),
+      pe: null,
+      peTtm: null,
+      pb: null,
+    }))
+    .filter(isValidKlineRow);
+}
+
+async function fetchAkshareKlines({ code, market, start, end }) {
+  const payload = await runAkshareBridge("klines", { code, start, end });
+  const rows = parseAkshareKlineRows(payload);
+
+  if (rows.length === 0) {
+    throw new Error("AKShare 没有返回可用日线数据。");
+  }
+
+  return {
+    source: "AKShare",
+    name: payload.name || code,
+    info: {
+      code,
+      name: payload.name || code,
+      market,
+      marketName: getMarketName(code, market),
+      exchangeName: getMarketName(code, market),
+      currency: "CNY",
+      instrumentType: payload.instrumentType || "EQUITY/FUND",
+    },
+    rows,
+  };
 }
 
 function buildEastMoneyUrls({ code, market, start, end }) {
@@ -468,6 +1801,38 @@ async function fetchEastMoneyValuations({ code, start, end }) {
   } catch (error) {
     return [];
   }
+}
+
+function hasPeValuations(valuations) {
+  return Array.isArray(valuations)
+    && valuations.some((item) => Number.isFinite(item.peTtm) && item.peTtm > 0);
+}
+
+function mergeValuationSources(primaryRows, fallbackRows) {
+  if (!Array.isArray(fallbackRows) || fallbackRows.length === 0) {
+    return Array.isArray(primaryRows) ? primaryRows : [];
+  }
+  if (!Array.isArray(primaryRows) || primaryRows.length === 0) {
+    return fallbackRows;
+  }
+
+  const byDate = new Map(primaryRows.map((row) => [row.date, row]));
+  fallbackRows.forEach((fallback) => {
+    const current = byDate.get(fallback.date);
+    if (!current) {
+      byDate.set(fallback.date, fallback);
+      return;
+    }
+
+    byDate.set(fallback.date, {
+      ...current,
+      peTtm: Number.isFinite(current.peTtm) && current.peTtm > 0 ? current.peTtm : fallback.peTtm,
+      pe: Number.isFinite(current.pe) && current.pe > 0 ? current.pe : fallback.pe,
+      pb: Number.isFinite(current.pb) && current.pb > 0 ? current.pb : fallback.pb,
+    });
+  });
+
+  return Array.from(byDate.values()).sort((a, b) => itemDateCompare(a.date, b.date));
 }
 
 function mergeValuationsIntoRows(rows, valuations) {
@@ -624,28 +1989,56 @@ async function fetchKlines({ code, start, end }) {
     try {
       result = await fetchEastMoneyKlines({ code, market, start, end });
     } catch (eastMoneyError) {
-      result = await fetchYahooKlines({ code, market, start, end });
+      try {
+        result = await fetchAkshareKlines({ code, market, start, end });
+      } catch (akshareError) {
+        result = await fetchYahooKlines({ code, market, start, end });
+      }
     }
   }
 
-  const valuations = market === "US"
-    ? []
-    : await fetchEastMoneyValuations({ code, start, end });
-  const rows = mergeValuationsIntoRows(result.rows, valuations);
+  let valuationSource = "";
+  let valuations = [];
+  if (market !== "US") {
+    const eastMoneyValuations = await fetchEastMoneyValuations({ code, start, end });
+    let akshareValuations = [];
 
-  return {
-    source: result.source,
+    if (!hasPeValuations(eastMoneyValuations)) {
+      akshareValuations = await fetchAkshareValuations({ code, start, end });
+    }
+
+    valuations = mergeValuationSources(eastMoneyValuations, akshareValuations);
+    if (hasPeValuations(akshareValuations)) {
+      valuationSource = " + AKShare PE";
+    } else if (hasPeValuations(eastMoneyValuations)) {
+      valuationSource = " + EastMoney PE";
+    }
+  }
+  const rows = mergeValuationsIntoRows(result.rows, valuations);
+  const source = `${result.source}${valuationSource}`;
+  const info = {
+    code,
+    name: result.name,
+    market,
+    marketName: getMarketName(code, market),
+    source,
+    ...(result.info || {}),
+  };
+  await persistKlineData({
     code,
     market,
     name: result.name,
-    info: {
-      code,
-      name: result.name,
-      market,
-      marketName: getMarketName(code, market),
-      source: result.source,
-      ...(result.info || {}),
-    },
+    source,
+    info,
+    rows,
+  });
+
+  return {
+    source,
+    code,
+    market,
+    name: result.name,
+    info,
     summary: summarize({ code, market, name: result.name }, result.name, rows),
     rows,
   };
@@ -703,6 +2096,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/api/auth/")) {
+    handleAuthApi(req, res, requestUrl.pathname.replace("/api/auth/", ""));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/presets") {
     handlePresetsApi(req, res);
     return;
@@ -713,9 +2111,22 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (requestUrl.pathname === "/api/backtests") {
+    handleBacktestsApi(req, res);
+    return;
+  }
+
   serveStatic(req, res, requestUrl);
 });
 
-server.listen(PORT, () => {
-  console.log(`A-share app running at http://localhost:${PORT}`);
-});
+ensureDbReady()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`A-share app running at http://localhost:${PORT}`);
+      console.log(`Postgres connected: ${DATABASE_URL.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@")}`);
+    });
+  })
+  .catch((error) => {
+    console.error(`Postgres initialization failed: ${error.message}`);
+    process.exit(1);
+  });
