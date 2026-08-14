@@ -2116,6 +2116,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/api/")) {
+    sendJson(res, 404, { error: "接口不存在或当前版本还没有发布该接口。" });
+    return;
+  }
+
   serveStatic(req, res, requestUrl);
 });
 

@@ -586,10 +586,7 @@ function saveCustomStrategyPresets() {
 
 async function fetchServerCustomStrategyPresets() {
   const response = await fetch("/api/presets", { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error || "读取服务器预设失败。");
-  }
+  const payload = await readJsonResponse(response, "读取服务器预设失败。");
   currentUser = payload.authenticated ? payload.user : currentUser;
   renderAuthState();
   return payload.presets && typeof payload.presets === "object" ? payload.presets : {};
@@ -604,10 +601,7 @@ async function saveServerCustomStrategyPresets(customPresets) {
       },
       body: JSON.stringify({ presets: customPresets }),
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "保存服务器预设失败。");
-    }
+    const payload = await readJsonResponse(response, "保存服务器预设失败。");
     if (payload.user) {
       currentUser = payload.user;
       renderAuthState();
@@ -745,10 +739,7 @@ function mergeRankingRecords(records) {
 
 async function fetchServerRankingRecords() {
   const response = await fetch("/api/rankings", { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error || "读取服务器排行失败。");
-  }
+  const payload = await readJsonResponse(response, "读取服务器排行失败。");
   return Array.isArray(payload.records) ? payload.records : [];
 }
 
@@ -761,10 +752,7 @@ async function saveServerRankingRecords(records) {
       },
       body: JSON.stringify({ records }),
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "保存服务器排行失败。");
-    }
+    const payload = await readJsonResponse(response, "保存服务器排行失败。");
     if (Array.isArray(payload.records)) {
       mergeRankingRecords(payload.records);
       renderModelRanking();
@@ -846,8 +834,7 @@ async function saveBacktestRunToServer(config) {
       },
       body: JSON.stringify(payload),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "回测记录保存失败。");
+    const result = await readJsonResponse(response, "回测记录保存失败。");
     return result;
   } catch (error) {
     setStatus(`模拟完成，但历史测试记录保存失败：${error.message}`, true);
@@ -1000,6 +987,22 @@ function setLoading(isLoading) {
   form.querySelector("button").disabled = isLoading;
 }
 
+async function readJsonResponse(response, fallbackMessage = "服务器返回的数据不是有效 JSON。") {
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      throw new Error(response.ok ? fallbackMessage : `${fallbackMessage}：${text.slice(0, 120)}`);
+    }
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || fallbackMessage);
+  }
+  return payload;
+}
+
 function renderAuthState() {
   const isSignedIn = Boolean(currentUser && currentUser.email);
   const needsVerification = isSignedIn && currentUser.emailEnabled && currentUser.emailVerified === false;
@@ -1049,7 +1052,7 @@ function openAuthDialog(mode = "login", message = "") {
 async function fetchAuthSession() {
   try {
     const response = await fetch("/api/auth/session", { cache: "no-store" });
-    const payload = await response.json();
+    const payload = await readJsonResponse(response, "读取登录状态失败。");
     currentUser = payload.authenticated ? payload.user : null;
     renderAuthState();
     return currentUser;
@@ -1079,10 +1082,7 @@ async function submitAuthForm() {
       },
       body: JSON.stringify({ email, password }),
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "账户操作失败。");
-    }
+    const payload = await readJsonResponse(response, "账户操作失败。");
     currentUser = payload.user;
     renderAuthState();
     await initializeServerCustomPresets();
@@ -1135,10 +1135,7 @@ async function resendVerificationEmail() {
   setStatus("正在发送验证邮件...");
   try {
     const response = await fetch("/api/auth/resend-verification", { method: "POST" });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "验证邮件发送失败。");
-    }
+    const payload = await readJsonResponse(response, "验证邮件发送失败。");
     if (payload.alreadyVerified) {
       await fetchAuthSession();
       setStatus("电子邮件已经验证，可以保存模型。");
@@ -5552,10 +5549,7 @@ async function loadData() {
 
   try {
     const response = await fetch(`/api/klines?${params.toString()}`);
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(result.error || "查询失败。");
-    }
+    const result = await readJsonResponse(response, "历史行情读取失败。");
     renderResult(result);
   } catch (error) {
     setStatus(error.message || "查询失败。", true);
