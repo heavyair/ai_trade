@@ -474,6 +474,13 @@ async function sendVerificationEmail(req, userId, email, force = false) {
       <p>如果按钮无法打开，请复制这个链接到浏览器：</p>
       <p style="word-break:break-all">${escapedUrl}</p>
       <p>这个链接将在 24 小时后失效。</p>
+      <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
+      <h2>Verify your AI Trade account</h2>
+      <p>Click the button below to verify your email. After verification, you can save models, optimized parameters, and historical backtest records.</p>
+      <p><a href="${escapedUrl}" style="display:inline-block;padding:10px 16px;border-radius:6px;background:#1f7a8c;color:#fff;text-decoration:none">Verify email</a></p>
+      <p>If the button does not open, copy this link into your browser:</p>
+      <p style="word-break:break-all">${escapedUrl}</p>
+      <p>This link expires in 24 hours.</p>
     </div>
   `;
   const text = [
@@ -483,6 +490,13 @@ async function sendVerificationEmail(req, userId, email, force = false) {
     verifyUrl,
     "",
     "这个链接将在 24 小时后失效。",
+    "",
+    "Verify your AI Trade account",
+    "",
+    "Open the link below to verify your email. After verification, you can save models, optimized parameters, and historical backtest records.",
+    verifyUrl,
+    "",
+    "This link expires in 24 hours.",
   ].join("\n");
 
   await postJsonToResend({

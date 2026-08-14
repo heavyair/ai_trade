@@ -98,6 +98,18 @@ body {
   flex: 0 0 auto;
 }
 
+.language-select {
+  flex: 0 0 auto;
+  min-height: 38px;
+  border: 1px solid #b9d8df;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+}
+
 .wizard-action {
   height: 74px;
   min-width: 0;
@@ -1988,6 +2000,11 @@ tbody tr:last-child td {
   .auth-panel {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .auth-panel button,
+  .language-select {
+    width: 100%;
   }
 
   .research-actions,
