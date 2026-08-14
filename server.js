@@ -406,7 +406,17 @@ function postJsonToResend(payload) {
           resolve(responseBody);
           return;
         }
-        const error = new Error(`邮件服务返回 ${response.statusCode}`);
+        let detail = "";
+        try {
+          const payload = JSON.parse(responseBody);
+          detail = payload && (payload.message || payload.error || payload.name)
+            ? String(payload.message || payload.error || payload.name)
+            : "";
+        } catch (parseError) {
+          detail = responseBody;
+        }
+        const suffix = detail ? `：${detail.slice(0, 300)}` : "";
+        const error = new Error(`邮件服务返回 ${response.statusCode}${suffix}`);
         error.statusCode = 502;
         reject(error);
       });
