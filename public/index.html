@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-simulation-popups">
+    <link rel="stylesheet" href="/styles.css?v=20260814-model-data-step">
   </head>
   <body>
     <main class="shell">
@@ -243,6 +243,15 @@
             <p>选择 A 股代码或美股 ticker，并加载用于模拟的历史价格。</p>
           </div>
           <button id="closeDataSelectorButton" class="ghost-button" type="button">关闭</button>
+        </div>
+
+        <div id="dataSelectorCurrentData" class="current-data-panel">
+          <div>
+            <span data-i18n="currentHistoryData">当前历史数据</span>
+            <strong data-i18n="historyNotLoaded">尚未加载历史数据</strong>
+            <small data-i18n="queryTickerRangeHint">请查询股票和时间区间。</small>
+          </div>
+          <button id="useCurrentDataButton" class="ghost-button" type="button" disabled data-i18n="useCurrentDataSimulation">使用当前数据模拟</button>
         </div>
 
         <form id="queryForm" class="query-form">
@@ -910,6 +919,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260814-simulation-popups"></script>
+    <script src="/app.js?v=20260814-model-data-step"></script>
   </body>
 </html>

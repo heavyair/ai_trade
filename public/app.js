@@ -59,6 +59,7 @@ const doneModelSelectorButton = document.querySelector("#doneModelSelectorButton
 const modelSelectorDialog = document.querySelector("#modelSelectorDialog");
 const dataSelectorDialog = document.querySelector("#dataSelectorDialog");
 const closeDataSelectorButton = document.querySelector("#closeDataSelectorButton");
+const dataSelectorCurrentData = document.querySelector("#dataSelectorCurrentData");
 const marketDataDialog = document.querySelector("#marketDataDialog");
 const closeMarketDataButton = document.querySelector("#closeMarketDataButton");
 const resultsDialog = document.querySelector("#resultsDialog");
@@ -253,6 +254,12 @@ const i18n = {
     noModelSelected: "尚未选择模型。",
     historyNotLoaded: "尚未加载历史数据",
     historyNotLoadedHint: "点击“选择股票区间”，加载用于模拟的历史价格。",
+    currentHistoryData: "当前历史数据",
+    queryTickerRangeHint: "请查询股票和时间区间。",
+    useCurrentDataSimulation: "使用当前数据模拟",
+    loadedTradingDays: "个交易日",
+    dateRangeTo: "至",
+    loadHistoryFirst: "请先查询历史数据。",
     simulationNotReady: "尚未生成模拟表现",
     simulationNotReadyHint: "选择模型并加载历史数据后会自动开始模拟。",
     viewMarketChart: "查看行情曲线",
@@ -326,6 +333,12 @@ const i18n = {
     noModelSelected: "No model selected.",
     historyNotLoaded: "Historical data not loaded",
     historyNotLoadedHint: "Select a ticker range to load historical prices for simulation.",
+    currentHistoryData: "Current Historical Data",
+    queryTickerRangeHint: "Please query a ticker and time range.",
+    useCurrentDataSimulation: "Use Current Data",
+    loadedTradingDays: "trading days",
+    dateRangeTo: "to",
+    loadHistoryFirst: "Please query historical data first.",
     simulationNotReady: "Simulation performance not ready",
     simulationNotReadyHint: "Simulation starts automatically after models and historical data are selected.",
     viewMarketChart: "View Market Chart",
@@ -1837,7 +1850,6 @@ function renderModelCompareOptions() {
           <span class="model-selector-drawdown" data-label="回撤率">${drawdownText}</span>
           <span class="model-selector-date" data-label="日期">${escapeHtml(displayDate || "--")}</span>
           <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
-          <button class="preset-optimize-button" type="button" data-preset-name="${escapeHtml(name)}">优化</button>
         </div>
       `;
     })
@@ -1854,7 +1866,35 @@ function openModelSelectorDialog() {
   showDialog(modelSelectorDialog);
 }
 
+function renderDataSelectorCurrentData() {
+  if (!dataSelectorCurrentData) return;
+  const hasData = Boolean(lastRows && lastRows.length > 0 && lastSummary);
+  if (!hasData) {
+    dataSelectorCurrentData.innerHTML = `
+      <div>
+        <span>${t("currentHistoryData")}</span>
+        <strong>${t("historyNotLoaded")}</strong>
+        <small>${t("queryTickerRangeHint")}</small>
+      </div>
+      <button id="useCurrentDataButton" class="ghost-button" type="button" disabled>${t("useCurrentDataSimulation")}</button>
+    `;
+    return;
+  }
+
+  const info = lastSummary.symbol || {};
+  const label = info.name && info.code ? `${info.code} ${info.name}` : (info.code || codeInput.value || "--");
+  dataSelectorCurrentData.innerHTML = `
+    <div>
+      <span>${t("currentHistoryData")}</span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(lastSummary.startDate)} ${t("dateRangeTo")} ${escapeHtml(lastSummary.endDate)} · ${lastSummary.count} ${t("loadedTradingDays")}</small>
+    </div>
+    <button id="useCurrentDataButton" class="ghost-button" type="button">${t("useCurrentDataSimulation")}</button>
+  `;
+}
+
 function openDataSelectorDialog() {
+  renderDataSelectorCurrentData();
   showDialog(dataSelectorDialog);
 }
 
@@ -5859,11 +5899,6 @@ modelCompareOptions.addEventListener("click", (event) => {
     openPresetParamEditor(paramButton.dataset.presetName);
     return;
   }
-  const optimizeButton = target ? target.closest(".preset-optimize-button") : null;
-  if (optimizeButton) {
-    optimizePresetParameters(optimizeButton.dataset.presetName);
-    return;
-  }
   const option = target ? target.closest("[data-preset-name]") : null;
   if (!option) return;
   applyStrategyPreset(option.dataset.presetName);
@@ -5903,12 +5938,29 @@ if (doneModelSelectorButton && modelSelectorDialog) {
   doneModelSelectorButton.addEventListener("click", () => {
     closeDialog(modelSelectorDialog);
     if (getSelectedComparisonPresetNames().length > 0) {
-      if (lastRows && lastRows.length > 0) {
-        startBacktest();
-      } else {
-        window.setTimeout(openDataSelectorDialog, 80);
-      }
+      window.setTimeout(openDataSelectorDialog, 80);
+    } else {
+      setStatus("请至少选择一个预存模型进行历史模拟。");
     }
+  });
+}
+
+if (dataSelectorCurrentData) {
+  dataSelectorCurrentData.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("#useCurrentDataButton") : null;
+    if (!button || button.disabled) return;
+    if (!lastRows || lastRows.length === 0) {
+      setStatus(t("loadHistoryFirst"), true);
+      return;
+    }
+    if (getSelectedComparisonPresetNames().length === 0) {
+      closeDialog(dataSelectorDialog);
+      openModelSelectorDialog();
+      setStatus("请至少选择一个预存模型进行历史模拟。");
+      return;
+    }
+    closeDialog(dataSelectorDialog);
+    startBacktest();
   });
 }
 
