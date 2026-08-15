@@ -994,7 +994,7 @@ button:disabled {
 
 .model-selector-subject {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) 84px minmax(0, 1.1fr) 78px 92px 132px;
+  grid-template-columns: minmax(220px, 1.45fr) 84px minmax(160px, 1fr) 78px 92px 70px;
   gap: 10px;
   align-items: center;
   padding: 0 10px 8px;
@@ -1043,7 +1043,7 @@ button:disabled {
 
 .model-preset-card {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) 84px minmax(0, 1.1fr) 78px 92px 58px 58px;
+  grid-template-columns: minmax(220px, 1.45fr) 84px minmax(160px, 1fr) 78px 92px 70px;
   align-items: center;
   gap: 10px;
   padding: 10px;
@@ -1126,6 +1126,51 @@ button:disabled {
   color: #fff;
   background: var(--accent-dark);
   border-color: var(--accent-dark);
+}
+
+@media (max-width: 1060px) {
+  .model-selector-subject,
+  .model-preset-card {
+    grid-template-columns: minmax(220px, 1fr) 84px minmax(140px, 0.8fr) 78px 70px;
+  }
+
+  .model-selector-head-date,
+  .model-selector-date {
+    display: none;
+  }
+}
+
+@media (max-width: 780px) {
+  .model-selector-subject,
+  .model-preset-card {
+    grid-template-columns: minmax(180px, 1fr) 84px 70px;
+  }
+
+  .model-selector-head-range,
+  .model-selector-head-drawdown,
+  .model-selector-range,
+  .model-selector-drawdown {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .model-selector-subject {
+    display: none;
+  }
+
+  .model-preset-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-preset-card label {
+    grid-column: 1;
+  }
+
+  .model-selector-return,
+  .preset-param-button {
+    display: none;
+  }
 }
 
 .simulation-config-form #localLadderPanel,
@@ -1903,6 +1948,12 @@ button:disabled {
   color: #9a3412;
 }
 
+.section-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 textarea {
   width: 100%;
   min-height: 138px;
@@ -2389,28 +2440,19 @@ tbody tr:last-child td {
   }
 
   .model-preset-card {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .model-preset-card label {
-    grid-column: 1 / -1;
+    grid-column: 1;
   }
 
-  .model-selector-range {
-    grid-column: 1 / -1;
-    white-space: normal;
-  }
-
-  .model-selector-return::before,
-  .model-selector-range::before,
-  .model-selector-drawdown::before,
-  .model-selector-date::before {
-    content: attr(data-label);
-    display: block;
-    margin-bottom: 3px;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 800;
+  .model-selector-return,
+  .model-selector-range,
+  .model-selector-drawdown,
+  .model-selector-date,
+  .preset-param-button {
+    display: none;
   }
 
   .param-dialog {

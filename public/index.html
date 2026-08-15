@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-public-owner">
+    <link rel="stylesheet" href="/styles.css?v=20260815-model-list-responsive">
   </head>
   <body>
     <main class="shell">
@@ -91,6 +91,7 @@
             </div>
             <button id="closePresetParamButton" type="button" class="ghost-button">关闭</button>
           </div>
+          <div class="section-label">系统参数解释</div>
           <div id="presetParamNarrative" class="optimization-narrative"></div>
           <label>
             预设模型名称
@@ -102,7 +103,7 @@
               <textarea id="presetOriginalText" rows="5" readonly spellcheck="false"></textarea>
             </label>
             <label>
-              当前文字版本
+              当前人工说明
               <textarea id="presetModelText" rows="5" maxlength="8000" spellcheck="false"></textarea>
             </label>
           </div>
@@ -237,11 +238,12 @@
               <button id="closeModelSelectorButton" type="button" class="ghost-button" data-i18n="close">关闭</button>
             </div>
             <div class="model-selector-subject">
-              <span data-i18n="model">模型</span>
-              <span data-i18n="returnRate">回报率</span>
-              <span data-i18n="testedTickerRange">测试股票区间</span>
-              <span data-i18n="drawdownRate">回撤率</span>
-              <span data-i18n="date">日期</span>
+              <span class="model-selector-head-model" data-i18n="model">模型</span>
+              <span class="model-selector-head-return" data-i18n="returnRate">回报率</span>
+              <span class="model-selector-head-range" data-i18n="testedTickerRange">测试股票区间</span>
+              <span class="model-selector-head-drawdown" data-i18n="drawdownRate">回撤率</span>
+              <span class="model-selector-head-date" data-i18n="date">日期</span>
+              <span class="model-selector-head-action">参数</span>
             </div>
             <div id="modelCompareOptions" class="model-compare-options model-selector-list"></div>
             <div class="dialog-actions">
@@ -949,6 +951,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260814-public-owner"></script>
+    <script src="/app.js?v=20260815-model-list-responsive"></script>
   </body>
 </html>
