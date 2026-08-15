@@ -168,6 +168,14 @@ async function initializeDatabase() {
     ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_original_text_snapshot TEXT NOT NULL DEFAULT '';
     ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_model_text_snapshot TEXT NOT NULL DEFAULT '';
 
+    UPDATE strategy_presets
+    SET config = config - 'label' - 'meta'
+    WHERE config ? 'label' OR config ? 'meta';
+
+    UPDATE ranking_records
+    SET preset_config_snapshot = preset_config_snapshot - 'label' - 'meta'
+    WHERE preset_config_snapshot ? 'label' OR preset_config_snapshot ? 'meta';
+
     CREATE TABLE IF NOT EXISTS symbols (
       symbol TEXT NOT NULL,
       market TEXT NOT NULL,
@@ -777,6 +785,13 @@ function sanitizeServerPreset(name, preset) {
   };
 }
 
+function buildPresetConfigPayload(preset) {
+  const config = { ...(preset || {}) };
+  delete config.label;
+  delete config.meta;
+  return config;
+}
+
 function readCustomPresets() {
   return readPresetStore().legacyPresets;
 }
@@ -865,6 +880,7 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
   const key = normalizePresetKey(name);
   const safePreset = sanitizeServerPreset(key, preset);
   if (!key || !safePreset) return;
+  const configPayload = buildPresetConfigPayload(safePreset);
   await dbPool.query(`
     INSERT INTO strategy_presets (
       id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, created_at, updated_at
@@ -885,7 +901,7 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
     key,
     safePreset.label,
     safePreset.strategyType,
-    JSON.stringify(safePreset),
+    JSON.stringify(configPayload),
     JSON.stringify(safePreset.meta || {}),
     safePreset.meta && safePreset.meta.originalText ? safePreset.meta.originalText : "",
     safePreset.meta && safePreset.meta.modelText ? safePreset.meta.modelText : "",
@@ -1249,6 +1265,13 @@ function plainObjectOrEmpty(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function stripPresetSnapshotDisplayFields(value) {
+  const snapshot = { ...plainObjectOrEmpty(value) };
+  delete snapshot.label;
+  delete snapshot.meta;
+  return snapshot;
+}
+
 function normalizeRankingKey(value) {
   return String(value || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160);
 }
@@ -1278,7 +1301,7 @@ function sanitizeServerRankingRecord(record) {
     strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
-    presetConfigSnapshot: plainObjectOrEmpty(record.presetConfigSnapshot),
+    presetConfigSnapshot: stripPresetSnapshotDisplayFields(record.presetConfigSnapshot),
     presetMetaSnapshot: plainObjectOrEmpty(record.presetMetaSnapshot),
     presetOriginalTextSnapshot: String(record.presetOriginalTextSnapshot || "").slice(0, 8000),
     presetModelTextSnapshot: String(record.presetModelTextSnapshot || record.presetOriginalTextSnapshot || "").slice(0, 8000),

@@ -881,6 +881,13 @@ function clonePlainObject(value) {
   }
 }
 
+function stripPresetDisplayFields(value) {
+  const config = clonePlainObject(value);
+  delete config.label;
+  delete config.meta;
+  return config;
+}
+
 function sanitizeRankingRecord(record) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const periodYears = Number(record.periodYears);
@@ -903,7 +910,7 @@ function sanitizeRankingRecord(record) {
     strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
-    presetConfigSnapshot: clonePlainObject(record.presetConfigSnapshot),
+    presetConfigSnapshot: stripPresetDisplayFields(record.presetConfigSnapshot),
     presetMetaSnapshot: clonePlainObject(record.presetMetaSnapshot),
     presetOriginalTextSnapshot: String(record.presetOriginalTextSnapshot || "").slice(0, 8000),
     presetModelTextSnapshot: String(record.presetModelTextSnapshot || record.presetOriginalTextSnapshot || "").slice(0, 8000),
@@ -3923,7 +3930,7 @@ function annualizeReturn(returnRate, years) {
 
 function buildRankingPresetSnapshot(preset, config) {
   return {
-    ...getSerializablePreset(preset),
+    ...stripPresetDisplayFields(getSerializablePreset(preset)),
     initialCash: Number(config.initialCash) || 0,
     tradeFee: Number(config.tradeFee) || 0,
   };
@@ -4138,7 +4145,6 @@ function isUserEditablePreset(name) {
 
 function getSerializablePreset(preset) {
   return {
-    label: preset.label,
     strategyType: preset.strategyType || "wave",
     waveThreshold: preset.waveThreshold || 5,
     localLadderRule: preset.localLadderRule || undefined,
@@ -4148,7 +4154,6 @@ function getSerializablePreset(preset) {
     buyRules: preset.buyRules || undefined,
     sellRules: preset.sellRules || undefined,
     noNewHighExitRule: preset.noNewHighExitRule || undefined,
-    meta: preset.meta || undefined,
   };
 }
 
@@ -4173,7 +4178,7 @@ function openPresetParamEditor(presetName, options = {}) {
   }
   renderPresetParamNarrativeFromPreset(preset, options.config || createConfigFromPreset(presetName, readBacktestConfig()));
   const editorPreset = readonly && options.config
-    ? { ...clonePlainObject(options.config), meta: preset.meta || clonePlainObject(options.config.meta) }
+    ? stripPresetDisplayFields(options.config)
     : getSerializablePreset(preset);
   presetParamEditor.value = JSON.stringify(editorPreset, null, 2);
   presetParamEditor.disabled = readonly;
