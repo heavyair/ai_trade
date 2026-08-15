@@ -1391,6 +1391,21 @@ function renderAuthState() {
   if (customModelCreatorInput && isSignedIn) {
     customModelCreatorInput.value = currentUser.email;
   }
+  syncModelAuthoringControls();
+}
+
+function canUseModelAuthoring() {
+  return Boolean(currentUser && currentUser.email && !(currentUser.emailEnabled && currentUser.emailVerified === false));
+}
+
+function syncModelAuthoringControls() {
+  const canAuthor = canUseModelAuthoring();
+  if (generateModelCodeButton) generateModelCodeButton.disabled = !canAuthor;
+  if (saveGeneratedModelButton) saveGeneratedModelButton.disabled = !canAuthor || !generatedPresetDraft;
+  if (!canAuthor && saveOptimizationButton) saveOptimizationButton.disabled = true;
+  document.querySelectorAll(".result-optimize-button").forEach((button) => {
+    button.disabled = !canAuthor;
+  });
 }
 
 function setAuthMessage(message, isError = false) {
@@ -1515,7 +1530,7 @@ async function logout() {
 }
 
 function requireSignedInForSave() {
-  if (currentUser && currentUser.email && !(currentUser.emailEnabled && currentUser.emailVerified === false)) return true;
+  if (canUseModelAuthoring()) return true;
   if (currentUser && currentUser.email) {
     setStatus(t("verifyBeforeSave"), true);
     return false;
@@ -3864,6 +3879,7 @@ function renderModelComparisonTable(results) {
     !best || item.finalState.maxDrawdown < best.finalState.maxDrawdown ? item : best
   ), null);
   const beatCount = results.filter((item) => item.finalState.returnRate >= item.finalState.buyHold.returnRate).length;
+  const canOptimizePresets = canUseModelAuthoring();
 
   modelCompareTable.innerHTML = `
     <div class="model-performance-summary">
@@ -3932,7 +3948,7 @@ function renderModelComparisonTable(results) {
           </div>
           <div class="performance-actions">
             ${canEditPreset ? `<button class="result-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
-            ${result.name !== "__current__" && strategyPresets[result.name] ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化参数</button>` : ""}
+            ${canOptimizePresets && result.name !== "__current__" && strategyPresets[result.name] ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化参数</button>` : ""}
             <button class="result-trades-button" type="button" data-result-name="${escapeHtml(result.name)}">交易记录</button>
           </div>
         </article>
@@ -5028,6 +5044,7 @@ function openOptimizationDialog(message) {
 }
 
 function optimizePresetParameters(presetName) {
+  if (!requireSignedInForSave()) return;
   const preset = strategyPresets[presetName];
   if (!preset) return;
   if (!lastRows || lastRows.length === 0) {
@@ -6662,13 +6679,14 @@ if (saveOptimizationButton) {
 
 if (generateModelCodeButton) {
   generateModelCodeButton.addEventListener("click", () => {
+    if (!requireSignedInForSave()) return;
     if (!customModelPrompt || !customModelPrompt.value.trim()) {
       if (generatedModelCode) generatedModelCode.textContent = t("noModelInput");
       return;
     }
     generatedPresetDraft = createSafePresetDraft(customModelPrompt.value);
     if (generatedModelCode) generatedModelCode.textContent = generatedPresetDraft.code;
-    if (saveGeneratedModelButton) saveGeneratedModelButton.disabled = false;
+    syncModelAuthoringControls();
   });
 }
 
@@ -6678,6 +6696,7 @@ if (saveGeneratedModelButton) {
     const presetName = await saveGeneratedPreset(generatedPresetDraft.preset);
     if (!presetName) return;
     generatedPresetDraft = null;
+    syncModelAuthoringControls();
     setWizardPage("ranking");
     setStatus(`已保存新模型预设：${strategyPresets[presetName].label}。`);
   });
