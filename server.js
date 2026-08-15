@@ -21,6 +21,7 @@ const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
+const PUBLIC_OWNER_LABEL = "public";
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
 const dbPool = new Pool({
@@ -289,6 +290,7 @@ async function initializeDatabase() {
   `);
 
   await migrateJsonStateToPostgres();
+  await normalizeExistingPresetLabels();
 }
 
 function jsonFileExists(filePath) {
@@ -342,7 +344,7 @@ async function migrateJsonStateToPostgres() {
   if (jsonFileExists(PRESETS_FILE)) {
     const store = readPresetStore();
     for (const [name, preset] of Object.entries(store.legacyPresets || {})) {
-      await upsertPreset(null, name, preset, true);
+      await upsertPreset(null, name, preset, true, { enforceLabelUnique: false });
     }
 
     for (const [email, value] of Object.entries(store.users || {})) {
@@ -350,7 +352,7 @@ async function migrateJsonStateToPostgres() {
       const userId = userIdForEmail(normalizedEmail);
       await ensureImportedUser(normalizedEmail);
       for (const [name, preset] of Object.entries(value.presets || {})) {
-        await upsertPreset(userId, name, preset, false);
+        await upsertPreset(userId, name, preset, false, { enforceLabelUnique: false });
       }
     }
   }
@@ -780,6 +782,7 @@ function sanitizeServerPreset(name, preset) {
       modelText: String(meta.modelText || meta.originalText || "").slice(0, 8000),
       ownerEmail: String(meta.ownerEmail || "").slice(0, 160),
       isOwner: Boolean(meta.isOwner),
+      isPublic: Boolean(meta.isPublic),
       isLegacy: Boolean(meta.isLegacy),
     },
   };
@@ -790,6 +793,82 @@ function buildPresetConfigPayload(preset) {
   delete config.label;
   delete config.meta;
   return config;
+}
+
+function normalizePresetLabel(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function cleanPresetDisplayLabel(label, meta = {}) {
+  let text = String(label || "").trim();
+  const targetSymbol = String(meta && meta.targetSymbol || "").trim();
+  if (targetSymbol && targetSymbol !== "通用") {
+    text = text.replace(new RegExp(targetSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ");
+  }
+  text = text
+    .replace(/本地修改|优化参数/g, " ")
+    .replace(/\b\d{6}\b/g, " ")
+    .replace(/\b(?:513100|588000|000651|NET|QQQ|AMD)\b/gi, " ")
+    .replace(/[＊*|_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s\-·,，:：]+|[\s\-·,，:：]+$/g, "")
+    .trim();
+  return text || "模型";
+}
+
+async function normalizeExistingPresetLabels() {
+  const result = await dbPool.query(`
+    SELECT id, label, meta, created_at
+    FROM strategy_presets
+    ORDER BY lower(label), created_at, id
+  `);
+  const rows = result.rows.map((row) => ({
+    ...row,
+    baseLabel: cleanPresetDisplayLabel(row.label, row.meta && typeof row.meta === "object" ? row.meta : {}),
+  }));
+  const counts = rows.reduce((next, row) => {
+    const key = normalizePresetLabel(row.baseLabel);
+    next.set(key, (next.get(key) || 0) + 1);
+    return next;
+  }, new Map());
+  const seenByBase = new Map();
+  const usedLabels = new Set();
+
+  for (const row of rows) {
+    const baseKey = normalizePresetLabel(row.baseLabel);
+    const duplicateCount = counts.get(baseKey) || 0;
+    const nextIndex = (seenByBase.get(baseKey) || 0) + 1;
+    seenByBase.set(baseKey, nextIndex);
+
+    let nextLabel = duplicateCount > 1 ? `${row.baseLabel} ${nextIndex}` : row.baseLabel;
+    let suffix = nextIndex;
+    while (usedLabels.has(normalizePresetLabel(nextLabel))) {
+      suffix += 1;
+      nextLabel = `${row.baseLabel} ${suffix}`;
+    }
+    usedLabels.add(normalizePresetLabel(nextLabel));
+
+    if (nextLabel !== row.label) {
+      await dbPool.query("UPDATE strategy_presets SET label = $1, updated_at = NOW() WHERE id = $2", [nextLabel, row.id]);
+    }
+  }
+}
+
+async function assertPresetLabelGloballyUnique(label, presetId) {
+  const normalizedLabel = normalizePresetLabel(label);
+  if (!normalizedLabel) return;
+  const result = await dbPool.query(`
+    SELECT id, label
+    FROM strategy_presets
+    WHERE lower(label) = lower($1)
+      AND id <> $2
+    LIMIT 1
+  `, [label, presetId || ""]);
+  if (result.rows.length > 0) {
+    const error = new Error(`模型名称“${label}”已经存在，请换一个全局唯一的名称。`);
+    error.statusCode = 409;
+    throw error;
+  }
 }
 
 function readCustomPresets() {
@@ -804,6 +883,33 @@ function normalizePresetMap(presets) {
     if (key && safePreset) next[key] = safePreset;
     return next;
   }, {});
+}
+
+function assertIncomingPresetLabelsUnique(incoming) {
+  const labels = new Map();
+  Object.entries(incoming || {}).forEach(([name, preset]) => {
+    const key = normalizePresetKey(name);
+    const safePreset = sanitizeServerPreset(key, preset);
+    if (!key || !safePreset) return;
+    const labelKey = normalizePresetLabel(safePreset.label);
+    const existingName = labels.get(labelKey);
+    if (existingName && existingName !== key) {
+      const error = new Error(`模型名称“${safePreset.label}”在本次保存中重复，请先重命名。`);
+      error.statusCode = 409;
+      throw error;
+    }
+    labels.set(labelKey, key);
+  });
+}
+
+async function assertIncomingPresetLabelsGloballyUnique(incoming, ownerUserId) {
+  for (const [name, preset] of Object.entries(incoming || {})) {
+    const key = normalizePresetKey(name);
+    const safePreset = sanitizeServerPreset(key, preset);
+    if (!key || !safePreset) continue;
+    const presetId = ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`;
+    await assertPresetLabelGloballyUnique(safePreset.label, presetId);
+  }
 }
 
 function normalizeEmail(value) {
@@ -876,10 +982,14 @@ async function ensureImportedUser(email) {
   return id;
 }
 
-async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
+async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options = {}) {
   const key = normalizePresetKey(name);
   const safePreset = sanitizeServerPreset(key, preset);
   if (!key || !safePreset) return;
+  const presetId = ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`;
+  if (options.enforceLabelUnique !== false) {
+    await assertPresetLabelGloballyUnique(safePreset.label, presetId);
+  }
   const configPayload = buildPresetConfigPayload(safePreset);
   await dbPool.query(`
     INSERT INTO strategy_presets (
@@ -896,7 +1006,7 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false) {
           is_legacy = EXCLUDED.is_legacy,
           updated_at = NOW()
   `, [
-    ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`,
+    presetId,
     ownerUserId,
     key,
     safePreset.label,
@@ -924,6 +1034,7 @@ function presetRowsToMap(rows) {
         modelText: row.model_text || rowMeta.modelText || (preset.meta && preset.meta.modelText) || row.original_text || "",
         ownerEmail: row.owner_email || rowMeta.ownerEmail || "",
         isOwner: Boolean(row.is_owner),
+        isPublic: Boolean(row.is_public),
         isLegacy: Boolean(row.is_legacy),
       },
     });
@@ -933,15 +1044,16 @@ function presetRowsToMap(rows) {
 
 async function readUserPresets(email) {
   const legacyResult = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy, ''::text AS owner_email, FALSE AS is_owner
+    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+      $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL
     ORDER BY updated_at DESC
-  `);
+  `, [PUBLIC_OWNER_LABEL]);
   const userResult = await dbQuery(`
     SELECT strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
       strategy_presets.meta, strategy_presets.original_text, strategy_presets.model_text, strategy_presets.is_legacy,
-      users.email AS owner_email, TRUE AS is_owner
+      users.email AS owner_email, TRUE AS is_owner, FALSE AS is_public
     FROM strategy_presets
     JOIN users ON users.id = strategy_presets.owner_user_id
     WHERE users.email = $1
@@ -961,11 +1073,12 @@ async function readUserPresets(email) {
 
 async function readVisiblePresetsForAnonymous() {
   const result = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy, ''::text AS owner_email, FALSE AS is_owner
+    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+      $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL
     ORDER BY updated_at DESC
-  `);
+  `, [PUBLIC_OWNER_LABEL]);
   const legacyPresets = presetRowsToMap(result.rows);
   return {
     legacyPresets,
@@ -1487,6 +1600,8 @@ async function handlePresetsApi(req, res) {
       : {};
     const userId = userIdForEmail(user.email);
 
+    assertIncomingPresetLabelsUnique(incoming);
+    await assertIncomingPresetLabelsGloballyUnique(incoming, userId);
     for (const [name, preset] of Object.entries(incoming)) {
       await upsertPreset(userId, name, preset, false);
     }
@@ -1511,7 +1626,9 @@ function mapAdminPresetRow(row) {
     name: row.name,
     label: row.label,
     strategyType: row.strategy_type,
-    ownerEmail: row.owner_email || "",
+    ownerEmail: row.owner_email || PUBLIC_OWNER_LABEL,
+    ownerValue: row.owner_email || PUBLIC_OWNER_LABEL,
+    isPublic: !row.owner_user_id,
     isLegacy: Boolean(row.is_legacy),
     originalText: row.original_text || meta.originalText || "",
     modelText: row.model_text || meta.modelText || row.original_text || "",
@@ -1532,10 +1649,66 @@ async function handleAdminPresetsApi(req, res) {
         ORDER BY strategy_presets.updated_at DESC
         LIMIT 2000
       `);
+      const users = await dbQuery("SELECT email FROM users ORDER BY email ASC LIMIT 2000");
       sendJson(res, 200, {
         adminEmail: ADMIN_EMAIL,
         presets: result.rows.map(mapAdminPresetRow),
+        owners: [PUBLIC_OWNER_LABEL, ...users.rows.map((row) => row.email)],
       });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const id = String(payload.id || "").trim();
+      const owner = String(payload.owner || "").trim();
+      if (!id) {
+        sendJson(res, 400, { error: "缺少模型 ID。" });
+        return;
+      }
+      if (!owner) {
+        sendJson(res, 400, { error: "缺少 owner。" });
+        return;
+      }
+      const current = await dbQuery("SELECT id, name FROM strategy_presets WHERE id = $1", [id]);
+      if (current.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+        return;
+      }
+      const ownerUserId = owner.toLowerCase() === PUBLIC_OWNER_LABEL
+        ? null
+        : await ensureImportedUser(owner);
+      const name = current.rows[0].name;
+      const nextId = ownerUserId ? `preset_${ownerUserId}_${name}` : `preset_legacy_${name}`;
+      const idConflict = await dbQuery("SELECT id FROM strategy_presets WHERE id = $1 AND id <> $2 LIMIT 1", [nextId, id]);
+      if (idConflict.rows.length > 0) {
+        sendJson(res, 409, { error: "目标 owner 下的模型 ID 已经存在，请先删除冲突模型。" });
+        return;
+      }
+      const conflict = await dbQuery(`
+        SELECT id
+        FROM strategy_presets
+        WHERE name = $1
+          AND id <> $2
+          AND (($3::text IS NULL AND owner_user_id IS NULL) OR owner_user_id = $3)
+        LIMIT 1
+      `, [name, id, ownerUserId]);
+      if (conflict.rows.length > 0) {
+        sendJson(res, 409, { error: "目标 owner 下已经存在同 key 模型，请先重命名或删除冲突模型。" });
+        return;
+      }
+      const updated = await dbQuery(`
+        UPDATE strategy_presets
+        SET id = $1,
+            owner_user_id = $2,
+            is_legacy = FALSE,
+            updated_at = NOW()
+        WHERE id = $3
+        RETURNING id
+      `, [nextId, ownerUserId, id]);
+      await dbQuery("UPDATE ranking_records SET preset_id = $1 WHERE preset_id = $2", [nextId, id]);
+      sendJson(res, 200, { updated: updated.rows[0], owner: ownerUserId ? owner : PUBLIC_OWNER_LABEL });
       return;
     }
 

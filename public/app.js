@@ -190,6 +190,7 @@ let activeSimulationStep = "models";
 let currentUser = null;
 let authMode = "login";
 let activeLanguage = localStorage.getItem("aiTradeLanguage") || "zh";
+let adminOwnerOptions = ["public"];
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
@@ -197,8 +198,10 @@ const customPresetStorageKey = "aiTradeCustomStrategyPresets";
 const customPresetMigrationKey = "aiTradeCustomStrategyPresetsMigratedToServer";
 const rankingRecordStorageKey = "aiTradeRankingRecords";
 const rankingPeriods = [1, 3, 5];
+const rankingPageSize = 10;
 let recentSymbolPresets = [];
 let rankingRecords = [];
+let rankingPageByPeriod = {};
 
 const i18n = {
   zh: {
@@ -745,6 +748,7 @@ function sanitizeStoredPreset(name, preset) {
       modelText: String(preset.meta && (preset.meta.modelText || preset.meta.originalText) || "").slice(0, 8000),
       ownerEmail: String(preset.meta && preset.meta.ownerEmail || "").slice(0, 160),
       isOwner: Boolean(preset.meta && preset.meta.isOwner),
+      isPublic: Boolean(preset.meta && preset.meta.isPublic),
       isLegacy: Boolean(preset.meta && preset.meta.isLegacy),
     },
   };
@@ -768,8 +772,20 @@ function loadLocalCustomStrategyPresets() {
 function saveCustomStrategyPresets() {
   if (!requireSignedInForSave()) return Promise.resolve(false);
   const customPresets = Object.fromEntries(
-    Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
+    Object.entries(strategyPresets).filter(([name]) => isOwnedEditablePreset(name))
   );
+  const usedLabels = new Map();
+  for (const [name, preset] of Object.entries(customPresets)) {
+    const label = String(preset && preset.label || name).trim();
+    if (!validateVisiblePresetLabel(label, name)) return Promise.resolve(false);
+    const normalizedLabel = normalizePresetLabel(label);
+    const existingName = usedLabels.get(normalizedLabel);
+    if (existingName && existingName !== name) {
+      setStatus(`模型名称“${label}”在自定义模型中重复，请先重命名。`, true);
+      return Promise.resolve(false);
+    }
+    usedLabels.set(normalizedLabel, name);
+  }
   return saveServerCustomStrategyPresets(customPresets).then((payload) => {
     if (!payload) return false;
     localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
@@ -824,9 +840,30 @@ function normalizeCustomPresetMap(presets) {
   }, {});
 }
 
+function normalizePresetLabel(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function findPresetNameByLabel(label, excludeName = "") {
+  const normalizedLabel = normalizePresetLabel(label);
+  if (!normalizedLabel) return "";
+  const match = Object.entries(strategyPresets).find(([name, preset]) => (
+    name !== excludeName && normalizePresetLabel(preset && preset.label) === normalizedLabel
+  ));
+  return match ? match[0] : "";
+}
+
+function validateVisiblePresetLabel(label, excludeName = "") {
+  const duplicateName = findPresetNameByLabel(label, excludeName);
+  if (!duplicateName) return true;
+  const duplicate = strategyPresets[duplicateName];
+  setStatus(`模型名称“${label}”已经存在：${duplicate && duplicate.label ? duplicate.label : duplicateName}。请换一个全局唯一名称。`, true);
+  return false;
+}
+
 function getCurrentCustomPresets() {
   return Object.fromEntries(
-    Object.entries(strategyPresets).filter(([name]) => name.startsWith("custom_") || name.startsWith("auto_"))
+    Object.entries(strategyPresets).filter(([name]) => isOwnedEditablePreset(name))
   );
 }
 
@@ -1083,15 +1120,27 @@ function renderAdminPresetList(presets = []) {
   }
   adminPresetList.innerHTML = presets.map((preset) => {
     const textPreview = String(preset.modelText || preset.originalText || "没有文字版本").slice(0, 160);
+    const ownerValue = String(preset.ownerValue || preset.ownerEmail || "public");
+    const options = [...new Set([ownerValue, "public", ...adminOwnerOptions])]
+      .filter(Boolean)
+      .map((owner) => `<option value="${escapeHtml(owner)}"${owner === ownerValue ? " selected" : ""}>${escapeHtml(owner)}</option>`)
+      .join("");
     return `
       <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
         <div>
           <strong>${escapeHtml(preset.label || preset.name)}</strong>
           <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
-          <small>Owner: ${escapeHtml(preset.ownerEmail || "系统")} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
+          <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
           <p>${escapeHtml(textPreview)}</p>
         </div>
-        <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
+        <div class="admin-preset-actions">
+          <label>
+            Owner
+            <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
+          </label>
+          <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
+          <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
+        </div>
       </article>
     `;
   }).join("");
@@ -1103,6 +1152,7 @@ async function loadAdminPresets() {
   try {
     const response = await fetch("/api/admin/presets", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取 admin 模型列表失败。");
+    adminOwnerOptions = Array.isArray(payload.owners) ? payload.owners : ["public"];
     renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
   } catch (error) {
     adminPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
@@ -1113,6 +1163,25 @@ function openAdminDialog() {
   if (!currentUser || !currentUser.isAdmin || !adminDialog) return;
   showDialog(adminDialog);
   loadAdminPresets();
+}
+
+async function updateAdminPresetOwner(id, owner) {
+  if (!id || !owner) return;
+  try {
+    const response = await fetch("/api/admin/presets", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ id, owner }),
+    });
+    await readJsonResponse(response, "修改 owner 失败。");
+    setStatus(`已把模型 owner 修改为 ${owner}。`);
+    await initializeServerCustomPresets();
+    await loadAdminPresets();
+  } catch (error) {
+    setStatus(`修改 owner 失败：${error.message}`, true);
+  }
 }
 
 async function deleteAdminPreset(id, label) {
@@ -3863,6 +3932,7 @@ function renderModelComparisonTable(results) {
           </div>
           <div class="performance-actions">
             ${canEditPreset ? `<button class="result-param-button" type="button" data-preset-name="${escapeHtml(result.name)}">查看参数</button>` : ""}
+            ${result.name !== "__current__" && strategyPresets[result.name] ? `<button class="result-optimize-button" type="button" data-preset-name="${escapeHtml(result.name)}">优化参数</button>` : ""}
             <button class="result-trades-button" type="button" data-result-name="${escapeHtml(result.name)}">交易记录</button>
           </div>
         </article>
@@ -4035,6 +4105,19 @@ function isOwnerRankingRecord(record) {
   ));
 }
 
+function renderRankingPagination(periodYears, page, pageCount, totalRecords) {
+  if (pageCount <= 1) return "";
+  return `
+    <div class="ranking-pagination" aria-label="${periodYears} 年排行分页">
+      <span>第 ${page + 1} / ${pageCount} 页，共 ${totalRecords} 条</span>
+      <div>
+        <button class="ranking-page-button" type="button" data-ranking-page-period="${periodYears}" data-ranking-page="${page - 1}"${page <= 0 ? " disabled" : ""}>上一页</button>
+        <button class="ranking-page-button" type="button" data-ranking-page-period="${periodYears}" data-ranking-page="${page + 1}"${page >= pageCount - 1 ? " disabled" : ""}>下一页</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderModelRanking() {
   if (!rankingPresetList) return;
   const ownerRecords = rankingRecords.filter(isOwnerRankingRecord);
@@ -4049,6 +4132,11 @@ function renderModelRanking() {
       const records = ownerRecords
         .filter((record) => record.periodYears === periodYears)
         .sort((a, b) => b.returnRate - a.returnRate);
+      const pageCount = Math.max(1, Math.ceil(records.length / rankingPageSize));
+      const currentPage = Math.min(Math.max(0, Number(rankingPageByPeriod[periodYears]) || 0), pageCount - 1);
+      rankingPageByPeriod[periodYears] = currentPage;
+      const pageStart = currentPage * rankingPageSize;
+      const visibleRecords = records.slice(pageStart, pageStart + rankingPageSize);
       if (records.length === 0) {
         return `
           <section class="ranking-table-section">
@@ -4065,10 +4153,6 @@ function renderModelRanking() {
               <thead>
                 <tr>
                   <th>排名</th>
-                  <th>股票</th>
-                  <th>区间</th>
-                  <th>模型</th>
-                  <th>类型</th>
                   <th>收益</th>
                   <th>年化</th>
                   <th>全仓收益</th>
@@ -4077,18 +4161,18 @@ function renderModelRanking() {
                   <th>全仓回撤</th>
                   <th>费用</th>
                   <th>交易</th>
+                  <th>股票</th>
+                  <th>区间</th>
+                  <th>模型</th>
+                  <th>类型</th>
                   <th>更新</th>
                   <th>参数</th>
                 </tr>
               </thead>
               <tbody>
-                ${records.map((record, index) => `
+                ${visibleRecords.map((record, index) => `
                   <tr data-preset-name="${escapeHtml(record.presetName)}" data-ranking-key="${escapeHtml(record.key)}">
-                    <td>#${index + 1}</td>
-                    <td>${escapeHtml(record.symbol)} ${escapeHtml(record.symbolName)}</td>
-                    <td>${escapeHtml(record.startDate)} 至 ${escapeHtml(record.endDate)}</td>
-                    <td>${escapeHtml(record.presetLabel)}</td>
-                    <td>${escapeHtml(getStrategyTypeLabel(record.strategyType))}</td>
+                    <td>#${pageStart + index + 1}</td>
                     <td class="${record.returnRate >= 0 ? "up" : "down"}">${formatPercent(record.returnRate)}</td>
                     <td class="${record.annualizedReturn >= 0 ? "up" : "down"}">${formatPercent(record.annualizedReturn)}</td>
                     <td>${formatPercent(record.buyHoldReturnRate)}</td>
@@ -4097,6 +4181,10 @@ function renderModelRanking() {
                     <td>${formatPercent(record.buyHoldMaxDrawdown)}</td>
                     <td>${formatMoney(record.totalFees || 0)}</td>
                     <td>${record.trades}</td>
+                    <td>${escapeHtml(record.symbol)} ${escapeHtml(record.symbolName)}</td>
+                    <td>${escapeHtml(record.startDate)} 至 ${escapeHtml(record.endDate)}</td>
+                    <td>${escapeHtml(record.presetLabel)}</td>
+                    <td>${escapeHtml(getStrategyTypeLabel(record.strategyType))}</td>
                     <td>${escapeHtml(record.updatedAt)}</td>
                     <td><button class="ranking-param-button" type="button" data-ranking-key="${escapeHtml(record.key)}" data-preset-name="${escapeHtml(record.presetName)}">参数</button></td>
                   </tr>
@@ -4104,6 +4192,7 @@ function renderModelRanking() {
               </tbody>
             </table>
           </div>
+          ${renderRankingPagination(periodYears, currentPage, pageCount, records.length)}
         </section>
       `;
     })
@@ -4143,6 +4232,17 @@ function isUserEditablePreset(name) {
   return String(name || "").startsWith("custom_") || String(name || "").startsWith("auto_");
 }
 
+function isOwnedEditablePreset(name) {
+  const preset = strategyPresets[name];
+  return Boolean(
+    preset
+    && isUserEditablePreset(name)
+    && preset.meta
+    && preset.meta.isOwner
+    && !preset.meta.isPublic
+  );
+}
+
 function getSerializablePreset(preset) {
   return {
     strategyType: preset.strategyType || "wave",
@@ -4160,12 +4260,15 @@ function getSerializablePreset(preset) {
 function openPresetParamEditor(presetName, options = {}) {
   const preset = options.preset || strategyPresets[presetName];
   if (!preset || !presetParamDialog || !presetParamEditor) return;
-  const readonly = Boolean(options.readonly);
+  const canEdit = isOwnedEditablePreset(presetName);
+  const readonly = Boolean(options.readonly || (preset.meta && preset.meta.isPublic && !canEdit));
   editingPresetName = readonly ? null : presetName;
   if (presetParamTitle) presetParamTitle.textContent = options.title || "编辑预设模型";
-  if (presetParamSubtitle) presetParamSubtitle.textContent = options.subtitle || (isUserEditablePreset(presetName)
-    ? "这个账户预设会保存到服务器端。"
-    : "这是内置预设，保存时会创建一个账户副本。");
+  if (presetParamSubtitle) presetParamSubtitle.textContent = options.subtitle || (readonly
+    ? "这是 public 预设，只能查看；可以在历史模拟结果里优化参数并保存成自己的模型。"
+    : (canEdit
+      ? "这个账户预设会保存到服务器端。"
+      : "这是内置预设，保存时会创建一个账户副本。"));
   if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
   if (presetParamNameInput) presetParamNameInput.disabled = readonly;
   const originalText = preset.meta && preset.meta.originalText ? preset.meta.originalText : "";
@@ -4174,7 +4277,7 @@ function openPresetParamEditor(presetName, options = {}) {
   if (presetOriginalText) presetOriginalText.disabled = readonly;
   if (presetModelText) {
     presetModelText.value = modelText;
-    presetModelText.disabled = readonly || !isUserEditablePreset(presetName);
+    presetModelText.disabled = readonly || !canEdit;
   }
   renderPresetParamNarrativeFromPreset(preset, options.config || createConfigFromPreset(presetName, readBacktestConfig()));
   const editorPreset = readonly && options.config
@@ -4235,18 +4338,23 @@ async function saveEditedPresetParameters() {
   }
 
   let savedName = editingPresetName;
-  if (isUserEditablePreset(editingPresetName)) {
+  if (isOwnedEditablePreset(editingPresetName)) {
+    if (!validateVisiblePresetLabel(nextPreset.label, editingPresetName)) return;
     strategyPresets[editingPresetName] = nextPreset;
   } else {
     savedName = `custom_${Date.now()}`;
     const userRenamedPreset = nextPreset.label !== existingLabel;
+    const copiedLabel = userRenamedPreset ? nextPreset.label : `${nextPreset.label} 本地修改`;
+    if (!validateVisiblePresetLabel(copiedLabel)) return;
     strategyPresets[savedName] = {
       ...nextPreset,
-      label: userRenamedPreset ? nextPreset.label : `${nextPreset.label} 本地修改`,
+      label: copiedLabel,
       meta: {
         ...nextPreset.meta,
         createdAt: now,
         updatedAt: now,
+        isOwner: true,
+        isPublic: false,
       },
     };
   }
@@ -4418,7 +4526,15 @@ async function saveGeneratedPreset(preset) {
   if (!requireSignedInForSave()) return null;
   const keyPrefix = preset.meta && preset.meta.creator === "auto" ? "auto" : "custom";
   const presetName = `${keyPrefix}_${Date.now()}`;
-  strategyPresets[presetName] = sanitizeStoredPreset(presetName, preset);
+  const safePreset = sanitizeStoredPreset(presetName, preset);
+  if (!safePreset) {
+    setStatus("模型内容无效，无法保存。", true);
+    return null;
+  }
+  if (!validateVisiblePresetLabel(safePreset.label)) return null;
+  safePreset.meta.isOwner = true;
+  safePreset.meta.isPublic = false;
+  strategyPresets[presetName] = safePreset;
   const saved = await saveCustomStrategyPresets();
   if (!saved) {
     delete strategyPresets[presetName];
@@ -6355,6 +6471,13 @@ if (closeAdminButton && adminDialog) {
 
 if (adminPresetList) {
   adminPresetList.addEventListener("click", (event) => {
+    const ownerButton = event.target && event.target.closest ? event.target.closest(".admin-save-owner-button") : null;
+    if (ownerButton) {
+      const card = ownerButton.closest("[data-admin-preset-id]");
+      const select = card ? card.querySelector(".admin-owner-select") : null;
+      updateAdminPresetOwner(ownerButton.dataset.presetId, select ? select.value : "");
+      return;
+    }
     const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;
     if (!button) return;
     deleteAdminPreset(button.dataset.presetId, button.dataset.presetLabel);
@@ -6414,6 +6537,12 @@ if (forgotPasswordButton) {
 
 if (rankingPresetList) {
   rankingPresetList.addEventListener("click", (event) => {
+    const pageButton = event.target && event.target.closest ? event.target.closest(".ranking-page-button") : null;
+    if (pageButton) {
+      rankingPageByPeriod[pageButton.dataset.rankingPagePeriod] = Math.max(0, Number(pageButton.dataset.rankingPage) || 0);
+      renderModelRanking();
+      return;
+    }
     const button = event.target && event.target.closest ? event.target.closest(".ranking-param-button") : null;
     if (!button) return;
     const record = rankingRecords.find((item) => item.key === button.dataset.rankingKey);
@@ -6431,6 +6560,11 @@ if (modelCompareTable) {
     const paramButton = target && target.closest ? target.closest(".result-param-button") : null;
     if (paramButton) {
       openPresetParamEditor(paramButton.dataset.presetName);
+      return;
+    }
+    const optimizeButton = target && target.closest ? target.closest(".result-optimize-button") : null;
+    if (optimizeButton) {
+      optimizePresetParameters(optimizeButton.dataset.presetName);
       return;
     }
     const tradesButton = target && target.closest ? target.closest(".result-trades-button") : null;

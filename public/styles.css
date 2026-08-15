@@ -677,6 +677,26 @@ button:disabled {
   background: #eef8fa;
 }
 
+.ranking-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ranking-pagination div {
+  display: flex;
+  gap: 8px;
+}
+
+.ranking-page-button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
 .ranking-param-button {
   min-height: 32px;
   padding: 0 10px;
@@ -967,7 +987,9 @@ button:disabled {
 }
 
 .model-selector-dialog .param-dialog-body {
-  overflow-x: hidden;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  max-height: min(92vh, 920px);
+  overflow: hidden;
 }
 
 .model-selector-subject {
@@ -984,8 +1006,19 @@ button:disabled {
 .model-selector-list {
   display: grid;
   grid-template-columns: 1fr;
+  min-height: 0;
   max-height: min(58vh, 620px);
   overflow: auto;
+}
+
+.model-selector-dialog .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -18px -18px;
+  padding: 12px 18px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 -8px 18px rgba(31, 54, 72, 0.08);
 }
 
 .current-config-option {
@@ -1465,7 +1498,33 @@ button:disabled {
   line-height: 1.45;
 }
 
+.admin-preset-actions {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.admin-preset-actions label {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.admin-preset-actions select {
+  height: 36px;
+  margin-top: 4px;
+}
+
+.admin-save-owner-button {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
 .admin-delete-preset-button {
+  min-height: 36px;
+  padding: 0 10px;
   border-color: #f0c7c3;
   color: #a83a32;
   background: #fff7f6;
@@ -2146,6 +2205,11 @@ tbody tr:last-child td {
     grid-template-columns: 1fr;
   }
 
+  .admin-preset-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-preset-actions button,
   .admin-delete-preset-button {
     width: 100%;
   }
@@ -2321,7 +2385,7 @@ tbody tr:last-child td {
 
   .model-selector-list {
     max-height: none;
-    overflow: visible;
+    overflow: auto;
   }
 
   .model-preset-card {
@@ -2358,6 +2422,12 @@ tbody tr:last-child td {
 
   .param-dialog-body {
     height: 100dvh;
+  }
+
+  .model-selector-dialog .param-dialog-body {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    height: 100dvh;
+    max-height: 100dvh;
   }
 
   .results-dialog .backtest-section {
