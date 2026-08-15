@@ -141,9 +141,14 @@ async function initializeDatabase() {
       period_label TEXT NOT NULL,
       start_date DATE,
       end_date DATE,
+      preset_id TEXT,
       preset_name TEXT NOT NULL,
       preset_label TEXT NOT NULL,
       strategy_type TEXT NOT NULL,
+      preset_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+      preset_meta_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+      preset_original_text_snapshot TEXT NOT NULL DEFAULT '',
+      preset_model_text_snapshot TEXT NOT NULL DEFAULT '',
       return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
       annualized_return DOUBLE PRECISION NOT NULL DEFAULT 0,
       buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -156,6 +161,12 @@ async function initializeDatabase() {
       trades INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_id TEXT;
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_meta_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_original_text_snapshot TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_model_text_snapshot TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS symbols (
       symbol TEXT NOT NULL,
@@ -1234,6 +1245,10 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function plainObjectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 function normalizeRankingKey(value) {
   return String(value || "").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 160);
 }
@@ -1257,11 +1272,16 @@ function sanitizeServerRankingRecord(record) {
     periodLabel: `${periodYears} 年`,
     startDate: String(record.startDate || "").slice(0, 16),
     endDate: String(record.endDate || "").slice(0, 16),
+    presetId: String(record.presetId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 160),
     presetName,
     presetLabel: String(record.presetLabel || presetName).slice(0, 100),
     strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
+    presetConfigSnapshot: plainObjectOrEmpty(record.presetConfigSnapshot),
+    presetMetaSnapshot: plainObjectOrEmpty(record.presetMetaSnapshot),
+    presetOriginalTextSnapshot: String(record.presetOriginalTextSnapshot || "").slice(0, 8000),
+    presetModelTextSnapshot: String(record.presetModelTextSnapshot || record.presetOriginalTextSnapshot || "").slice(0, 8000),
     returnRate: toFiniteNumber(record.returnRate),
     annualizedReturn: toFiniteNumber(record.annualizedReturn),
     buyHoldReturnRate: toFiniteNumber(record.buyHoldReturnRate),
@@ -1298,18 +1318,21 @@ function writeRankingRecords(records) {
 async function upsertRankingRecord(record, ownerUserId = null) {
   const safeRecord = sanitizeServerRankingRecord(record);
   if (!safeRecord) return;
+  const presetId = ownerUserId ? `preset_${ownerUserId}_${safeRecord.presetName}` : safeRecord.presetId || null;
   await dbPool.query(`
     INSERT INTO ranking_records (
       key, owner_user_id, symbol, symbol_name, period_years, period_label, start_date, end_date,
-      preset_name, preset_label, strategy_type, return_rate, annualized_return, buy_hold_return_rate,
+      preset_id, preset_name, preset_label, strategy_type, preset_config_snapshot, preset_meta_snapshot,
+      preset_original_text_snapshot, preset_model_text_snapshot, return_rate, annualized_return, buy_hold_return_rate,
       excess_return, max_drawdown, buy_hold_max_drawdown, drawdown_diff, total_fees, buy_hold_fees,
       trades, updated_at
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7::date, $8::date,
-      $9, $10, $11, $12, $13, $14,
-      $15, $16, $17, $18, $19, $20,
-      $21, COALESCE($22::timestamptz, NOW())
+      $9, $10, $11, $12, $13::jsonb, $14::jsonb,
+      $15, $16, $17, $18, $19,
+      $20, $21, $22, $23, $24, $25,
+      $26, COALESCE($27::timestamptz, NOW())
     )
     ON CONFLICT (key) DO UPDATE
       SET symbol = EXCLUDED.symbol,
@@ -1318,9 +1341,14 @@ async function upsertRankingRecord(record, ownerUserId = null) {
           period_label = EXCLUDED.period_label,
           start_date = EXCLUDED.start_date,
           end_date = EXCLUDED.end_date,
+          preset_id = EXCLUDED.preset_id,
           preset_name = EXCLUDED.preset_name,
           preset_label = EXCLUDED.preset_label,
           strategy_type = EXCLUDED.strategy_type,
+          preset_config_snapshot = EXCLUDED.preset_config_snapshot,
+          preset_meta_snapshot = EXCLUDED.preset_meta_snapshot,
+          preset_original_text_snapshot = EXCLUDED.preset_original_text_snapshot,
+          preset_model_text_snapshot = EXCLUDED.preset_model_text_snapshot,
           return_rate = EXCLUDED.return_rate,
           annualized_return = EXCLUDED.annualized_return,
           buy_hold_return_rate = EXCLUDED.buy_hold_return_rate,
@@ -1341,9 +1369,14 @@ async function upsertRankingRecord(record, ownerUserId = null) {
     safeRecord.periodLabel,
     toIsoDate(safeRecord.startDate),
     toIsoDate(safeRecord.endDate),
+    presetId,
     safeRecord.presetName,
     safeRecord.presetLabel,
     safeRecord.strategyType,
+    JSON.stringify(safeRecord.presetConfigSnapshot),
+    JSON.stringify(safeRecord.presetMetaSnapshot),
+    safeRecord.presetOriginalTextSnapshot,
+    safeRecord.presetModelTextSnapshot,
     safeRecord.returnRate,
     safeRecord.annualizedReturn,
     safeRecord.buyHoldReturnRate,
@@ -1367,9 +1400,14 @@ function mapRankingRow(row) {
     periodLabel: row.period_label,
     startDate: row.start_date ? new Date(row.start_date).toISOString().slice(0, 10) : "",
     endDate: row.end_date ? new Date(row.end_date).toISOString().slice(0, 10) : "",
+    presetId: row.preset_id,
     presetName: row.preset_name,
     presetLabel: row.preset_label,
     strategyType: row.strategy_type,
+    presetConfigSnapshot: row.preset_config_snapshot,
+    presetMetaSnapshot: row.preset_meta_snapshot,
+    presetOriginalTextSnapshot: row.preset_original_text_snapshot,
+    presetModelTextSnapshot: row.preset_model_text_snapshot,
     returnRate: row.return_rate,
     annualizedReturn: row.annualized_return,
     buyHoldReturnRate: row.buy_hold_return_rate,

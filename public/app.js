@@ -872,6 +872,15 @@ function buildRankingRecordKey(symbol, periodYears, presetName, startDate = "", 
   return `${String(symbol || "").toUpperCase()}:${periodYears}:${startDate}:${endDate}:${presetName}`;
 }
 
+function clonePlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (error) {
+    return { ...value };
+  }
+}
+
 function sanitizeRankingRecord(record) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const periodYears = Number(record.periodYears);
@@ -888,11 +897,16 @@ function sanitizeRankingRecord(record) {
     periodLabel: `${periodYears} 年`,
     startDate: String(record.startDate || "").slice(0, 16),
     endDate: String(record.endDate || "").slice(0, 16),
+    presetId: String(record.presetId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 160),
     presetName,
     presetLabel: String(record.presetLabel || presetName).slice(0, 100),
     strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
       ? record.strategyType
       : "wave",
+    presetConfigSnapshot: clonePlainObject(record.presetConfigSnapshot),
+    presetMetaSnapshot: clonePlainObject(record.presetMetaSnapshot),
+    presetOriginalTextSnapshot: String(record.presetOriginalTextSnapshot || "").slice(0, 8000),
+    presetModelTextSnapshot: String(record.presetModelTextSnapshot || record.presetOriginalTextSnapshot || "").slice(0, 8000),
     returnRate: numberValue(record.returnRate),
     annualizedReturn: numberValue(record.annualizedReturn),
     buyHoldReturnRate: numberValue(record.buyHoldReturnRate),
@@ -3907,18 +3921,32 @@ function annualizeReturn(returnRate, years) {
   return (Math.pow(1 + returnRate / 100, 1 / years) - 1) * 100;
 }
 
+function buildRankingPresetSnapshot(preset, config) {
+  return {
+    ...getSerializablePreset(preset),
+    initialCash: Number(config.initialCash) || 0,
+    tradeFee: Number(config.tradeFee) || 0,
+  };
+}
+
 function buildPresetRankingResults(rows, currentConfig, presetNames) {
   return presetNames
     .map((presetName) => {
       const preset = strategyPresets[presetName];
       if (!preset) return null;
-      const states = buildParallelBacktestStates(rows, createConfigFromPreset(presetName, currentConfig));
+      const config = createConfigFromPreset(presetName, currentConfig);
+      const states = buildParallelBacktestStates(rows, config);
       const finalState = states[states.length - 1];
       if (!finalState || !finalState.buyHold) return null;
       return {
         name: presetName,
         label: preset.label,
         strategyType: preset.strategyType || "wave",
+        config,
+        presetConfigSnapshot: buildRankingPresetSnapshot(preset, config),
+        presetMetaSnapshot: clonePlainObject(preset.meta),
+        presetOriginalTextSnapshot: String(preset.meta && preset.meta.originalText || "").slice(0, 8000),
+        presetModelTextSnapshot: String(preset.meta && (preset.meta.modelText || preset.meta.originalText) || "").slice(0, 8000),
         finalState,
       };
     })
@@ -3943,6 +3971,10 @@ function createRankingRecord(symbolInfo, periodYears, rowsForPeriod, result) {
     presetName: result.name,
     presetLabel: result.label,
     strategyType: result.strategyType,
+    presetConfigSnapshot: result.presetConfigSnapshot,
+    presetMetaSnapshot: result.presetMetaSnapshot,
+    presetOriginalTextSnapshot: result.presetOriginalTextSnapshot,
+    presetModelTextSnapshot: result.presetModelTextSnapshot,
     returnRate: state.returnRate,
     annualizedReturn: annualizeReturn(state.returnRate, periodYears),
     buyHoldReturnRate: state.buyHold.returnRate,
@@ -3984,9 +4016,16 @@ function recordRankingResultsForLoadedData(currentConfig) {
   renderModelCompareOptions();
 }
 
+function hasRankingPresetSnapshot(record) {
+  return Boolean(record && record.presetConfigSnapshot && Object.keys(record.presetConfigSnapshot).length > 0);
+}
+
 function isOwnerRankingRecord(record) {
   const preset = record && strategyPresets[record.presetName];
-  return Boolean(preset && preset.meta && preset.meta.isOwner && isUserEditablePreset(record.presetName));
+  return Boolean(currentUser && currentUser.email && (
+    hasRankingPresetSnapshot(record)
+    || (preset && preset.meta && preset.meta.isOwner && isUserEditablePreset(record.presetName))
+  ));
 }
 
 function renderModelRanking() {
@@ -4037,7 +4076,7 @@ function renderModelRanking() {
               </thead>
               <tbody>
                 ${records.map((record, index) => `
-                  <tr data-preset-name="${escapeHtml(record.presetName)}">
+                  <tr data-preset-name="${escapeHtml(record.presetName)}" data-ranking-key="${escapeHtml(record.key)}">
                     <td>#${index + 1}</td>
                     <td>${escapeHtml(record.symbol)} ${escapeHtml(record.symbolName)}</td>
                     <td>${escapeHtml(record.startDate)} 至 ${escapeHtml(record.endDate)}</td>
@@ -4052,7 +4091,7 @@ function renderModelRanking() {
                     <td>${formatMoney(record.totalFees || 0)}</td>
                     <td>${record.trades}</td>
                     <td>${escapeHtml(record.updatedAt)}</td>
-                    <td><button class="ranking-param-button" type="button" data-preset-name="${escapeHtml(record.presetName)}">参数</button></td>
+                    <td><button class="ranking-param-button" type="button" data-ranking-key="${escapeHtml(record.key)}" data-preset-name="${escapeHtml(record.presetName)}">参数</button></td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -4113,24 +4152,35 @@ function getSerializablePreset(preset) {
   };
 }
 
-function openPresetParamEditor(presetName) {
-  const preset = strategyPresets[presetName];
+function openPresetParamEditor(presetName, options = {}) {
+  const preset = options.preset || strategyPresets[presetName];
   if (!preset || !presetParamDialog || !presetParamEditor) return;
-  editingPresetName = presetName;
-  if (presetParamTitle) presetParamTitle.textContent = "编辑预设模型";
-  if (presetParamSubtitle) presetParamSubtitle.textContent = isUserEditablePreset(presetName)
+  const readonly = Boolean(options.readonly);
+  editingPresetName = readonly ? null : presetName;
+  if (presetParamTitle) presetParamTitle.textContent = options.title || "编辑预设模型";
+  if (presetParamSubtitle) presetParamSubtitle.textContent = options.subtitle || (isUserEditablePreset(presetName)
     ? "这个账户预设会保存到服务器端。"
-    : "这是内置预设，保存时会创建一个账户副本。";
+    : "这是内置预设，保存时会创建一个账户副本。");
   if (presetParamNameInput) presetParamNameInput.value = preset.label || presetName;
+  if (presetParamNameInput) presetParamNameInput.disabled = readonly;
   const originalText = preset.meta && preset.meta.originalText ? preset.meta.originalText : "";
   const modelText = preset.meta && preset.meta.modelText ? preset.meta.modelText : originalText;
   if (presetOriginalText) presetOriginalText.value = originalText || "这个模型没有保存最初文字版本。";
+  if (presetOriginalText) presetOriginalText.disabled = readonly;
   if (presetModelText) {
     presetModelText.value = modelText;
-    presetModelText.disabled = !isUserEditablePreset(presetName);
+    presetModelText.disabled = readonly || !isUserEditablePreset(presetName);
   }
-  renderPresetParamNarrative(presetName);
-  presetParamEditor.value = JSON.stringify(getSerializablePreset(preset), null, 2);
+  renderPresetParamNarrativeFromPreset(preset, options.config || createConfigFromPreset(presetName, readBacktestConfig()));
+  const editorPreset = readonly && options.config
+    ? { ...clonePlainObject(options.config), meta: preset.meta || clonePlainObject(options.config.meta) }
+    : getSerializablePreset(preset);
+  presetParamEditor.value = JSON.stringify(editorPreset, null, 2);
+  presetParamEditor.disabled = readonly;
+  if (savePresetParamButton) {
+    savePresetParamButton.classList.toggle("hidden", readonly);
+    savePresetParamButton.disabled = readonly;
+  }
   if (typeof presetParamDialog.showModal === "function") {
     presetParamDialog.showModal();
   } else {
@@ -4664,14 +4714,12 @@ function renderOptimizationNarrative(config) {
   `;
 }
 
-function renderPresetParamNarrative(presetName) {
+function renderPresetParamNarrativeFromPreset(preset, config) {
   if (!presetParamNarrative) return;
-  const preset = strategyPresets[presetName];
   if (!preset) {
     presetParamNarrative.innerHTML = "";
     return;
   }
-  const config = createConfigFromPreset(presetName, readBacktestConfig());
   const narrative = describeOptimizationConfig(config);
   presetParamNarrative.innerHTML = `
     <section>
@@ -4687,6 +4735,45 @@ function renderPresetParamNarrative(presetName) {
       ${renderNarrativeList(narrative.exit)}
     </section>
   `;
+}
+
+function renderPresetParamNarrative(presetName) {
+  const preset = strategyPresets[presetName];
+  const config = preset ? createConfigFromPreset(presetName, readBacktestConfig()) : null;
+  renderPresetParamNarrativeFromPreset(preset, config);
+}
+
+function createPresetFromRankingRecord(record) {
+  if (!hasRankingPresetSnapshot(record)) return null;
+  const configSnapshot = clonePlainObject(record.presetConfigSnapshot);
+  const metaSnapshot = {
+    ...(configSnapshot.meta || {}),
+    ...clonePlainObject(record.presetMetaSnapshot),
+    originalText: record.presetOriginalTextSnapshot || (configSnapshot.meta && configSnapshot.meta.originalText) || "",
+    modelText: record.presetModelTextSnapshot || (configSnapshot.meta && configSnapshot.meta.modelText) || record.presetOriginalTextSnapshot || "",
+    isOwner: true,
+  };
+  return sanitizeStoredPreset(record.presetName, {
+    ...configSnapshot,
+    label: record.presetLabel || configSnapshot.label || record.presetName,
+    strategyType: record.strategyType || configSnapshot.strategyType,
+    meta: metaSnapshot,
+  });
+}
+
+function openRankingRecordParamSnapshot(record) {
+  const snapshotPreset = createPresetFromRankingRecord(record);
+  if (!snapshotPreset) {
+    openPresetParamEditor(record && record.presetName);
+    return;
+  }
+  openPresetParamEditor(record.presetName, {
+    preset: snapshotPreset,
+    config: record.presetConfigSnapshot,
+    readonly: true,
+    title: "排行参数快照",
+    subtitle: "这是生成该排行成绩时使用的参数副本；当前模型之后的修改不会改变这条记录。",
+  });
 }
 
 function renderSelectedModelDetail(result) {
@@ -6324,6 +6411,11 @@ if (rankingPresetList) {
   rankingPresetList.addEventListener("click", (event) => {
     const button = event.target && event.target.closest ? event.target.closest(".ranking-param-button") : null;
     if (!button) return;
+    const record = rankingRecords.find((item) => item.key === button.dataset.rankingKey);
+    if (record) {
+      openRankingRecordParamSnapshot(record);
+      return;
+    }
     openPresetParamEditor(button.dataset.presetName);
   });
 }
