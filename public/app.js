@@ -102,6 +102,8 @@ const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
 const optimizationReport = document.querySelector("#optimizationReport");
 const optimizationNarrative = document.querySelector("#optimizationNarrative");
 const optimizationParamPreview = document.querySelector("#optimizationParamPreview");
+const optimizationParamRanges = document.querySelector("#optimizationParamRanges");
+const runOptimizationButton = document.querySelector("#runOptimizationButton");
 const closeOptimizationButton = document.querySelector("#closeOptimizationButton");
 const saveOptimizationButton = document.querySelector("#saveOptimizationButton");
 const customModelForm = document.querySelector("#customModelForm");
@@ -517,7 +519,18 @@ const defaultStagnationReversalRule = {
   sellReduce: 100,
 };
 
-const supportedStrategyTypes = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal"];
+const blockRuleIndicators = [
+  "drawdownFromHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
+  "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
+  "positionRatio", "holdingDays",
+];
+const blockRuleComparators = [">", ">=", "<", "<=", "=="];
+const blockRuleActionTypes = ["targetPercent", "targetShares", "reducePercent", "exitAll"];
+
+const defaultBuyBlockRules = [];
+const defaultSellBlockRules = [];
+
+const supportedStrategyTypes = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal", "block-rules"];
 
 const strategyPresets = {
   optimized: {
@@ -757,6 +770,8 @@ function sanitizeStoredPreset(name, preset) {
       ...defaultStagnationReversalRule,
       ...(preset.stagnationReversalRule || {}),
     },
+    buyBlockRules: cloneRuleBlocks(preset.buyBlockRules, defaultBuyBlockRules),
+    sellBlockRules: cloneRuleBlocks(preset.sellBlockRules, defaultSellBlockRules),
     meta: {
       targetSymbol: String(preset.meta && preset.meta.targetSymbol || "通用").slice(0, 24),
       provedPeriod: String(preset.meta && preset.meta.provedPeriod || "本地保存").slice(0, 40),
@@ -1016,7 +1031,7 @@ async function fetchServerRankingRecords() {
   };
 }
 
-async function saveServerRankingRecords(records) {
+async function saveServerRankingRecords(records, options = {}) {
   if (!currentUser || !currentUser.email) return;
   try {
     const response = await fetch("/api/rankings", {
@@ -1024,13 +1039,16 @@ async function saveServerRankingRecords(records) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ records }),
+      body: JSON.stringify({ records, public: Boolean(options.public) }),
     });
     const payload = await readJsonResponse(response, "保存服务器排行失败。");
     if (Array.isArray(payload.records)) {
       mergeRankingRecords(payload.records);
-      renderModelRanking();
     }
+    if (Array.isArray(payload.publicRecords)) {
+      publicRankingRecords = normalizeRankingRecords(payload.publicRecords);
+    }
+    renderModelRanking();
   } catch (error) {
     setStatus(`服务器排行保存失败，已保留浏览器本地备份：${error.message}`, true);
   }
@@ -1982,7 +2000,8 @@ function updateIndicatorUi() {
 }
 
 function getPresetEntriesForType(strategyType) {
-  return Object.entries(strategyPresets).filter(([, preset]) => {
+  return Object.entries(strategyPresets).filter(([name, preset]) => {
+    if (builtinPresetMetadata[name]) return false;
     return (preset.strategyType || "wave") === strategyType;
   });
 }
@@ -1993,11 +2012,22 @@ function getStrategyTypeLabel(strategyType) {
   if (strategyType === "order-grid") return "订单网格";
   if (strategyType === "pe-volume") return "PE-成交量";
   if (strategyType === "stagnation-reversal") return "停滞反转";
+  if (strategyType === "block-rules") return "组合规则";
   return "波浪";
 }
 
 function getCurrentConfigLabel(config) {
   return `当前界面参数（${getStrategyTypeLabel(config.strategyType)}）`;
+}
+
+function cloneRuleBlocks(rules, defaults) {
+  return (Array.isArray(rules) ? rules : defaults).map((block) => ({
+    enabled: block && block.enabled !== false,
+    conditions: Array.isArray(block && block.conditions)
+      ? block.conditions.map((condition) => ({ ...condition }))
+      : [],
+    action: block && block.action && typeof block.action === "object" ? { ...block.action } : { type: "exitAll" },
+  }));
 }
 
 function cloneRules(rules, defaults) {
@@ -2027,6 +2057,8 @@ function createConfigFromPreset(presetName, baseConfig) {
       ...(preset.peVolumeRule || {}),
     },
     stagnationReversalRule: readStagnationReversalRule(preset.stagnationReversalRule || defaultStagnationReversalRule),
+    buyBlockRules: cloneRuleBlocks(preset.buyBlockRules, defaultBuyBlockRules),
+    sellBlockRules: cloneRuleBlocks(preset.sellBlockRules, defaultSellBlockRules),
     buyRules: cloneRules(preset.buyRules, defaultBuyRules)
       .filter((rule) => rule.enabled !== false)
       .sort((a, b) => a.drop - b.drop),
@@ -2062,7 +2094,7 @@ function isPresetAccessibleToCurrentUser(preset) {
 
 function buildPresetSelectionRows() {
   return Object.entries(strategyPresets)
-    .filter(([, preset]) => isPresetAccessibleToCurrentUser(preset))
+    .filter(([name, preset]) => !builtinPresetMetadata[name] && isPresetAccessibleToCurrentUser(preset))
     .map(([name, preset]) => {
       const record = getPresetLatestRankingRecord(name);
       const displayDate = getPresetDisplayDate(name, preset, record);
@@ -2314,6 +2346,8 @@ function renderStrategyPresetOptions(strategyType, selectedPresetName) {
   return nextSelectedName;
 }
 
+let currentBlockRules = { buyBlockRules: [], sellBlockRules: [] };
+
 function fillStrategyPresetControls(presetName) {
   const preset = strategyPresets[presetName] || strategyPresets.optimized;
   const strategyType = preset.strategyType || "wave";
@@ -2325,6 +2359,10 @@ function fillStrategyPresetControls(presetName) {
   applyMaRsiBandRule(preset.maRsiBandRule || defaultMaRsiBandRule);
   applyOrderGridRule(preset.orderGridRule || defaultOrderGridRule);
   applyPeVolumeRule(preset.peVolumeRule || defaultPeVolumeRule);
+  currentBlockRules = {
+    buyBlockRules: cloneRuleBlocks(preset.buyBlockRules, defaultBuyBlockRules),
+    sellBlockRules: cloneRuleBlocks(preset.sellBlockRules, defaultSellBlockRules),
+  };
   updateIndicatorUi();
 
   if (riskEnabledInput && preset.noNewHighExitRule) {
@@ -2389,6 +2427,8 @@ function readBacktestConfig() {
     orderGridRule: readOrderGridRule(),
     peVolumeRule: readPeVolumeRule(),
     stagnationReversalRule: getCurrentStagnationReversalRule(),
+    buyBlockRules: currentBlockRules.buyBlockRules,
+    sellBlockRules: currentBlockRules.sellBlockRules,
     playSpeed: Math.max(10, Number(playSpeedInput.value)),
     tradeFee: Math.max(0, Number(tradeFeeInput.value) || 0),
     backtestWindowMode: "all",
@@ -2703,6 +2743,103 @@ function getPeBandSeries(rows, days, lowPercentile, highPercentile) {
       sampleSize: values.length,
     };
   });
+}
+
+function getRollingLow(rows, index, lookbackDays) {
+  const start = Math.max(0, index - lookbackDays + 1);
+  let bestIndex = start;
+  for (let i = start + 1; i <= index; i += 1) {
+    if (rows[i].low < rows[bestIndex].low) bestIndex = i;
+  }
+  return {
+    ...rows[bestIndex],
+    rowIndex: bestIndex,
+  };
+}
+
+function getDrawdownFromHighSeries(rows, lookbackDays) {
+  return rows.map((row, index) => {
+    const high = getRollingHigh(rows, index, lookbackDays).high;
+    return high > 0 ? ((high - row.close) / high) * 100 : null;
+  });
+}
+
+function getRiseFromLowSeries(rows, lookbackDays) {
+  return rows.map((row, index) => {
+    const low = getRollingLow(rows, index, lookbackDays).low;
+    return low > 0 ? ((row.close - low) / low) * 100 : null;
+  });
+}
+
+function getMaValueDiffSeries(rows, maDays) {
+  const ma = getMovingAverageSeries(rows, maDays);
+  return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
+}
+
+function getMaSlopeSeries(rows, maDays, slopeWindowDays) {
+  const window = Math.max(1, Number(slopeWindowDays) || 1);
+  const ma = getMovingAverageSeries(rows, maDays);
+  return rows.map((row, index) => {
+    const previousIndex = index - window;
+    if (ma[index] == null || previousIndex < 0 || !ma[previousIndex]) return null;
+    return ((ma[index] - ma[previousIndex]) / ma[previousIndex]) * 100;
+  });
+}
+
+function getVolumeRatioSeries(rows, maDays) {
+  const volumeMa = getVolumeAverageSeries(rows, maDays);
+  return rows.map((row, index) => {
+    const volume = Number(row.volume);
+    return volumeMa[index] && Number.isFinite(volume) ? volume / volumeMa[index] : null;
+  });
+}
+
+function getDaysSinceNewHighSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  let streak = 0;
+  rows.forEach((row, index) => {
+    const previousHigh = getPreviousHigh(rows, index, lookbackDays);
+    if (!previousHigh) return;
+    streak = row.high > previousHigh.high ? 0 : streak + 1;
+    values[index] = streak;
+  });
+  return values;
+}
+
+function getDaysSinceNewLowSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  let streak = 0;
+  rows.forEach((row, index) => {
+    const previousLow = getPreviousLow(rows, index, lookbackDays);
+    if (!previousLow) return;
+    streak = row.low < previousLow.low ? 0 : streak + 1;
+    values[index] = streak;
+  });
+  return values;
+}
+
+function getUpDayCountSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  const isUp = rows.map((row, index) => (index > 0 && row.close > rows[index - 1].close ? 1 : 0));
+  let sum = 0;
+  rows.forEach((row, index) => {
+    sum += isUp[index];
+    if (index >= lookbackDays) sum -= isUp[index - lookbackDays];
+    values[index] = index + 1 >= lookbackDays ? sum : null;
+  });
+  return values;
+}
+
+function getDownDayCountSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  const isDown = rows.map((row, index) => (index > 0 && row.close < rows[index - 1].close ? 1 : 0));
+  let sum = 0;
+  rows.forEach((row, index) => {
+    sum += isDown[index];
+    if (index >= lookbackDays) sum -= isDown[index - lookbackDays];
+    values[index] = index + 1 >= lookbackDays ? sum : null;
+  });
+  return values;
 }
 
 function buildPeVolumeSeries(rows, rule) {
@@ -4011,7 +4148,198 @@ function buildPeVolumeBacktestStates(rows, config) {
   return states;
 }
 
+function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules) {
+  const cache = new Map();
+  const ensure = (condition) => {
+    if (!condition || condition.indicator === "positionRatio" || condition.indicator === "holdingDays") return;
+    const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+    if (cache.has(key)) return;
+    let series = null;
+    if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
+    else if (condition.indicator === "rsi") series = getRsiSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "atrPercent") series = getAtrPercentSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "volumeRatio") series = getVolumeRatioSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "daysSinceNewHigh") series = getDaysSinceNewHighSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "daysSinceNewLow") series = getDaysSinceNewLowSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "upDayCount") series = getUpDayCountSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "downDayCount") series = getDownDayCountSeries(rows, condition.lookbackDays);
+    if (series) cache.set(key, series);
+  };
+  [...(buyBlockRules || []), ...(sellBlockRules || [])].forEach((block) => {
+    (block && block.conditions || []).forEach(ensure);
+  });
+  return cache;
+}
+
+function getBlockConditionValue(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
+  if (condition.indicator === "positionRatio") return positionRatioHistory[index];
+  if (condition.indicator === "holdingDays") return holdingDaysHistory[index];
+  const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+  const series = cache.get(key);
+  return series ? series[index] : null;
+}
+
+function compareBlockValue(value, comparator, target) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return false;
+  if (comparator === ">") return value > target;
+  if (comparator === ">=") return value >= target;
+  if (comparator === "<") return value < target;
+  if (comparator === "<=") return value <= target;
+  if (comparator === "==") return value === target;
+  return false;
+}
+
+function evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
+  const sustainedDays = Math.max(1, Math.round(Number(condition.sustainedDays) || 1));
+  for (let offset = 0; offset < sustainedDays; offset += 1) {
+    const dayIndex = index - offset;
+    if (dayIndex < 0) return false;
+    const value = getBlockConditionValue(condition, dayIndex, cache, positionRatioHistory, holdingDaysHistory);
+    if (!compareBlockValue(value, condition.comparator, condition.value)) return false;
+  }
+  return true;
+}
+
+function evaluateBlockRuleConditions(block, index, cache, positionRatioHistory, holdingDaysHistory) {
+  if (!block || !block.enabled || !Array.isArray(block.conditions) || block.conditions.length === 0) return false;
+  return block.conditions.every((condition) => evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory));
+}
+
+function resolveBlockActionToTargetPercent(action, account, row, currentRatio) {
+  const value = Number(action && action.value);
+  const type = action && action.type;
+  if (type === "targetPercent") return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
+  if (type === "targetShares") {
+    const equity = account.cash + account.shares * row.close;
+    if (equity <= 0 || row.close <= 0 || !Number.isFinite(value)) return 0;
+    return Math.min(100, Math.max(0, ((value * row.close) / equity) * 100));
+  }
+  if (type === "reducePercent") return Math.min(100, Math.max(0, currentRatio - (Number.isFinite(value) ? value : 0)));
+  if (type === "exitAll") return 0;
+  return currentRatio;
+}
+
+function getBlockIndicatorLabel(indicator) {
+  const labels = {
+    drawdownFromHigh: "距高点回撤%",
+    riseFromLow: "距低点反弹%",
+    maValue: "均线偏离%",
+    maSlope: "均线斜率%",
+    rsi: "RSI",
+    atrPercent: "ATR%",
+    volumeRatio: "量比",
+    daysSinceNewHigh: "未创新高天数",
+    daysSinceNewLow: "未创新低天数",
+    upDayCount: "上涨天数",
+    downDayCount: "下跌天数",
+    positionRatio: "当前仓位%",
+    holdingDays: "持仓天数",
+  };
+  return labels[indicator] || indicator;
+}
+
+function describeBlockCondition(condition) {
+  const label = getBlockIndicatorLabel(condition.indicator);
+  const days = condition.lookbackDays ? `${condition.lookbackDays}日` : "";
+  const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
+  return `${sustain}${days}${label}${condition.comparator}${condition.value}`;
+}
+
+function describeBlockConditions(conditions) {
+  return (conditions || []).map(describeBlockCondition).join("且");
+}
+
+function describeBlockAction(action) {
+  if (!action) return "";
+  if (action.type === "targetPercent") return `调仓到${formatPercent(action.value)}`;
+  if (action.type === "targetShares") return `调仓到${action.value}股`;
+  if (action.type === "reducePercent") return `减仓${formatPercent(action.value)}`;
+  if (action.type === "exitAll") return "全部清仓";
+  return "";
+}
+
+function buildGenericBacktestStates(rows, config) {
+  if (!rows || rows.length === 0) return [];
+
+  const buyBlockRules = Array.isArray(config.buyBlockRules) ? config.buyBlockRules : defaultBuyBlockRules;
+  const sellBlockRules = Array.isArray(config.sellBlockRules) ? config.sellBlockRules : defaultSellBlockRules;
+  const cache = buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules);
+
+  const account = { cash: config.initialCash, shares: 0, totalFees: 0 };
+  const trades = [];
+  const states = [];
+  const buySignals = [];
+  const sellSignals = [];
+  const positionRatioHistory = [];
+  const holdingDaysHistory = [];
+  const buyBlockWasActive = new Array(buyBlockRules.length).fill(false);
+  const sellBlockWasActive = new Array(sellBlockRules.length).fill(false);
+  let holdingDaysCounter = 0;
+  let peakEquity = config.initialCash;
+  let maxDrawdown = 0;
+
+  rows.forEach((row, index) => {
+    const currentRatio = getPositionRatio(account, row);
+    positionRatioHistory[index] = currentRatio;
+    holdingDaysCounter = account.shares > 0 ? holdingDaysCounter + 1 : 0;
+    holdingDaysHistory[index] = holdingDaysCounter;
+
+    let sellTarget = null;
+    let sellReason = "";
+    sellBlockRules.forEach((block, blockIndex) => {
+      const matches = evaluateBlockRuleConditions(block, index, cache, positionRatioHistory, holdingDaysHistory);
+      const fired = matches && !sellBlockWasActive[blockIndex];
+      sellBlockWasActive[blockIndex] = matches;
+      if (!fired) return;
+      const target = resolveBlockActionToTargetPercent(block.action, account, row, currentRatio);
+      if (sellTarget === null || target < sellTarget) {
+        sellTarget = target;
+        sellReason = `卖出规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`;
+      }
+    });
+
+    let buyTarget = null;
+    let buyReason = "";
+    buyBlockRules.forEach((block, blockIndex) => {
+      const matches = evaluateBlockRuleConditions(block, index, cache, positionRatioHistory, holdingDaysHistory);
+      const fired = matches && !buyBlockWasActive[blockIndex];
+      buyBlockWasActive[blockIndex] = matches;
+      if (!fired) return;
+      const target = resolveBlockActionToTargetPercent(block.action, account, row, currentRatio);
+      if (buyTarget === null || target > buyTarget) {
+        buyTarget = target;
+        buyReason = `买入规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`;
+      }
+    });
+
+    const reference = { type: "block-rules", label: "组合规则", date: row.date, price: row.close };
+    if (sellTarget !== null) {
+      const trade = rebalanceToTarget(account, row, index, sellTarget, reference, sellReason, trades, config.tradeFee);
+      if (trade) sellSignals.push({ date: row.date, price: row.close, rowIndex: index, version: sellSignals.length + 1 });
+    } else if (buyTarget !== null) {
+      const trade = rebalanceToTarget(account, row, index, buyTarget, reference, buyReason, trades, config.tradeFee);
+      if (trade) buySignals.push({ date: row.date, price: row.close, rowIndex: index, version: buySignals.length + 1 });
+    }
+
+    const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+    snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = sellSignals.slice();
+    snapshot.indicatorLows = buySignals.slice();
+    states.push(snapshot);
+  });
+
+  return states;
+}
+
 function buildBacktestStates(rows, config) {
+  if (config.strategyType === "block-rules") {
+    return buildGenericBacktestStates(rows, config);
+  }
   if (config.strategyType === "local-high-ladder") {
     return buildLocalLadderBacktestStates(rows, config);
   }
@@ -4421,13 +4749,16 @@ function recordRankingResultsForLoadedData(currentConfig) {
   const presetNames = getSelectedComparisonPresetNames()
     .filter((presetName) => {
       const preset = strategyPresets[presetName];
-      return preset && preset.meta && preset.meta.isOwner && isUserEditablePreset(presetName);
+      if (!preset || !preset.meta) return false;
+      if (preset.meta.isOwner && isUserEditablePreset(presetName)) return true;
+      return Boolean(preset.meta.isPublic);
     });
   if (!lastRows || lastRows.length < 2 || presetNames.length === 0) return;
   const symbolInfo = getActiveRankingSymbolInfo();
   if (!symbolInfo.symbol) return;
 
-  const nextRecords = [];
+  const ownRecords = [];
+  const publicRecords = [];
   let coveredAnyPeriod = false;
   rankingPeriods.forEach((periodYears) => {
     const rowsForPeriod = selectTrailingRowsByYears(lastRows, periodYears);
@@ -4435,18 +4766,29 @@ function recordRankingResultsForLoadedData(currentConfig) {
     coveredAnyPeriod = true;
     buildPresetRankingResults(rowsForPeriod, currentConfig, presetNames).forEach((result) => {
       const record = createRankingRecord(symbolInfo, periodYears, rowsForPeriod, result);
-      if (record) nextRecords.push(record);
+      if (!record) return;
+      const preset = strategyPresets[result.name];
+      if (preset && preset.meta && preset.meta.isPublic) {
+        publicRecords.push(record);
+      } else {
+        ownRecords.push(record);
+      }
     });
   });
 
-  if (nextRecords.length === 0) {
+  if (ownRecords.length === 0 && publicRecords.length === 0) {
     if (!coveredAnyPeriod) {
       setStatus(`历史数据区间不足 ${rankingPeriods[0]} 年，未生成模型排行记录；选择更长的区间（最近 ${rankingPeriods.join("/")} 年）后会自动记录。`);
     }
     return;
   }
-  mergeRankingRecords(nextRecords);
-  saveServerRankingRecords(nextRecords);
+  if (ownRecords.length > 0) {
+    mergeRankingRecords(ownRecords);
+    saveServerRankingRecords(ownRecords);
+  }
+  if (publicRecords.length > 0) {
+    saveServerRankingRecords(publicRecords, { public: true });
+  }
   renderModelRanking();
   renderModelCompareOptions();
 }
@@ -4550,6 +4892,58 @@ function renderRankingSection(sectionKey, records, options = {}) {
     .join("");
 }
 
+function renderMyModelsList() {
+  if (!currentUser) return "";
+  const myModels = Object.entries(strategyPresets).filter(([name]) => isOwnedEditablePreset(name));
+  if (myModels.length === 0) {
+    return '<div class="ranking-empty">还没有创建自己的模型。</div>';
+  }
+  return `
+    <div class="my-models-list">
+      ${myModels.map(([name, preset]) => `
+        <div class="my-model-row" data-preset-name="${escapeHtml(name)}">
+          <div class="my-model-info">
+            <strong>${escapeHtml(preset.label || name)}</strong>
+            <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</small>
+          </div>
+          <div class="my-model-actions">
+            <button class="my-model-rename-button" type="button" data-preset-name="${escapeHtml(name)}">重命名</button>
+            <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
+            <button class="model-hide-button" type="button" data-preset-name="${escapeHtml(name)}" data-preset-label="${escapeHtml(preset.label || name)}">删除</button>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function renameOwnedPreset(name) {
+  const preset = strategyPresets[name];
+  if (!preset || !isOwnedEditablePreset(name)) return;
+  const nextLabel = window.prompt("输入新的模型名称：", preset.label || name);
+  if (nextLabel === null) return;
+  const trimmed = nextLabel.trim().slice(0, 80);
+  if (!trimmed) {
+    setStatus("模型名称不能为空。", true);
+    return;
+  }
+  if (trimmed === preset.label) return;
+  if (!validateVisiblePresetLabel(trimmed, name)) return;
+  strategyPresets[name] = {
+    ...preset,
+    label: trimmed,
+    meta: {
+      ...preset.meta,
+      updatedAt: todayText(),
+    },
+  };
+  const saved = await saveCustomStrategyPresets();
+  if (!saved) return;
+  renderModelCompareOptions();
+  renderModelRanking();
+  setStatus(`已重命名为：${trimmed}。`);
+}
+
 function renderModelRanking() {
   if (!rankingPresetList) return;
 
@@ -4563,6 +4957,9 @@ function renderModelRanking() {
         emptyMessage: "暂无你的模型排行。保存自己的模型，然后进入历史模拟生成 1 年、3 年、5 年成绩。",
       })
     : '<div class="ranking-empty">登录后可以查看和管理你自己的模型排行。</div>';
+  const myModelsHtml = currentUser
+    ? `<h3 class="ranking-subgroup-title">我的模型</h3>${renderMyModelsList()}`
+    : "";
 
   rankingPresetList.innerHTML = `
     <div class="ranking-group">
@@ -4571,6 +4968,7 @@ function renderModelRanking() {
     </div>
     <div class="ranking-group">
       <h2 class="ranking-group-title">个人模型排行</h2>
+      ${myModelsHtml}
       ${ownHtml}
     </div>
   `;
@@ -4597,6 +4995,11 @@ function summarizePresetParameters(preset) {
   if (type === "stagnation-reversal") {
     const rule = readStagnationReversalRule(preset.stagnationReversalRule || defaultStagnationReversalRule);
     return `${rule.buyStalledDays}天未创新低买到${rule.buyTarget}%；${rule.sellStalledDays}天未创新高卖${rule.sellReduce}%`;
+  }
+  if (type === "block-rules") {
+    const buyCount = (preset.buyBlockRules || []).filter((block) => block.enabled !== false).length;
+    const sellCount = (preset.sellBlockRules || []).filter((block) => block.enabled !== false).length;
+    return `买入 ${buyCount} 条规则 / 卖出 ${sellCount} 条规则`;
   }
   const buyText = cloneRules(preset.buyRules, defaultBuyRules)
     .filter((rule) => rule.enabled !== false)
@@ -4636,6 +5039,8 @@ function getSerializablePreset(preset) {
     buyRules: preset.buyRules || undefined,
     sellRules: preset.sellRules || undefined,
     noNewHighExitRule: preset.noNewHighExitRule || undefined,
+    buyBlockRules: preset.buyBlockRules && preset.buyBlockRules.length ? preset.buyBlockRules : undefined,
+    sellBlockRules: preset.sellBlockRules && preset.sellBlockRules.length ? preset.sellBlockRules : undefined,
   };
 }
 
@@ -4828,6 +5233,8 @@ function createPresetFromConfig(label, config, meta = {}) {
       ...defaultStagnationReversalRule,
       ...(config.stagnationReversalRule || {}),
     },
+    buyBlockRules: cloneRuleBlocks(config.buyBlockRules, defaultBuyBlockRules),
+    sellBlockRules: cloneRuleBlocks(config.sellBlockRules, defaultSellBlockRules),
     meta,
   };
 }
@@ -4969,6 +5376,10 @@ function createSafePresetDraft(description, aiPatch = null) {
         ...aiPatch.stagnationReversalRule,
       });
     }
+    if (strategyType === "block-rules") {
+      config.buyBlockRules = cloneRuleBlocks(aiPatch.buyBlockRules, defaultBuyBlockRules);
+      config.sellBlockRules = cloneRuleBlocks(aiPatch.sellBlockRules, defaultSellBlockRules);
+    }
   }
 
   const meta = {
@@ -5013,7 +5424,135 @@ async function saveGeneratedPreset(preset) {
   return presetName;
 }
 
-function buildOptimizationCandidates(basePreset, strategyType) {
+function computeDefaultParamRange(value) {
+  const current = Number(value) || 0;
+  if (current === 0) {
+    return { min: -5, max: 5, step: 1 };
+  }
+  const min = current * 0.6;
+  const max = current * 1.4;
+  const span = Math.abs(max - min);
+  const rawStep = span / 3;
+  const step = rawStep >= 1 ? Math.round(rawStep) || 1 : Math.round(rawStep * 100) / 100 || 0.1;
+  return {
+    min: Math.round(min * 100) / 100,
+    max: Math.round(max * 100) / 100,
+    step,
+  };
+}
+
+function discoverBlockRuleParameters(preset) {
+  const descriptors = [];
+  const fieldLabels = {
+    lookbackDays: "回看天数",
+    slopeWindowDays: "斜率窗口天数",
+    sustainedDays: "持续天数",
+    value: "阈值",
+  };
+  const walkBlocks = (blocks, sideLabel, sideKey) => {
+    (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
+      const blockLabel = `${sideLabel}规则${blockIndex + 1}`;
+      (Array.isArray(block && block.conditions) ? block.conditions : []).forEach((condition, conditionIndex) => {
+        const condLabel = `${blockLabel}·条件${conditionIndex + 1}`;
+        ["lookbackDays", "slopeWindowDays", "sustainedDays", "value"].forEach((field) => {
+          const raw = condition[field];
+          if (raw === null || raw === undefined || raw === "") return;
+          const current = Number(raw);
+          if (!Number.isFinite(current)) return;
+          const range = computeDefaultParamRange(current);
+          descriptors.push({
+            path: `${sideKey}[${blockIndex}].conditions[${conditionIndex}].${field}`,
+            label: `${condLabel}·${fieldLabels[field]}`,
+            currentValue: current,
+            min: range.min,
+            max: range.max,
+            step: range.step,
+          });
+        });
+      });
+      if (block && block.action && block.action.type !== "exitAll") {
+        const raw = block.action.value;
+        if (raw !== null && raw !== undefined && raw !== "") {
+          const current = Number(raw);
+          if (Number.isFinite(current)) {
+            const range = computeDefaultParamRange(current);
+            descriptors.push({
+              path: `${sideKey}[${blockIndex}].action.value`,
+              label: `${blockLabel}·动作数值`,
+              currentValue: current,
+              min: range.min,
+              max: range.max,
+              step: range.step,
+            });
+          }
+        }
+      }
+    });
+  };
+  walkBlocks(preset && preset.buyBlockRules, "买入", "buyBlockRules");
+  walkBlocks(preset && preset.sellBlockRules, "卖出", "sellBlockRules");
+  return descriptors;
+}
+
+function renderOptimizationParamRanges(descriptors) {
+  if (!optimizationParamRanges) return;
+  if (!descriptors || descriptors.length === 0) {
+    optimizationParamRanges.innerHTML = `<div class="ranking-empty">这个模型没有可调整的数值参数，将只测试当前参数。</div>`;
+    return;
+  }
+  optimizationParamRanges.innerHTML = descriptors.map((descriptor, index) => `
+    <div class="optimization-param-range-row" data-param-index="${index}">
+      <label>${escapeHtml(descriptor.label)}（当前 ${descriptor.currentValue}）</label>
+      <input type="number" step="any" data-role="min" value="${descriptor.min}" aria-label="最小值">
+      <input type="number" step="any" data-role="max" value="${descriptor.max}" aria-label="最大值">
+      <input type="number" step="any" data-role="step" value="${descriptor.step}" aria-label="步长">
+    </div>
+  `).join("");
+}
+
+function readOptimizationParamRanges(descriptors) {
+  if (!optimizationParamRanges || !descriptors) return descriptors;
+  return descriptors.map((descriptor, index) => {
+    const row = optimizationParamRanges.querySelector(`[data-param-index="${index}"]`);
+    if (!row) return descriptor;
+    const min = Number(row.querySelector('[data-role="min"]').value);
+    const max = Number(row.querySelector('[data-role="max"]').value);
+    const step = Number(row.querySelector('[data-role="step"]').value);
+    return {
+      ...descriptor,
+      min: Number.isFinite(min) ? min : descriptor.min,
+      max: Number.isFinite(max) ? max : descriptor.max,
+      step: Number.isFinite(step) && step > 0 ? step : descriptor.step,
+    };
+  });
+}
+
+function setBlockRuleValueAtPath(root, path, value) {
+  const segments = path.match(/[^[\].]+/g) || [];
+  let target = root;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const segment = segments[i];
+    target = target[/^\d+$/.test(segment) ? Number(segment) : segment];
+    if (!target) return;
+  }
+  const lastSegment = segments[segments.length - 1];
+  target[lastSegment] = value;
+}
+
+function buildRangeValues(descriptor) {
+  const min = Math.min(descriptor.min, descriptor.max);
+  const max = Math.max(descriptor.min, descriptor.max);
+  const step = descriptor.step > 0 ? descriptor.step : 1;
+  const values = [];
+  for (let value = min; value <= max + 1e-9; value += step) {
+    values.push(Math.round(value * 1000) / 1000);
+    if (values.length >= 8) break;
+  }
+  if (values.length === 0) values.push(descriptor.currentValue);
+  return values;
+}
+
+function buildOptimizationCandidates(basePreset, strategyType, paramDescriptors) {
   const base = {
     ...readBacktestConfig(),
     strategyType,
@@ -5131,6 +5670,46 @@ function buildOptimizationCandidates(basePreset, strategyType) {
         });
       });
     });
+  } else if (strategyType === "block-rules") {
+    const sourcePreset = strategyPresets[basePreset] || {};
+    const descriptors = Array.isArray(paramDescriptors) && paramDescriptors.length
+      ? paramDescriptors
+      : discoverBlockRuleParameters(sourcePreset);
+    const buildConfigForCombo = (combo) => {
+      const buyBlockRules = cloneRuleBlocks(sourcePreset.buyBlockRules, defaultBuyBlockRules);
+      const sellBlockRules = cloneRuleBlocks(sourcePreset.sellBlockRules, defaultSellBlockRules);
+      const root = { buyBlockRules, sellBlockRules };
+      descriptors.forEach((descriptor, index) => {
+        setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
+      });
+      return { ...base, buyBlockRules, sellBlockRules };
+    };
+    if (descriptors.length === 0) {
+      push({
+        ...base,
+        buyBlockRules: cloneRuleBlocks(sourcePreset.buyBlockRules, defaultBuyBlockRules),
+        sellBlockRules: cloneRuleBlocks(sourcePreset.sellBlockRules, defaultSellBlockRules),
+      });
+    } else {
+      const valueLists = descriptors.map((descriptor) => buildRangeValues(descriptor));
+      const totalCombinations = valueLists.reduce((acc, list) => acc * Math.max(1, list.length), 1);
+      if (totalCombinations <= 400) {
+        let combos = [[]];
+        valueLists.forEach((values) => {
+          const next = [];
+          combos.forEach((combo) => {
+            values.forEach((value) => next.push([...combo, value]));
+          });
+          combos = next;
+        });
+        combos.forEach((combo) => push(buildConfigForCombo(combo)));
+      } else {
+        for (let i = 0; i < 400; i += 1) {
+          const combo = valueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
+          push(buildConfigForCombo(combo));
+        }
+      }
+    }
   } else {
     [5, 10, 15, 20].forEach((waveThreshold) => {
       [20, 30, 40].forEach((firstTarget) => {
@@ -5309,6 +5888,22 @@ function describeStagnationReversalConfig(config) {
   };
 }
 
+function describeGenericConfig(config) {
+  const buyBlockRules = Array.isArray(config.buyBlockRules) ? config.buyBlockRules : defaultBuyBlockRules;
+  const sellBlockRules = Array.isArray(config.sellBlockRules) ? config.sellBlockRules : defaultSellBlockRules;
+  const buildLines = buyBlockRules
+    .filter((block) => block && block.enabled !== false)
+    .map((block, index) => `买入规则${index + 1}：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`);
+  const exitLines = sellBlockRules
+    .filter((block) => block && block.enabled !== false)
+    .map((block, index) => `卖出规则${index + 1}：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`);
+  return {
+    title: "组合规则模型",
+    build: buildLines.length ? buildLines : ["未设置买入规则。"],
+    exit: exitLines.length ? exitLines : ["未设置卖出规则。"],
+  };
+}
+
 function describeOptimizationConfig(config) {
   const strategyType = config.strategyType || "wave";
   if (strategyType === "local-high-ladder") return describeLocalLadderConfig(config);
@@ -5316,6 +5911,7 @@ function describeOptimizationConfig(config) {
   if (strategyType === "order-grid") return describeOrderGridConfig(config);
   if (strategyType === "pe-volume") return describePeVolumeConfig(config);
   if (strategyType === "stagnation-reversal") return describeStagnationReversalConfig(config);
+  if (strategyType === "block-rules") return describeGenericConfig(config);
   return describeWaveConfig(config);
 }
 
@@ -5521,6 +6117,44 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
   }
 }
 
+let blockRuleOptimizationState = null;
+
+function openBlockRuleOptimizationRangeEditor(presetName) {
+  if (!requireSignedInForSave()) return;
+  const preset = strategyPresets[presetName];
+  if (!preset) return;
+  const descriptors = discoverBlockRuleParameters(preset);
+  blockRuleOptimizationState = { presetName, descriptors };
+  if (optimizationTitle) optimizationTitle.textContent = `${preset.label || "组合规则模型"} · 设置暴力测试范围`;
+  if (optimizationSubtitle) optimizationSubtitle.textContent = "确认或修改每个参数的测试范围，然后点击“运行优化”。";
+  if (optimizationReport) optimizationReport.innerHTML = "";
+  if (optimizationNarrative) optimizationNarrative.innerHTML = "";
+  if (optimizationParamPreview) optimizationParamPreview.textContent = "等待运行...";
+  if (saveOptimizationButton) saveOptimizationButton.disabled = true;
+  renderOptimizationParamRanges(descriptors);
+  if (optimizationParamRanges) optimizationParamRanges.classList.remove("hidden");
+  if (runOptimizationButton) runOptimizationButton.classList.remove("hidden");
+  if (optimizationDialog && !optimizationDialog.open) {
+    if (typeof optimizationDialog.showModal === "function") {
+      optimizationDialog.showModal();
+    } else {
+      optimizationDialog.setAttribute("open", "open");
+    }
+  }
+}
+
+if (runOptimizationButton) {
+  runOptimizationButton.addEventListener("click", () => {
+    if (!blockRuleOptimizationState) return;
+    const { presetName, descriptors } = blockRuleOptimizationState;
+    const editedDescriptors = readOptimizationParamRanges(descriptors);
+    if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+    runOptimizationButton.classList.add("hidden");
+    blockRuleOptimizationState = null;
+    optimizePresetParameters(presetName, editedDescriptors);
+  });
+}
+
 function openOptimizationDialog(message) {
   if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">${escapeHtml(message)}</div>`;
   if (optimizationNarrative) optimizationNarrative.innerHTML = "";
@@ -5530,7 +6164,7 @@ function openOptimizationDialog(message) {
   if (optimizationSubtitle) optimizationSubtitle.textContent = message;
 }
 
-function optimizePresetParameters(presetName) {
+function optimizePresetParameters(presetName, paramDescriptors) {
   if (!requireSignedInForSave()) return;
   const preset = strategyPresets[presetName];
   if (!preset) return;
@@ -5554,7 +6188,7 @@ function optimizePresetParameters(presetName) {
   }
 
   const strategyType = preset.strategyType || "wave";
-  const candidates = buildOptimizationCandidates(presetName, strategyType);
+  const candidates = buildOptimizationCandidates(presetName, strategyType, paramDescriptors);
   if (candidates.length === 0) {
     setStatus("这个模型没有可尝试的参数组合。", true);
     return;
@@ -6430,6 +7064,10 @@ function recomputeBacktestWithLatestConfig() {
         ? "已按近端高点订单网格参数同步重算表现和回测交易。"
         : config.strategyType === "pe-volume"
           ? "已按 PE-成交量参数同步重算表现和回测交易。"
+          : config.strategyType === "stagnation-reversal"
+            ? "已按停滞反转参数同步重算表现和回测交易。"
+            : config.strategyType === "block-rules"
+              ? "已按组合规则同步重算表现和回测交易。"
       : `已按 ${formatPercent(config.waveThreshold)} 波动阈值同步重算表现和回测交易。`;
   setStatus(activeBacktestRangeLabel ? `${status} 回测区间：${activeBacktestRangeLabel}。` : status);
 }
@@ -7070,6 +7708,21 @@ if (rankingPresetList) {
       hideRankingRecord(hideButton.dataset.rankingKey);
       return;
     }
+    const renameButton = event.target && event.target.closest ? event.target.closest(".my-model-rename-button") : null;
+    if (renameButton) {
+      renameOwnedPreset(renameButton.dataset.presetName);
+      return;
+    }
+    const modelHideButton = event.target && event.target.closest ? event.target.closest(".model-hide-button") : null;
+    if (modelHideButton) {
+      hideOwnedPreset(modelHideButton.dataset.presetName, modelHideButton.dataset.presetLabel);
+      return;
+    }
+    const presetParamButton = event.target && event.target.closest ? event.target.closest(".preset-param-button") : null;
+    if (presetParamButton) {
+      openPresetParamEditor(presetParamButton.dataset.presetName);
+      return;
+    }
     const button = event.target && event.target.closest ? event.target.closest(".ranking-param-button") : null;
     if (!button) return;
     const record = [...rankingRecords, ...publicRankingRecords].find((item) => item.key === button.dataset.rankingKey);
@@ -7091,7 +7744,13 @@ if (modelCompareTable) {
     }
     const optimizeButton = target && target.closest ? target.closest(".result-optimize-button") : null;
     if (optimizeButton) {
-      optimizePresetParameters(optimizeButton.dataset.presetName);
+      const optimizePresetName = optimizeButton.dataset.presetName;
+      const optimizePreset = strategyPresets[optimizePresetName];
+      if (optimizePreset && optimizePreset.strategyType === "block-rules") {
+        openBlockRuleOptimizationRangeEditor(optimizePresetName);
+      } else {
+        optimizePresetParameters(optimizePresetName);
+      }
       return;
     }
     const tradesButton = target && target.closest ? target.closest(".result-trades-button") : null;
@@ -7177,6 +7836,9 @@ if (closeOptimizationButton && optimizationDialog) {
   closeOptimizationButton.addEventListener("click", () => {
     activeOptimizationId += 1;
     optimizationPresetDraft = null;
+    blockRuleOptimizationState = null;
+    if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+    if (runOptimizationButton) runOptimizationButton.classList.add("hidden");
     optimizationDialog.close();
   });
 }
@@ -7267,6 +7929,8 @@ indicatorModelSelect.addEventListener("change", () => {
             ? "已切换到 PE-成交量指标模型。"
             : strategyType === "stagnation-reversal"
               ? "已切换到停滞反转模型。"
+              : strategyType === "block-rules"
+                ? "已切换到组合规则模型。"
         : "已切换到波浪模型。";
     refreshIndicatorView(message);
   }

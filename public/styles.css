@@ -707,6 +707,63 @@ button:disabled {
   font-size: 17px;
 }
 
+.ranking-subgroup-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.my-models-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.my-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.my-model-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.my-model-info small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.my-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.my-model-rename-button {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--accent);
+  background: #eef8fa;
+  border: 1px solid #cae3e8;
+}
+
+.my-model-rename-button:hover {
+  color: #fff;
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+
 .ranking-table-section {
   display: grid;
   gap: 8px;
@@ -1016,19 +1073,6 @@ button:disabled {
   line-height: 1.45;
 }
 
-.model-selector-dialog {
-  width: min(1120px, calc(100% - 28px));
-}
-
-.data-selector-dialog {
-  width: min(980px, calc(100% - 28px));
-}
-
-.market-data-dialog,
-.results-dialog {
-  width: min(1180px, calc(100% - 28px));
-}
-
 .results-dialog .backtest-section,
 .market-data-dialog .chart-section,
 .market-data-dialog .company-card,
@@ -1037,13 +1081,22 @@ button:disabled {
 }
 
 .results-dialog .backtest-section {
-  max-height: min(92vh, 920px);
+  height: 100dvh;
+  max-height: 100dvh;
   overflow: auto;
+  border-radius: 0;
+}
+
+#resultsDialog .backtest-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .model-selector-dialog .param-dialog-body {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  max-height: min(92vh, 920px);
+  height: 100dvh;
+  max-height: 100dvh;
   overflow: hidden;
 }
 
@@ -1062,7 +1115,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr;
   min-height: 0;
-  max-height: min(58vh, 620px);
+  max-height: none;
   overflow: auto;
 }
 
@@ -1360,8 +1413,9 @@ button:disabled {
 }
 
 .model-performance-wrap {
+  flex: 1;
   height: auto;
-  max-height: 680px;
+  min-height: 0;
   border-color: var(--accent);
   box-shadow: 0 10px 24px rgba(31, 122, 140, 0.12);
 }
@@ -1843,7 +1897,8 @@ button:disabled {
 .trade-detail-dialog .param-dialog-body,
 .trade-detail-dialog .backtest-section,
 .results-dialog .backtest-section {
-  max-height: min(86vh, 920px);
+  height: 100dvh;
+  max-height: 100dvh;
   overflow: auto;
 }
 
@@ -1946,11 +2001,14 @@ button:disabled {
 }
 
 .param-dialog {
-  width: min(860px, calc(100% - 28px));
-  max-height: min(92vh, 920px);
+  width: 100%;
+  height: 100dvh;
+  max-width: 100%;
+  max-height: 100dvh;
+  margin: 0;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--ink);
   box-shadow: var(--shadow);
 }
@@ -1962,6 +2020,7 @@ button:disabled {
 .param-dialog-body {
   display: grid;
   gap: 14px;
+  height: 100dvh;
   max-height: inherit;
   overflow: auto;
   padding: 18px;
@@ -2155,6 +2214,36 @@ textarea:focus {
 
 .optimization-narrative ul {
   padding-left: 18px;
+}
+
+.optimization-param-ranges {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dce8ec;
+  border-radius: 8px;
+  background: #f8fbfc;
+}
+
+.optimization-param-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 0.7fr));
+  gap: 8px;
+  align-items: center;
+}
+
+.optimization-param-range-row label {
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.optimization-param-range-row input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d6dfe8;
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 .code-preview {
@@ -2540,27 +2629,8 @@ tbody tr:last-child td {
     display: none;
   }
 
-  .param-dialog {
-    width: 100%;
-    height: 100dvh;
-    max-height: 100dvh;
-    border-radius: 0;
-  }
-
-  .param-dialog-body {
-    height: 100dvh;
-  }
-
   .model-selector-dialog .param-dialog-body {
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: 100dvh;
-    max-height: 100dvh;
-  }
-
-  .results-dialog .backtest-section {
-    height: 100dvh;
-    max-height: 100dvh;
-    border-radius: 0;
   }
 
   .preset-param-button {

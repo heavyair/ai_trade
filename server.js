@@ -24,7 +24,7 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
 const PUBLIC_OWNER_LABEL = "public";
-const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal"];
+const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal", "block-rules"];
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
 const dbPool = new Pool({
@@ -294,80 +294,7 @@ async function initializeDatabase() {
     );
   `);
 
-  await migrateJsonStateToPostgres();
   await normalizeExistingPresetLabels();
-}
-
-function jsonFileExists(filePath) {
-  return filePath && fs.existsSync(filePath);
-}
-
-async function migrateJsonStateToPostgres() {
-  if (jsonFileExists(USERS_FILE)) {
-    const authStore = readAuthStore();
-    for (const [email, user] of Object.entries(authStore.users || {})) {
-      try {
-        const normalizedEmail = normalizeEmail(email);
-        const userId = userIdForEmail(normalizedEmail);
-        await dbPool.query(`
-          INSERT INTO users (id, email, salt, password_hash, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, NOW()), NOW())
-          ON CONFLICT (email) DO UPDATE
-            SET salt = EXCLUDED.salt,
-                password_hash = EXCLUDED.password_hash,
-                updated_at = NOW()
-        `, [
-          userId,
-          normalizedEmail,
-          user.salt || crypto.randomBytes(16).toString("hex"),
-          user.passwordHash || user.password_hash || hashPassword(crypto.randomBytes(16).toString("hex"), user.salt || "imported"),
-          user.createdAt || null,
-        ]);
-      } catch (error) {
-        console.warn(`Skipping malformed user during Postgres migration: ${email}`);
-      }
-    }
-
-    for (const [token, session] of Object.entries(authStore.sessions || {})) {
-      try {
-        if (!session || !session.email || !session.expiresAt || session.expiresAt <= Date.now()) continue;
-        const email = normalizeEmail(session.email);
-        await dbPool.query(`
-          INSERT INTO sessions (token_hash, user_id, expires_at)
-          SELECT $1, id, $2
-          FROM users
-          WHERE email = $3
-          ON CONFLICT (token_hash) DO UPDATE
-            SET expires_at = EXCLUDED.expires_at
-        `, [sha256(token), new Date(session.expiresAt), email]);
-      } catch (error) {
-        console.warn("Skipping malformed session during Postgres migration.");
-      }
-    }
-  }
-
-  if (jsonFileExists(PRESETS_FILE)) {
-    const store = readPresetStore();
-    for (const [name, preset] of Object.entries(store.legacyPresets || {})) {
-      await upsertPreset(null, name, preset, true, { enforceLabelUnique: false });
-    }
-
-    for (const [email, value] of Object.entries(store.users || {})) {
-      const normalizedEmail = normalizeEmail(email);
-      const userId = userIdForEmail(normalizedEmail);
-      await ensureImportedUser(normalizedEmail);
-      for (const [name, preset] of Object.entries(value.presets || {})) {
-        await upsertPreset(userId, name, preset, false, { enforceLabelUnique: false });
-      }
-    }
-  }
-
-  if (jsonFileExists(RANKINGS_FILE)) {
-    const records = readRankingRecords();
-    for (const record of records) {
-      await upsertRankingRecord(record, null);
-    }
-  }
 }
 
 function sendJson(res, statusCode, payload) {
@@ -546,6 +473,14 @@ function extractOpenAiText(payload) {
   return "";
 }
 
+const BLOCK_RULE_INDICATORS = [
+  "drawdownFromHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
+  "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
+  "positionRatio", "holdingDays",
+];
+const BLOCK_RULE_COMPARATORS = [">", ">=", "<", "<=", "=="];
+const BLOCK_RULE_ACTION_TYPES = ["targetPercent", "targetShares", "reducePercent", "exitAll"];
+
 function normalizeGeneratedModel(value) {
   const model = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const strategyType = SUPPORTED_STRATEGY_TYPES.includes(model.strategyType)
@@ -558,6 +493,51 @@ function normalizeGeneratedModel(value) {
   const clamp = (input, min, max, fallback) => {
     const number = asNumber(input, fallback);
     return Math.min(max, Math.max(min, number));
+  };
+  const cleanCondition = (condition) => {
+    if (!condition || typeof condition !== "object" || Array.isArray(condition)) return null;
+    if (!BLOCK_RULE_INDICATORS.includes(condition.indicator)) return null;
+    if (!BLOCK_RULE_COMPARATORS.includes(condition.comparator)) return null;
+    const value = asNumber(condition.value, null);
+    if (value === null) return null;
+    return {
+      indicator: condition.indicator,
+      lookbackDays: condition.lookbackDays === null || condition.lookbackDays === undefined
+        ? null
+        : clamp(condition.lookbackDays, 1, 250, 20),
+      slopeWindowDays: condition.slopeWindowDays === null || condition.slopeWindowDays === undefined
+        ? null
+        : clamp(condition.slopeWindowDays, 1, 60, 1),
+      comparator: condition.comparator,
+      value,
+      sustainedDays: condition.sustainedDays === null || condition.sustainedDays === undefined
+        ? null
+        : clamp(condition.sustainedDays, 1, 60, 1),
+    };
+  };
+  const cleanAction = (action) => {
+    if (!action || typeof action !== "object" || Array.isArray(action)) return null;
+    if (!BLOCK_RULE_ACTION_TYPES.includes(action.type)) return null;
+    if (action.type === "exitAll") return { type: "exitAll", value: null };
+    const value = asNumber(action.value, null);
+    if (value === null) return null;
+    if (action.type === "targetPercent") return { type: action.type, value: clamp(value, 0, 100, 0) };
+    if (action.type === "reducePercent") return { type: action.type, value: clamp(value, 0, 100, 0) };
+    return { type: action.type, value: clamp(value, 0, 100000000, 0) };
+  };
+  const cleanBlockRule = (block) => {
+    if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+    const conditions = Array.isArray(block.conditions)
+      ? block.conditions.map(cleanCondition).filter(Boolean).slice(0, 6)
+      : [];
+    if (conditions.length === 0) return null;
+    const action = cleanAction(block.action);
+    if (!action) return null;
+    return {
+      enabled: block.enabled !== false,
+      conditions,
+      action,
+    };
   };
   const cleanRule = (rule, kind) => {
     if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
@@ -601,8 +581,46 @@ function normalizeGeneratedModel(value) {
       sellStalledDays: clamp(model.stagnationReversalRule.sellStalledDays, 1, 120, 5),
       sellReduce: clamp(model.stagnationReversalRule.sellReduce, 1, 100, 100),
     } : null,
+    buyBlockRules: Array.isArray(model.buyBlockRules)
+      ? model.buyBlockRules.map(cleanBlockRule).filter(Boolean).slice(0, 8)
+      : [],
+    sellBlockRules: Array.isArray(model.sellBlockRules)
+      ? model.sellBlockRules.map(cleanBlockRule).filter(Boolean).slice(0, 8)
+      : [],
   };
 }
+
+const blockRuleConditionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    indicator: { type: "string", enum: BLOCK_RULE_INDICATORS },
+    lookbackDays: { type: ["number", "null"] },
+    slopeWindowDays: { type: ["number", "null"] },
+    comparator: { type: "string", enum: BLOCK_RULE_COMPARATORS },
+    value: { type: "number" },
+    sustainedDays: { type: ["number", "null"] },
+  },
+};
+
+const blockRuleActionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    type: { type: "string", enum: BLOCK_RULE_ACTION_TYPES },
+    value: { type: ["number", "null"] },
+  },
+};
+
+const blockRuleSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    conditions: { type: "array", items: blockRuleConditionSchema },
+    action: blockRuleActionSchema,
+  },
+};
 
 async function generateModelFromDescription(description, symbol, requestedLabel) {
   const schema = {
@@ -655,6 +673,8 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
           sellReduce: { type: "number" },
         },
       },
+      buyBlockRules: { type: "array", items: blockRuleSchema },
+      sellBlockRules: { type: "array", items: blockRuleSchema },
     },
     required: ["label", "strategyType", "confidence", "reason"],
   };
@@ -667,6 +687,28 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     "- ma-rsi-band：均线、RSI、ATR 目标仓位。",
     "- pe-volume：PE 和成交量指标。",
     "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
+    "- block-rules：用户的描述包含多个用“并且/同时”连接的条件，或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，必须选这个类型，不要硬套其它模板。",
+    "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
+    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(距高点回撤%)、riseFromLow(距低点反弹%)、maValue(均线偏离%)、maSlope(均线斜率%)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。action.type 只能是 targetPercent(调仓到目标百分比仓位)、targetShares(调仓到目标股数)、reducePercent(在当前仓位基础上减仓百分比)、exitAll(全部清仓，不需要 value)。",
+    "block-rules 示例——“跌超20%且8天没创新高就买1000股；连续3天10日均线下跌就清仓”对应：",
+    JSON.stringify({
+      strategyType: "block-rules",
+      buyBlockRules: [{
+        enabled: true,
+        conditions: [
+          { indicator: "drawdownFromHigh", lookbackDays: 60, comparator: ">", value: 20, slopeWindowDays: null, sustainedDays: null },
+          { indicator: "daysSinceNewHigh", lookbackDays: 20, comparator: ">=", value: 8, slopeWindowDays: null, sustainedDays: null },
+        ],
+        action: { type: "targetShares", value: 1000 },
+      }],
+      sellBlockRules: [{
+        enabled: true,
+        conditions: [
+          { indicator: "maSlope", lookbackDays: 10, slopeWindowDays: 1, comparator: "<", value: 0, sustainedDays: 3 },
+        ],
+        action: { type: "exitAll", value: null },
+      }],
+    }),
     "不要生成 JavaScript。不要发明 App 不支持的策略类型。",
     "百分比用数字，例如 20 表示 20%。天数用交易日数量。",
     `股票/标的：${symbol || "通用"}`,
@@ -2130,11 +2172,14 @@ async function handleRankingsApi(req, res) {
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
     const incoming = Array.isArray(payload.records) ? payload.records : [];
+    const savePublic = Boolean(payload.public);
+    const ownerUserId = savePublic ? null : userIdForEmail(user.email);
     for (const record of incoming) {
-      await upsertRankingRecord(record, userIdForEmail(user.email));
+      await upsertRankingRecord(record, ownerUserId);
     }
     const records = await readOwnRankingRecords(userIdForEmail(user.email));
-    sendJson(res, 200, { authenticated: true, user, records, saved: incoming.length });
+    const publicRecords = await readPublicRankingRecords();
+    sendJson(res, 200, { authenticated: true, user, records, publicRecords, saved: incoming.length });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "排行记录保存失败。" });
   }
