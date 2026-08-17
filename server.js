@@ -18,10 +18,13 @@ const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
+const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
+const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
 const PUBLIC_OWNER_LABEL = "public";
+const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal"];
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
 const dbPool = new Pool({
@@ -125,6 +128,7 @@ async function initializeDatabase() {
 
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS original_text TEXT NOT NULL DEFAULT '';
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS model_text TEXT NOT NULL DEFAULT '';
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
 
     CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_user_name_idx
       ON strategy_presets(owner_user_id, name)
@@ -168,6 +172,7 @@ async function initializeDatabase() {
     ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_meta_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
     ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_original_text_snapshot TEXT NOT NULL DEFAULT '';
     ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS preset_model_text_snapshot TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ranking_records ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
 
     UPDATE strategy_presets
     SET config = config - 'label' - 'meta'
@@ -470,6 +475,234 @@ function postJsonToResend(payload) {
   });
 }
 
+function postJsonToOpenAi(payload) {
+  if (!OPENAI_API_KEY) {
+    const error = new Error("AI 服务还没有配置 OPENAI_API_KEY。");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const request = https.request({
+      method: "POST",
+      hostname: "api.openai.com",
+      path: "/v1/responses",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 30000,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        let parsed = {};
+        try {
+          parsed = responseBody ? JSON.parse(responseBody) : {};
+        } catch (parseError) {
+          const error = new Error(`AI 服务返回的数据不是有效 JSON：${responseBody.slice(0, 200)}`);
+          error.statusCode = 502;
+          reject(error);
+          return;
+        }
+
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(parsed);
+          return;
+        }
+
+        const detail = parsed && parsed.error && (parsed.error.message || parsed.error.code)
+          ? String(parsed.error.message || parsed.error.code)
+          : responseBody;
+        const error = new Error(`AI 服务返回 ${response.statusCode}${detail ? `：${detail.slice(0, 300)}` : ""}`);
+        error.statusCode = 502;
+        reject(error);
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error("AI 服务请求超时。"));
+    });
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+function extractOpenAiText(payload) {
+  if (payload && typeof payload.output_text === "string") return payload.output_text;
+  const output = payload && Array.isArray(payload.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const part of content) {
+      if (typeof part.text === "string") return part.text;
+    }
+  }
+  return "";
+}
+
+function normalizeGeneratedModel(value) {
+  const model = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const strategyType = SUPPORTED_STRATEGY_TYPES.includes(model.strategyType)
+    ? model.strategyType
+    : "wave";
+  const asNumber = (input, fallback = null) => {
+    const number = Number(input);
+    return Number.isFinite(number) ? number : fallback;
+  };
+  const clamp = (input, min, max, fallback) => {
+    const number = asNumber(input, fallback);
+    return Math.min(max, Math.max(min, number));
+  };
+  const cleanRule = (rule, kind) => {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
+    if (kind === "buy") {
+      return {
+        enabled: rule.enabled !== false,
+        drop: clamp(rule.drop, 0.1, 80, 5),
+        target: clamp(rule.target, 0, 100, 30),
+      };
+    }
+    return {
+      enabled: rule.enabled !== false,
+      rise: clamp(rule.rise, 0.1, 200, 5),
+      reduce: clamp(rule.reduce, 0, 100, 10),
+    };
+  };
+
+  return {
+    label: String(model.label || "").slice(0, 80),
+    strategyType,
+    confidence: clamp(model.confidence, 0, 1, 0.5),
+    reason: String(model.reason || "").slice(0, 1000),
+    waveThreshold: asNumber(model.waveThreshold, null),
+    buyRules: Array.isArray(model.buyRules) ? model.buyRules.map((rule) => cleanRule(rule, "buy")).filter(Boolean).slice(0, 8) : [],
+    sellRules: Array.isArray(model.sellRules) ? model.sellRules.map((rule) => cleanRule(rule, "sell")).filter(Boolean).slice(0, 8) : [],
+    noNewHighExitRule: model.noNewHighExitRule && typeof model.noNewHighExitRule === "object" ? {
+      enabled: Boolean(model.noNewHighExitRule.enabled),
+      lookbackDays: clamp(model.noNewHighExitRule.lookbackDays, 2, 120, 6),
+      stalledDays: clamp(model.noNewHighExitRule.stalledDays, 1, 60, 5),
+      reduce: clamp(model.noNewHighExitRule.reduce, 0, 100, 100),
+    } : null,
+    localLadderRule: model.localLadderRule && typeof model.localLadderRule === "object" ? model.localLadderRule : null,
+    maRsiBandRule: model.maRsiBandRule && typeof model.maRsiBandRule === "object" ? model.maRsiBandRule : null,
+    orderGridRule: model.orderGridRule && typeof model.orderGridRule === "object" ? model.orderGridRule : null,
+    peVolumeRule: model.peVolumeRule && typeof model.peVolumeRule === "object" ? model.peVolumeRule : null,
+    stagnationReversalRule: model.stagnationReversalRule && typeof model.stagnationReversalRule === "object" ? {
+      buyLookbackDays: clamp(model.stagnationReversalRule.buyLookbackDays, 2, 120, 5),
+      buyStalledDays: clamp(model.stagnationReversalRule.buyStalledDays, 1, 120, 5),
+      buyTarget: clamp(model.stagnationReversalRule.buyTarget, 1, 100, 100),
+      sellLookbackDays: clamp(model.stagnationReversalRule.sellLookbackDays, 2, 120, 5),
+      sellStalledDays: clamp(model.stagnationReversalRule.sellStalledDays, 1, 120, 5),
+      sellReduce: clamp(model.stagnationReversalRule.sellReduce, 1, 100, 100),
+    } : null,
+  };
+}
+
+async function generateModelFromDescription(description, symbol, requestedLabel) {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      label: { type: "string" },
+      strategyType: { type: "string", enum: SUPPORTED_STRATEGY_TYPES },
+      confidence: { type: "number" },
+      reason: { type: "string" },
+      waveThreshold: { type: ["number", "null"] },
+      buyRules: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            drop: { type: "number" },
+            target: { type: "number" },
+          },
+        },
+      },
+      sellRules: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            rise: { type: "number" },
+            reduce: { type: "number" },
+          },
+        },
+      },
+      noNewHighExitRule: { type: ["object", "null"] },
+      localLadderRule: { type: ["object", "null"] },
+      maRsiBandRule: { type: ["object", "null"] },
+      orderGridRule: { type: ["object", "null"] },
+      peVolumeRule: { type: ["object", "null"] },
+      stagnationReversalRule: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          buyLookbackDays: { type: "number" },
+          buyStalledDays: { type: "number" },
+          buyTarget: { type: "number" },
+          sellLookbackDays: { type: "number" },
+          sellStalledDays: { type: "number" },
+          sellReduce: { type: "number" },
+        },
+      },
+    },
+    required: ["label", "strategyType", "confidence", "reason"],
+  };
+  const prompt = [
+    "把用户的交易策略描述转换为 AI Trade 支持的安全模型 JSON。",
+    "只选择最匹配的 strategyType：",
+    "- wave：从阶段高点回撤百分比建仓，从买入价上涨百分比卖出。",
+    "- local-high-ladder：最近 N 天高点回落后阶梯加仓。",
+    "- order-grid：每笔订单独立建仓/加仓/止盈。",
+    "- ma-rsi-band：均线、RSI、ATR 目标仓位。",
+    "- pe-volume：PE 和成交量指标。",
+    "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
+    "不要生成 JavaScript。不要发明 App 不支持的策略类型。",
+    "百分比用数字，例如 20 表示 20%。天数用交易日数量。",
+    `股票/标的：${symbol || "通用"}`,
+    requestedLabel ? `用户指定名称：${requestedLabel}` : "",
+    `用户描述：${description}`,
+  ].filter(Boolean).join("\n");
+
+  const response = await postJsonToOpenAi({
+    model: OPENAI_MODEL,
+    input: [
+      {
+        role: "system",
+        content: "你是量化交易回测 App 的策略解析器。你只输出结构化 JSON，不能输出代码或解释性 Markdown。",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "ai_trade_model",
+        schema,
+      },
+    },
+  });
+  const text = extractOpenAiText(response);
+  if (!text) {
+    const error = new Error("AI 没有返回模型内容。");
+    error.statusCode = 502;
+    throw error;
+  }
+  return normalizeGeneratedModel(JSON.parse(text));
+}
+
 async function sendVerificationEmail(req, userId, email, force = false) {
   if (!RESEND_API_KEY) {
     return { sent: false, emailEnabled: false };
@@ -763,7 +996,7 @@ function normalizePresetKey(name) {
 
 function sanitizeServerPreset(name, preset) {
   if (!preset || typeof preset !== "object" || Array.isArray(preset)) return null;
-  const strategyType = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(preset.strategyType)
+  const strategyType = SUPPORTED_STRATEGY_TYPES.includes(preset.strategyType)
     ? preset.strategyType
     : "wave";
   const meta = preset.meta && typeof preset.meta === "object" && !Array.isArray(preset.meta) ? preset.meta : {};
@@ -1047,7 +1280,7 @@ async function readUserPresets(email) {
     SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
-    WHERE owner_user_id IS NULL
+    WHERE owner_user_id IS NULL AND hidden_at IS NULL
     ORDER BY updated_at DESC
   `, [PUBLIC_OWNER_LABEL]);
   const userResult = await dbQuery(`
@@ -1056,7 +1289,7 @@ async function readUserPresets(email) {
       users.email AS owner_email, TRUE AS is_owner, FALSE AS is_public
     FROM strategy_presets
     JOIN users ON users.id = strategy_presets.owner_user_id
-    WHERE users.email = $1
+    WHERE users.email = $1 AND strategy_presets.hidden_at IS NULL
     ORDER BY strategy_presets.updated_at DESC
   `, [email]);
   const legacyPresets = presetRowsToMap(legacyResult.rows);
@@ -1076,7 +1309,7 @@ async function readVisiblePresetsForAnonymous() {
     SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
-    WHERE owner_user_id IS NULL
+    WHERE owner_user_id IS NULL AND hidden_at IS NULL
     ORDER BY updated_at DESC
   `, [PUBLIC_OWNER_LABEL]);
   const legacyPresets = presetRowsToMap(result.rows);
@@ -1411,7 +1644,7 @@ function sanitizeServerRankingRecord(record) {
     presetId: String(record.presetId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 160),
     presetName,
     presetLabel: String(record.presetLabel || presetName).slice(0, 100),
-    strategyType: ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume"].includes(record.strategyType)
+    strategyType: SUPPORTED_STRATEGY_TYPES.includes(record.strategyType)
       ? record.strategyType
       : "wave",
     presetConfigSnapshot: stripPresetSnapshotDisplayFields(record.presetConfigSnapshot),
@@ -1558,12 +1791,22 @@ function mapRankingRow(row) {
   });
 }
 
-async function readRankingRecordsFromDb(ownerUserId = null) {
+async function readPublicRankingRecords() {
   const result = await dbQuery(`
     SELECT *
     FROM ranking_records
-    WHERE ($1::text IS NULL AND owner_user_id IS NULL)
-       OR ($1::text IS NOT NULL AND owner_user_id = $1)
+    WHERE owner_user_id IS NULL AND hidden_at IS NULL
+    ORDER BY updated_at DESC
+    LIMIT 3000
+  `);
+  return result.rows.map(mapRankingRow).filter(Boolean);
+}
+
+async function readOwnRankingRecords(ownerUserId) {
+  const result = await dbQuery(`
+    SELECT *
+    FROM ranking_records
+    WHERE owner_user_id = $1 AND hidden_at IS NULL
     ORDER BY updated_at DESC
     LIMIT 3000
   `, [ownerUserId]);
@@ -1584,6 +1827,56 @@ async function handlePresetsApi(req, res) {
         legacyPresets: presets.legacyPresets,
         userPresets: presets.userPresets,
       });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const user = await requireVerifiedCurrentUser(req);
+      const userId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const key = normalizePresetKey(payload.name);
+      if (!key) {
+        sendJson(res, 400, { error: "缺少模型名称。" });
+        return;
+      }
+      const presetId = `preset_${userId}_${key}`;
+      const hidden = Boolean(payload.hidden);
+      const result = await dbQuery(`
+        UPDATE strategy_presets
+        SET hidden_at = ${hidden ? "NOW()" : "NULL"}, updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2
+        RETURNING id, name, label
+      `, [presetId, userId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在，或者你不是这个模型的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { updated: result.rows[0], hidden });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const user = await requireVerifiedCurrentUser(req);
+      const userId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const key = normalizePresetKey(payload.name);
+      if (!key) {
+        sendJson(res, 400, { error: "缺少模型名称。" });
+        return;
+      }
+      const presetId = `preset_${userId}_${key}`;
+      const result = await dbQuery(`
+        DELETE FROM strategy_presets
+        WHERE id = $1 AND owner_user_id = $2
+        RETURNING id, name, label
+      `, [presetId, userId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在，或者你不是这个模型的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { deleted: result.rows[0] });
       return;
     }
 
@@ -1616,6 +1909,33 @@ async function handlePresetsApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "预设保存失败。" });
+  }
+}
+
+async function handleGenerateModelApi(req, res) {
+  try {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    await requireVerifiedCurrentUser(req);
+    const body = await readRequestBody(req, 64 * 1024);
+    const payload = body ? JSON.parse(body) : {};
+    const description = String(payload.description || "").trim().slice(0, 8000);
+    if (!description) {
+      sendJson(res, 400, { error: "请先输入模型描述。" });
+      return;
+    }
+    const symbol = String(payload.symbol || "通用").trim().slice(0, 24);
+    const label = String(payload.label || "").trim().slice(0, 80);
+    const model = await generateModelFromDescription(description, symbol, label);
+    sendJson(res, 200, {
+      model,
+      modelProvider: "openai",
+      openAiModel: OPENAI_MODEL,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "AI 模型生成失败。" });
   }
 }
 
@@ -1739,15 +2059,65 @@ async function handleRankingsApi(req, res) {
   try {
     if (req.method === "GET") {
       const user = await getCurrentUser(req);
+      const publicRecords = await readPublicRankingRecords();
       if (!user) {
-        sendJson(res, 200, { authenticated: false, records: [] });
+        sendJson(res, 200, { authenticated: false, records: [], publicRecords });
         return;
       }
       sendJson(res, 200, {
         authenticated: true,
         user,
-        records: await readRankingRecordsFromDb(userIdForEmail(user.email)),
+        records: await readOwnRankingRecords(userIdForEmail(user.email)),
+        publicRecords,
       });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const user = await requireVerifiedCurrentUser(req);
+      const userId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const key = String(payload.key || "").trim();
+      if (!key) {
+        sendJson(res, 400, { error: "缺少排行记录 key。" });
+        return;
+      }
+      const hidden = Boolean(payload.hidden);
+      const result = await dbQuery(`
+        UPDATE ranking_records
+        SET hidden_at = ${hidden ? "NOW()" : "NULL"}
+        WHERE key = $1 AND owner_user_id = $2
+        RETURNING key
+      `, [key, userId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "排行记录不存在，或者你不是这个记录的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { updated: result.rows[0], hidden });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const user = await requireVerifiedCurrentUser(req);
+      const userId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const key = String(payload.key || "").trim();
+      if (!key) {
+        sendJson(res, 400, { error: "缺少排行记录 key。" });
+        return;
+      }
+      const result = await dbQuery(`
+        DELETE FROM ranking_records
+        WHERE key = $1 AND owner_user_id = $2
+        RETURNING key
+      `, [key, userId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "排行记录不存在，或者你不是这个记录的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { deleted: result.rows[0] });
       return;
     }
 
@@ -1763,7 +2133,7 @@ async function handleRankingsApi(req, res) {
     for (const record of incoming) {
       await upsertRankingRecord(record, userIdForEmail(user.email));
     }
-    const records = await readRankingRecordsFromDb(userIdForEmail(user.email));
+    const records = await readOwnRankingRecords(userIdForEmail(user.email));
     sendJson(res, 200, { authenticated: true, user, records, saved: incoming.length });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "排行记录保存失败。" });
@@ -2678,6 +3048,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/presets") {
     handlePresetsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/generate-model") {
+    handleGenerateModelApi(req, res);
     return;
   }
 

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260815-load-button">
+    <link rel="stylesheet" href="/styles.css?v=20260817-ranking-range-hint">
   </head>
   <body>
     <main class="shell">
@@ -42,7 +42,7 @@
           <div class="research-head">
             <div>
               <h2 data-i18n="rankModels">模型排行</h2>
-              <p data-i18n="rankingSubtitle">只显示当前 owner 自己保存的模型排行，按 1 年、3 年、5 年区间分别记录表现。</p>
+              <p data-i18n="rankingSubtitle">分为 Public 模型排行（公共模型）和个人模型排行（当前账户自己保存的模型），按 1 年、3 年、5 年区间分别记录表现。</p>
             </div>
           </div>
           <div id="rankingPresetList" class="ranking-list"></div>
@@ -54,14 +54,14 @@
           <div class="dialog-head">
             <div>
               <h2 data-i18n="newModel">新建模型</h2>
-              <p data-i18n="newModelSubtitle">用文字描述买卖规则，系统会生成受限的客户端模型预设。</p>
+              <p data-i18n="newModelSubtitle">用文字描述买卖规则，AI 会理解并生成受限的客户端模型预设。</p>
             </div>
             <button class="ghost-button return-nav-button" type="button" data-i18n="backToNav">返回功能导航</button>
           </div>
           <div id="newModelAuthNote" class="auth-required-note hidden" data-i18n="newModelAuthNote">保存新模型需要免费注册、登录并验证电子邮件。模型会按电子邮件账户保存到服务器端。</div>
           <label>
             <span data-i18n="modelDescription">模型描述</span>
-            <textarea id="customModelPrompt" rows="6" placeholder="例如：最近3天高点回撤2%买入20%，之后每下跌2%再买20%，每笔上涨2%卖出" data-i18n-placeholder="modelPromptPlaceholder"></textarea>
+            <textarea id="customModelPrompt" rows="6" placeholder="例如：5天没有形成新低买入100%，5天没有形成新高卖出100%" data-i18n-placeholder="modelPromptPlaceholder"></textarea>
           </label>
           <div class="dialog-grid">
             <label>
@@ -77,7 +77,7 @@
             <button id="generateModelCodeButton" type="button" data-i18n="generateSafeModel">生成安全模型</button>
             <button id="saveGeneratedModelButton" type="button" disabled data-i18n="saveAsPreset">保存为预设</button>
           </div>
-          <div class="security-note" data-i18n="securityNote">安全策略：不会执行任意 JavaScript，不使用 eval / Function。文字描述只会转换为已支持模型的参数化代码片段，并在浏览器本地回测。</div>
+          <div class="security-note" data-i18n="securityNote">安全策略：不会执行任意 JavaScript，不使用 eval / Function。AI 只生成受支持模型的参数 JSON，浏览器用受控回测引擎运行。</div>
           <pre id="generatedModelCode" class="code-preview" data-i18n="waitingGeneration">等待生成...</pre>
         </form>
       </section>
@@ -308,9 +308,15 @@
             结束日期
             <input id="endInput" name="end" type="date" required>
           </label>
-          <button type="submit">查询</button>
+          <button type="submit">加载</button>
         </form>
       </section>
+      <div id="loadingOverlay" class="loading-overlay hidden" aria-live="assertive">
+        <div class="loading-overlay-box">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span id="loadingOverlayText">正在加载历史数据，请稍候...</span>
+        </div>
+      </div>
       </dialog>
 
       <section class="status-band" aria-live="polite">
@@ -404,6 +410,7 @@
                 <option value="ma-rsi-band">MA-RSI 波段模型</option>
                 <option value="order-grid">近端高点订单网格模型</option>
                 <option value="pe-volume">PE-成交量指标模型</option>
+                <option value="stagnation-reversal">停滞反转模型</option>
               </select>
             </label>
             <label class="wave-param hidden">
@@ -951,6 +958,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260815-load-button"></script>
+    <script src="/app.js?v=20260817-ranking-range-hint"></script>
   </body>
 </html>
