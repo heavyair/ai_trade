@@ -91,11 +91,20 @@ const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
 const presetParamNameInput = document.querySelector("#presetParamNameInput");
 const presetParamNarrative = document.querySelector("#presetParamNarrative");
 const presetParamEditor = document.querySelector("#presetParamEditor");
+const presetParamEditorHint = document.querySelector("#presetParamEditorHint");
 const presetOriginalText = document.querySelector("#presetOriginalText");
 const presetModelText = document.querySelector("#presetModelText");
+const blockRuleFormEditor = document.querySelector("#blockRuleFormEditor");
+const blockRuleFormActions = document.querySelector("#blockRuleFormActions");
+const refreshBlockRuleFormButton = document.querySelector("#refreshBlockRuleFormButton");
 const adminDialog = document.querySelector("#adminDialog");
 const closeAdminButton = document.querySelector("#closeAdminButton");
 const adminPresetList = document.querySelector("#adminPresetList");
+const adminPresetsTabButton = document.querySelector("#adminPresetsTabButton");
+const adminRankingsTabButton = document.querySelector("#adminRankingsTabButton");
+const adminPresetsPanel = document.querySelector("#adminPresetsPanel");
+const adminRankingsPanel = document.querySelector("#adminRankingsPanel");
+const adminRankingList = document.querySelector("#adminRankingList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -103,6 +112,15 @@ const optimizationReport = document.querySelector("#optimizationReport");
 const optimizationNarrative = document.querySelector("#optimizationNarrative");
 const optimizationParamPreview = document.querySelector("#optimizationParamPreview");
 const optimizationParamRanges = document.querySelector("#optimizationParamRanges");
+const optimizationUniformPointCountRow = document.querySelector("#optimizationUniformPointCountRow");
+const optimizationUniformPointCountInput = document.querySelector("#optimizationUniformPointCountInput");
+const applyUniformPointCountButton = document.querySelector("#applyUniformPointCountButton");
+const optimizationCombinationSummary = document.querySelector("#optimizationCombinationSummary");
+const optimizationCombinationCount = document.querySelector("#optimizationCombinationCount");
+const optimizationMaxCombinationsInput = document.querySelector("#optimizationMaxCombinationsInput");
+const optimizationProgress = document.querySelector("#optimizationProgress");
+const optimizationProgressBar = document.querySelector("#optimizationProgressBar");
+const optimizationProgressLabel = document.querySelector("#optimizationProgressLabel");
 const runOptimizationButton = document.querySelector("#runOptimizationButton");
 const closeOptimizationButton = document.querySelector("#closeOptimizationButton");
 const saveOptimizationButton = document.querySelector("#saveOptimizationButton");
@@ -196,6 +214,7 @@ let currentUser = null;
 let authMode = "login";
 let activeLanguage = localStorage.getItem("aiTradeLanguage") || "zh";
 let adminOwnerOptions = ["public"];
+let adminPresetsCache = [];
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
 const recentSymbolStorageKey = "aiTradeRecentSymbols";
@@ -520,7 +539,7 @@ const defaultStagnationReversalRule = {
 };
 
 const blockRuleIndicators = [
-  "drawdownFromHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
+  "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
   "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
   "positionRatio", "holdingDays",
 ];
@@ -1184,6 +1203,7 @@ function renderAdminPresetList(presets = []) {
             Owner
             <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
           </label>
+          <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
           <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
           <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
         </div>
@@ -1192,12 +1212,46 @@ function renderAdminPresetList(presets = []) {
   }).join("");
 }
 
+function openAdminPresetParamViewer(presetId) {
+  const preset = adminPresetsCache.find((item) => item.id === presetId);
+  if (!preset) return;
+  const config = preset.config && typeof preset.config === "object" ? preset.config : {};
+  const meta = preset.meta && typeof preset.meta === "object" ? preset.meta : {};
+  const viewPreset = {
+    ...config,
+    label: preset.label || preset.name,
+    strategyType: preset.strategyType || config.strategyType || "wave",
+    meta: {
+      ...meta,
+      originalText: preset.originalText || meta.originalText || "",
+      modelText: preset.modelText || meta.modelText || "",
+    },
+  };
+  openPresetParamEditor(presetId, {
+    preset: viewPreset,
+    readonly: true,
+    title: `查看参数：${preset.label || preset.name}`,
+    subtitle: `Owner: ${preset.ownerValue || preset.ownerEmail || "public"} · 只读`,
+  });
+}
+
+if (adminPresetList) {
+  adminPresetList.addEventListener("click", (event) => {
+    const target = event.target;
+    const viewButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
+    if (viewButton) {
+      openAdminPresetParamViewer(viewButton.dataset.presetId);
+    }
+  });
+}
+
 async function loadAdminPresets() {
   if (!adminPresetList) return;
   adminPresetList.innerHTML = '<div class="ranking-empty">正在读取服务器模型...</div>';
   try {
     const response = await fetch("/api/admin/presets", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取 admin 模型列表失败。");
+    adminPresetsCache = Array.isArray(payload.presets) ? payload.presets : [];
     adminOwnerOptions = Array.isArray(payload.owners) ? payload.owners : ["public"];
     renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
   } catch (error) {
@@ -1205,9 +1259,84 @@ async function loadAdminPresets() {
   }
 }
 
+function renderAdminRankingList(records = []) {
+  if (!adminRankingList) return;
+  if (!records.length) {
+    adminRankingList.innerHTML = '<div class="ranking-empty">还没有历史测试记录。</div>';
+    return;
+  }
+  const rows = records.map((record) => {
+    const returnClass = record.returnRate > 0 ? "up" : record.returnRate < 0 ? "down" : "";
+    return `
+      <tr>
+        <td>${escapeHtml(record.ownerEmail || "public")}</td>
+        <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
+        <td>${escapeHtml(record.periodLabel || "")}</td>
+        <td>${escapeHtml(record.presetLabel || record.presetName || "")}</td>
+        <td>${escapeHtml(getStrategyTypeLabel(record.strategyType || "wave"))}</td>
+        <td class="${returnClass}">${formatPercent(record.returnRate)}</td>
+        <td>${formatPercent(record.annualizedReturn)}</td>
+        <td>${formatPercent(record.maxDrawdown)}</td>
+        <td>${formatPercent(record.excessReturn)}</td>
+        <td>${record.trades || 0}</td>
+        <td>${escapeHtml(formatAdminDate(record.updatedAt))}</td>
+      </tr>
+    `;
+  }).join("");
+  adminRankingList.innerHTML = `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>
+          <th>Owner</th>
+          <th>标的</th>
+          <th>区间</th>
+          <th>模型</th>
+          <th>类型</th>
+          <th>回报率</th>
+          <th>年化</th>
+          <th>最大回撤</th>
+          <th>超额收益</th>
+          <th>交易次数</th>
+          <th>更新时间</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function loadAdminRankings() {
+  if (!adminRankingList) return;
+  adminRankingList.innerHTML = '<div class="ranking-empty">正在读取历史测试记录...</div>';
+  try {
+    const response = await fetch("/api/admin/rankings", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取历史测试记录失败。");
+    renderAdminRankingList(Array.isArray(payload.records) ? payload.records : []);
+  } catch (error) {
+    adminRankingList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function setAdminTab(tab) {
+  const showRankings = tab === "rankings";
+  if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", !showRankings);
+  if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
+  if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", showRankings);
+  if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
+  if (showRankings) loadAdminRankings();
+}
+
+if (adminPresetsTabButton) {
+  adminPresetsTabButton.addEventListener("click", () => setAdminTab("presets"));
+}
+if (adminRankingsTabButton) {
+  adminRankingsTabButton.addEventListener("click", () => setAdminTab("rankings"));
+}
+
 function openAdminDialog() {
   if (!currentUser || !currentUser.isAdmin || !adminDialog) return;
   showDialog(adminDialog);
+  setAdminTab("presets");
   loadAdminPresets();
 }
 
@@ -2757,16 +2886,49 @@ function getRollingLow(rows, index, lookbackDays) {
   };
 }
 
+function computeRollingExtremeIndices(rows, lookbackDays, key, isBetter, excludeCurrent) {
+  const result = new Array(rows.length).fill(null);
+  const deque = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    if (excludeCurrent) {
+      const lower = i - lookbackDays;
+      while (deque.length && deque[0] < lower) deque.shift();
+      result[i] = i >= lookbackDays && deque.length ? deque[0] : null;
+      while (deque.length && isBetter(rows[i][key], rows[deque[deque.length - 1]][key])) deque.pop();
+      deque.push(i);
+    } else {
+      const lower = i - lookbackDays + 1;
+      while (deque.length && deque[0] < lower) deque.shift();
+      while (deque.length && isBetter(rows[i][key], rows[deque[deque.length - 1]][key])) deque.pop();
+      deque.push(i);
+      result[i] = deque[0];
+    }
+  }
+  return result;
+}
+
 function getDrawdownFromHighSeries(rows, lookbackDays) {
+  const highIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, false);
   return rows.map((row, index) => {
-    const high = getRollingHigh(rows, index, lookbackDays).high;
+    const high = rows[highIndices[index]].high;
+    return high > 0 ? ((high - row.close) / high) * 100 : null;
+  });
+}
+
+function getDrawdownFromWaveHighSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    const high = wave.high.price;
     return high > 0 ? ((high - row.close) / high) * 100 : null;
   });
 }
 
 function getRiseFromLowSeries(rows, lookbackDays) {
+  const lowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, false);
   return rows.map((row, index) => {
-    const low = getRollingLow(rows, index, lookbackDays).low;
+    const low = rows[lowIndices[index]].low;
     return low > 0 ? ((row.close - low) / low) * 100 : null;
   });
 }
@@ -2796,10 +2958,11 @@ function getVolumeRatioSeries(rows, maDays) {
 
 function getDaysSinceNewHighSeries(rows, lookbackDays) {
   const values = new Array(rows.length).fill(null);
+  const previousHighIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, true);
   let streak = 0;
   rows.forEach((row, index) => {
-    const previousHigh = getPreviousHigh(rows, index, lookbackDays);
-    if (!previousHigh) return;
+    if (previousHighIndices[index] === null) return;
+    const previousHigh = rows[previousHighIndices[index]];
     streak = row.high > previousHigh.high ? 0 : streak + 1;
     values[index] = streak;
   });
@@ -2808,10 +2971,11 @@ function getDaysSinceNewHighSeries(rows, lookbackDays) {
 
 function getDaysSinceNewLowSeries(rows, lookbackDays) {
   const values = new Array(rows.length).fill(null);
+  const previousLowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, true);
   let streak = 0;
   rows.forEach((row, index) => {
-    const previousLow = getPreviousLow(rows, index, lookbackDays);
-    if (!previousLow) return;
+    if (previousLowIndices[index] === null) return;
+    const previousLow = rows[previousLowIndices[index]];
     streak = row.low < previousLow.low ? 0 : streak + 1;
     values[index] = streak;
   });
@@ -3593,37 +3757,50 @@ function buildWaveBacktestStates(rows, config) {
       ? ((wave.high.price - row.close) / wave.high.price) * 100
       : 0;
 
+    let deepestUntriggeredBuyRule = null;
     config.buyRules.forEach((rule) => {
       const key = `${wave.high.version}:${rule.drop}:${rule.target}`;
       if (drawdown >= rule.drop && !triggeredBuys.has(key)) {
-        const trade = buyToTarget(
-          account,
-          row,
-          index,
-          Math.min(100, Math.max(0, rule.target)),
-          {
-            type: "high",
-            label: "阶段高点",
-            date: wave.high.date,
-            price: wave.high.price,
-            confirmDate: row.date,
-            confirmPrice: row.low,
-            confirmLabel: "确认低价",
-          },
-          drawdown,
-          trades,
-          config.tradeFee
-        );
-        if (trade) {
-          trade.reason = `触发买入规则：较阶段高点回撤 ${formatPercent(drawdown)}，达到 ${formatPercent(rule.drop)} 阈值，加仓到 ${formatPercent(rule.target)}`;
-          lastBuyTrade = trade;
-          triggeredSells.clear();
-          noNewHighDays = 0;
-          boughtToday = true;
+        if (!deepestUntriggeredBuyRule || rule.drop > deepestUntriggeredBuyRule.drop) {
+          deepestUntriggeredBuyRule = rule;
         }
-        triggeredBuys.add(key);
       }
     });
+    if (deepestUntriggeredBuyRule) {
+      const rule = deepestUntriggeredBuyRule;
+      const trade = buyToTarget(
+        account,
+        row,
+        index,
+        Math.min(100, Math.max(0, rule.target)),
+        {
+          type: "high",
+          label: "阶段高点",
+          date: wave.high.date,
+          price: wave.high.price,
+          confirmDate: row.date,
+          confirmPrice: row.low,
+          confirmLabel: "确认低价",
+        },
+        drawdown,
+        trades,
+        config.tradeFee
+      );
+      if (trade) {
+        trade.reason = `触发买入规则：较阶段高点回撤 ${formatPercent(drawdown)}，达到 ${formatPercent(rule.drop)} 阈值，加仓到 ${formatPercent(rule.target)}`;
+        lastBuyTrade = trade;
+        triggeredSells.clear();
+        noNewHighDays = 0;
+        boughtToday = true;
+      }
+      // Mark this rule and every shallower rule as triggered so a later day with a
+      // smaller drawdown never re-fires a shallower rule and walks the position back down.
+      config.buyRules.forEach((otherRule) => {
+        if (otherRule.drop <= rule.drop) {
+          triggeredBuys.add(`${wave.high.version}:${otherRule.drop}:${otherRule.target}`);
+        }
+      });
+    }
 
     if (lastBuyTrade && account.shares > 0) {
       const riseFromLastBuy = lastBuyTrade.price > 0
@@ -4148,7 +4325,7 @@ function buildPeVolumeBacktestStates(rows, config) {
   return states;
 }
 
-function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules) {
+function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
   const cache = new Map();
   const ensure = (condition) => {
     if (!condition || condition.indicator === "positionRatio" || condition.indicator === "holdingDays") return;
@@ -4156,6 +4333,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules) {
     if (cache.has(key)) return;
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, waveThreshold || 5);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -4224,7 +4402,8 @@ function resolveBlockActionToTargetPercent(action, account, row, currentRatio) {
 
 function getBlockIndicatorLabel(indicator) {
   const labels = {
-    drawdownFromHigh: "距高点回撤%",
+    drawdownFromHigh: "距N日滚动高点回撤%",
+    drawdownFromWaveHigh: "距波浪确认高点回撤%",
     riseFromLow: "距低点反弹%",
     maValue: "均线偏离%",
     maSlope: "均线斜率%",
@@ -4244,8 +4423,11 @@ function getBlockIndicatorLabel(indicator) {
 function describeBlockCondition(condition) {
   const label = getBlockIndicatorLabel(condition.indicator);
   const days = condition.lookbackDays ? `${condition.lookbackDays}日` : "";
+  const slopeWindow = condition.indicator === "maSlope" && condition.slopeWindowDays && condition.slopeWindowDays > 1
+    ? `(较${condition.slopeWindowDays}日前)`
+    : "";
   const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
-  return `${sustain}${days}${label}${condition.comparator}${condition.value}`;
+  return `${sustain}${days}${label}${slopeWindow}${condition.comparator}${condition.value}`;
 }
 
 function describeBlockConditions(conditions) {
@@ -4261,12 +4443,34 @@ function describeBlockAction(action) {
   return "";
 }
 
+function getBlockActionTypeLabel(type) {
+  const labels = {
+    targetPercent: "调仓到目标仓位%",
+    targetShares: "调仓到目标股数",
+    reducePercent: "在当前仓位基础上减仓%",
+    exitAll: "全部清仓",
+  };
+  return labels[type] || type;
+}
+
+function createEmptyBlockCondition() {
+  return { indicator: "drawdownFromHigh", comparator: ">", value: 0, lookbackDays: 20, slopeWindowDays: null, sustainedDays: null };
+}
+
+function createEmptyBlockAction() {
+  return { type: "targetPercent", value: 50 };
+}
+
+function createEmptyBlockRule() {
+  return { enabled: true, conditions: [createEmptyBlockCondition()], action: createEmptyBlockAction() };
+}
+
 function buildGenericBacktestStates(rows, config) {
   if (!rows || rows.length === 0) return [];
 
   const buyBlockRules = Array.isArray(config.buyBlockRules) ? config.buyBlockRules : defaultBuyBlockRules;
   const sellBlockRules = Array.isArray(config.sellBlockRules) ? config.sellBlockRules : defaultSellBlockRules;
-  const cache = buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules);
+  const cache = buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, config.waveThreshold);
 
   const account = { cash: config.initialCash, shares: 0, totalFees: 0 };
   const trades = [];
@@ -5044,6 +5248,455 @@ function getSerializablePreset(preset) {
   };
 }
 
+let blockRuleFormState = null;
+let blockRuleFormReadonly = false;
+let editingRuleFormMode = null;
+let editingRuleFormStrategyType = null;
+
+const RULE_FIELD_LABELS = {
+  localLadderRule: {
+    lookbackDays: "回看天数", entryDrop: "首次建仓回撤%", ladderDrop: "每级加仓步进%", buyAdd: "每级加仓比例%",
+    maxTarget: "最高目标仓位%", sellRise: "每级减仓涨幅%", sellReduce: "每级减仓比例%", stopLoss: "止损回撤%",
+    stopReduce: "止损减仓%", maxSellsPerDay: "每日最多减仓次数", resetPositionBelow: "仓位低于此值重置%",
+  },
+  maRsiBandRule: {
+    fastMa: "快均线天数", slowMa: "慢均线天数", slowBuffer: "慢线缓冲%", useSlowTrend: "启用慢线趋势判断",
+    bearTarget: "熊市目标仓位%", bullTarget: "牛市目标仓位%", useFastBull: "启用快线强势加仓", fastBullTarget: "快线强势目标仓位%",
+    useFastCut: "启用快线止损", fastBearTarget: "快线止损目标仓位%", fastCut: "快线止损跌幅%", rsiDays: "RSI天数",
+    useRsiBuy: "启用RSI超卖加仓", rsiBuy: "RSI超卖阈值", rsiTarget: "RSI超卖目标仓位%", useRsiSell: "启用RSI超买减仓",
+    rsiSell: "RSI超买阈值", hotTarget: "RSI超买目标仓位%", atrDays: "ATR天数", useAtr: "启用ATR波动率控制",
+    highAtr: "高波动ATR%阈值", volTarget: "高波动目标仓位%",
+  },
+  orderGridRule: {
+    lookbackDays: "回看天数", entryDrop: "首次建仓回撤%", orderCapitalPercent: "单笔仓位%", addDrop: "每次加仓步进%",
+    takeProfit: "止盈%", maxLots: "最大网格数",
+  },
+  peVolumeRule: {
+    peLookbackDays: "PE回看天数", lowPePercentile: "低PE分位", highPePercentile: "高PE分位", volumeMaDays: "成交量均线天数",
+    volumeBuyMultiplier: "放量买入倍数", volumeSellMultiplier: "缩量卖出倍数", lowPeTarget: "低PE目标仓位%",
+    neutralTarget: "中性目标仓位%", highPeTarget: "高PE目标仓位%",
+  },
+  stagnationReversalRule: {
+    buyLookbackDays: "买入回看天数", buyStalledDays: "买入停滞天数", buyTarget: "买入目标仓位%",
+    sellLookbackDays: "卖出回看天数", sellStalledDays: "卖出停滞天数", sellReduce: "卖出减仓%",
+  },
+};
+
+function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex) {
+  const showSlopeWindow = condition.indicator === "maSlope";
+  const numOrEmpty = (value) => (value === null || value === undefined ? "" : value);
+  return `
+    <div class="block-rule-condition-row" data-condition-index="${conditionIndex}">
+      <select data-role="indicator">
+        ${blockRuleIndicators.map((ind) => `<option value="${ind}" ${condition.indicator === ind ? "selected" : ""}>${escapeHtml(getBlockIndicatorLabel(ind))}</option>`).join("")}
+      </select>
+      <input type="number" data-role="lookbackDays" value="${numOrEmpty(condition.lookbackDays)}" placeholder="回看天数" min="1" step="1">
+      <select data-role="comparator">
+        ${blockRuleComparators.map((c) => `<option value="${escapeHtml(c)}" ${condition.comparator === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+      </select>
+      <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="数值" step="any">
+      <input type="number" data-role="slopeWindowDays" value="${numOrEmpty(condition.slopeWindowDays)}" placeholder="斜率窗口(仅均线斜率)" min="1" step="1" ${showSlopeWindow ? "" : "disabled"}>
+      <input type="number" data-role="sustainedDays" value="${numOrEmpty(condition.sustainedDays)}" placeholder="连续天数(可选)" min="1" step="1">
+      <button type="button" class="ghost-button block-rule-remove-condition" data-side="${sideKey}" data-block-index="${blockIndex}" data-condition-index="${conditionIndex}">删除条件</button>
+    </div>
+  `;
+}
+
+function renderBlockActionRow(action) {
+  const isExitAll = action.type === "exitAll";
+  const value = action.value === null || action.value === undefined ? "" : action.value;
+  return `
+    <div class="block-rule-action-row">
+      <span class="block-rule-action-label">→ 动作</span>
+      <select data-role="action-type">
+        ${blockRuleActionTypes.map((t) => `<option value="${t}" ${action.type === t ? "selected" : ""}>${escapeHtml(getBlockActionTypeLabel(t))}</option>`).join("")}
+      </select>
+      <input type="number" data-role="action-value" value="${value}" placeholder="数值" step="any" ${isExitAll ? "disabled" : ""}>
+    </div>
+  `;
+}
+
+function renderBlockRuleBlock(block, sideKey, blockIndex) {
+  const conditions = Array.isArray(block.conditions) ? block.conditions : [];
+  return `
+    <div class="block-rule-block" data-side="${sideKey}" data-block-index="${blockIndex}">
+      <div class="block-rule-block-head">
+        <label><input type="checkbox" data-role="enabled" ${block.enabled !== false ? "checked" : ""}> 启用</label>
+        <button type="button" class="ghost-button block-rule-remove-block" data-side="${sideKey}" data-block-index="${blockIndex}">删除规则块</button>
+      </div>
+      <div class="block-rule-conditions">
+        ${conditions.map((c, ci) => renderBlockConditionRow(c, sideKey, blockIndex, ci)).join("") || `<div class="ranking-empty">这个规则块还没有条件。</div>`}
+      </div>
+      <button type="button" class="ghost-button block-rule-add-condition" data-side="${sideKey}" data-block-index="${blockIndex}">+ 添加条件</button>
+      ${renderBlockActionRow(block.action || createEmptyBlockAction())}
+    </div>
+  `;
+}
+
+function renderBlockRuleFormEditor() {
+  if (!blockRuleFormEditor || !blockRuleFormState) return;
+  const buyBlocks = Array.isArray(blockRuleFormState.buyBlockRules) ? blockRuleFormState.buyBlockRules : [];
+  const sellBlocks = Array.isArray(blockRuleFormState.sellBlockRules) ? blockRuleFormState.sellBlockRules : [];
+  const buyHtml = buyBlocks.map((b, i) => renderBlockRuleBlock(b, "buyBlockRules", i)).join("") || `<div class="ranking-empty">还没有买入规则块。</div>`;
+  const sellHtml = sellBlocks.map((b, i) => renderBlockRuleBlock(b, "sellBlockRules", i)).join("") || `<div class="ranking-empty">还没有卖出规则块。</div>`;
+  blockRuleFormEditor.innerHTML = `
+    <div class="block-rule-side">
+      <h4>买入规则块（块内条件“且”，块间“或”）</h4>
+      <div class="block-rule-list">${buyHtml}</div>
+      <button type="button" class="ghost-button" id="addBuyBlockRuleButton">+ 添加买入规则块</button>
+    </div>
+    <div class="block-rule-side">
+      <h4>卖出规则块</h4>
+      <div class="block-rule-list">${sellHtml}</div>
+      <button type="button" class="ghost-button" id="addSellBlockRuleButton">+ 添加卖出规则块</button>
+    </div>
+  `;
+  if (blockRuleFormReadonly) {
+    blockRuleFormEditor.querySelectorAll("input, select, button").forEach((el) => { el.disabled = true; });
+  }
+  syncBlockRuleFormToEditor();
+}
+
+function collectBlockRuleFormState() {
+  if (!blockRuleFormEditor) return blockRuleFormState;
+  const collectSide = (sideKey) => {
+    const blockEls = blockRuleFormEditor.querySelectorAll(`.block-rule-block[data-side="${sideKey}"]`);
+    return Array.from(blockEls).map((blockEl) => {
+      const enabled = blockEl.querySelector('[data-role="enabled"]').checked;
+      const rowEls = blockEl.querySelectorAll(".block-rule-condition-row");
+      const conditions = Array.from(rowEls).map((rowEl) => {
+        const indicator = rowEl.querySelector('[data-role="indicator"]').value;
+        const comparator = rowEl.querySelector('[data-role="comparator"]').value;
+        const value = Number(rowEl.querySelector('[data-role="value"]').value);
+        const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
+        const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
+        const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
+        return {
+          indicator,
+          comparator,
+          value: Number.isFinite(value) ? value : 0,
+          lookbackDays: lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
+          slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
+          sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
+        };
+      });
+      const actionType = blockEl.querySelector('[data-role="action-type"]').value;
+      const actionValueRaw = blockEl.querySelector('[data-role="action-value"]').value;
+      const action = actionType === "exitAll"
+        ? { type: "exitAll", value: null }
+        : { type: actionType, value: actionValueRaw === "" ? 0 : Number(actionValueRaw) };
+      return { enabled, conditions, action };
+    });
+  };
+  return {
+    buyBlockRules: collectSide("buyBlockRules"),
+    sellBlockRules: collectSide("sellBlockRules"),
+  };
+}
+
+function syncBlockRuleFormToEditor() {
+  if (!presetParamEditor) return;
+  blockRuleFormState = collectBlockRuleFormState();
+  let base = {};
+  try {
+    base = JSON.parse(presetParamEditor.value) || {};
+  } catch (error) {
+    base = {};
+  }
+  base.buyBlockRules = blockRuleFormState.buyBlockRules;
+  base.sellBlockRules = blockRuleFormState.sellBlockRules;
+  presetParamEditor.value = JSON.stringify(base, null, 2);
+}
+
+function refreshBlockRuleFormFromJson() {
+  if (!presetParamEditor || blockRuleFormReadonly) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(presetParamEditor.value);
+  } catch (error) {
+    setStatus("参数 JSON 格式不正确，无法刷新表单。", true);
+    return;
+  }
+  if (editingRuleFormMode === "wave") {
+    renderWaveRuleFormEditor(parsed);
+    return;
+  }
+  if (editingRuleFormMode === "flat") {
+    const typeConfig = OPTIMIZATION_TYPE_CONFIG[editingRuleFormStrategyType];
+    if (!typeConfig) return;
+    const rule = { ...typeConfig.defaultRule, ...(parsed[typeConfig.ruleKey] || {}) };
+    renderFlatRuleFormEditor(editingRuleFormStrategyType, rule);
+    return;
+  }
+  blockRuleFormState = {
+    buyBlockRules: cloneRuleBlocks(parsed.buyBlockRules, defaultBuyBlockRules),
+    sellBlockRules: cloneRuleBlocks(parsed.sellBlockRules, defaultSellBlockRules),
+  };
+  renderBlockRuleFormEditor();
+}
+
+function renderFlatRuleFormEditor(strategyType, rule) {
+  if (!blockRuleFormEditor) return;
+  const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
+  if (!typeConfig) return;
+  const labels = RULE_FIELD_LABELS[typeConfig.ruleKey] || {};
+  const keys = Object.keys(typeConfig.defaultRule);
+  blockRuleFormEditor.innerHTML = `
+    <div class="flat-rule-form">
+      ${keys.map((key) => {
+        const value = rule[key];
+        const label = labels[key] || key;
+        if (typeof typeConfig.defaultRule[key] === "boolean") {
+          return `
+            <label class="flat-rule-field flat-rule-field-checkbox">
+              <input type="checkbox" data-role="flat-field" data-key="${key}" ${value ? "checked" : ""}>
+              ${escapeHtml(label)}
+            </label>
+          `;
+        }
+        return `
+          <label class="flat-rule-field">
+            <span>${escapeHtml(label)}</span>
+            <input type="number" step="any" data-role="flat-field" data-key="${key}" value="${value}">
+          </label>
+        `;
+      }).join("")}
+    </div>
+  `;
+  if (blockRuleFormReadonly) {
+    blockRuleFormEditor.querySelectorAll("input").forEach((el) => { el.disabled = true; });
+  }
+  syncFlatRuleFormToEditor(strategyType);
+}
+
+function collectFlatRuleFormState(strategyType) {
+  const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
+  if (!typeConfig || !blockRuleFormEditor) return null;
+  const rule = {};
+  Object.keys(typeConfig.defaultRule).forEach((key) => {
+    const input = blockRuleFormEditor.querySelector(`[data-role="flat-field"][data-key="${key}"]`);
+    if (!input) {
+      rule[key] = typeConfig.defaultRule[key];
+      return;
+    }
+    if (input.type === "checkbox") {
+      rule[key] = input.checked;
+    } else {
+      const num = Number(input.value);
+      rule[key] = Number.isFinite(num) ? num : typeConfig.defaultRule[key];
+    }
+  });
+  return rule;
+}
+
+function syncFlatRuleFormToEditor(strategyType) {
+  if (!presetParamEditor) return;
+  const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
+  const rule = collectFlatRuleFormState(strategyType);
+  if (!typeConfig || !rule) return;
+  let base = {};
+  try {
+    base = JSON.parse(presetParamEditor.value) || {};
+  } catch (error) {
+    base = {};
+  }
+  base[typeConfig.ruleKey] = rule;
+  presetParamEditor.value = JSON.stringify(base, null, 2);
+}
+
+function renderWaveRuleFormEditor(config) {
+  if (!blockRuleFormEditor) return;
+  const buyRules = Array.isArray(config && config.buyRules) ? config.buyRules : [];
+  const sellRules = Array.isArray(config && config.sellRules) ? config.sellRules : [];
+  const waveThreshold = config && config.waveThreshold !== undefined ? config.waveThreshold : 5;
+  const renderRuleBlock = (rule, sideKey, index, fieldA, labelA, fieldB, labelB) => `
+    <div class="block-rule-block" data-wave-side="${sideKey}" data-block-index="${index}">
+      <div class="block-rule-block-head">
+        <label><input type="checkbox" data-role="wave-enabled" ${rule.enabled !== false ? "checked" : ""}> 启用</label>
+        <button type="button" class="ghost-button wave-remove-rule" data-side="${sideKey}" data-index="${index}">删除规则</button>
+      </div>
+      <div class="flat-rule-form">
+        <label class="flat-rule-field"><span>${labelA}</span><input type="number" step="any" data-role="wave-${fieldA}" value="${rule[fieldA]}"></label>
+        <label class="flat-rule-field"><span>${labelB}</span><input type="number" step="any" data-role="wave-${fieldB}" value="${rule[fieldB]}"></label>
+      </div>
+    </div>
+  `;
+  blockRuleFormEditor.innerHTML = `
+    <label class="flat-rule-field">
+      <span>波浪确认阈值%</span>
+      <input type="number" step="any" data-role="wave-threshold" value="${waveThreshold}">
+    </label>
+    <div class="block-rule-form-editor">
+      <div class="block-rule-side">
+        <h4>买入规则</h4>
+        <div class="block-rule-list">
+          ${buyRules.map((rule, i) => renderRuleBlock(rule, "buyRules", i, "drop", "回撤%", "target", "目标仓位%")).join("") || `<div class="ranking-empty">还没有买入规则。</div>`}
+        </div>
+        <button type="button" class="ghost-button" id="addWaveBuyRuleButton">+ 添加买入规则</button>
+      </div>
+      <div class="block-rule-side">
+        <h4>卖出规则</h4>
+        <div class="block-rule-list">
+          ${sellRules.map((rule, i) => renderRuleBlock(rule, "sellRules", i, "rise", "涨幅%", "reduce", "减仓%")).join("") || `<div class="ranking-empty">还没有卖出规则。</div>`}
+        </div>
+        <button type="button" class="ghost-button" id="addWaveSellRuleButton">+ 添加卖出规则</button>
+      </div>
+    </div>
+  `;
+  if (blockRuleFormReadonly) {
+    blockRuleFormEditor.querySelectorAll("input, button").forEach((el) => { el.disabled = true; });
+  }
+  syncWaveRuleFormToEditor();
+}
+
+function collectWaveRuleFormState() {
+  if (!blockRuleFormEditor) return { waveThreshold: 5, buyRules: [], sellRules: [] };
+  const thresholdInput = blockRuleFormEditor.querySelector('[data-role="wave-threshold"]');
+  const waveThreshold = thresholdInput ? Number(thresholdInput.value) || 5 : 5;
+  const collectSide = (sideKey, fieldA, fieldB) => {
+    const blockEls = blockRuleFormEditor.querySelectorAll(`.block-rule-block[data-wave-side="${sideKey}"]`);
+    return Array.from(blockEls).map((el) => {
+      const enabled = el.querySelector('[data-role="wave-enabled"]').checked;
+      const a = Number(el.querySelector(`[data-role="wave-${fieldA}"]`).value) || 0;
+      const b = Number(el.querySelector(`[data-role="wave-${fieldB}"]`).value) || 0;
+      return { enabled, [fieldA]: a, [fieldB]: b };
+    });
+  };
+  return {
+    waveThreshold,
+    buyRules: collectSide("buyRules", "drop", "target"),
+    sellRules: collectSide("sellRules", "rise", "reduce"),
+  };
+}
+
+function syncWaveRuleFormToEditor() {
+  if (!presetParamEditor) return;
+  const state = collectWaveRuleFormState();
+  let base = {};
+  try {
+    base = JSON.parse(presetParamEditor.value) || {};
+  } catch (error) {
+    base = {};
+  }
+  base.waveThreshold = state.waveThreshold;
+  base.buyRules = state.buyRules;
+  base.sellRules = state.sellRules;
+  presetParamEditor.value = JSON.stringify(base, null, 2);
+}
+
+if (blockRuleFormEditor) {
+  blockRuleFormEditor.addEventListener("input", () => {
+    if (blockRuleFormReadonly) return;
+    if (editingRuleFormMode === "wave") {
+      syncWaveRuleFormToEditor();
+      return;
+    }
+    if (editingRuleFormMode === "flat") {
+      syncFlatRuleFormToEditor(editingRuleFormStrategyType);
+      return;
+    }
+    syncBlockRuleFormToEditor();
+  });
+  blockRuleFormEditor.addEventListener("change", (event) => {
+    if (blockRuleFormReadonly) return;
+    const target = event.target;
+    if (editingRuleFormMode === "wave") {
+      syncWaveRuleFormToEditor();
+      return;
+    }
+    if (editingRuleFormMode === "flat") {
+      syncFlatRuleFormToEditor(editingRuleFormStrategyType);
+      return;
+    }
+    if (target && target.dataset && target.dataset.role === "indicator") {
+      const row = target.closest(".block-rule-condition-row");
+      const slopeInput = row && row.querySelector('[data-role="slopeWindowDays"]');
+      if (slopeInput) slopeInput.disabled = target.value !== "maSlope";
+    }
+    if (target && target.dataset && target.dataset.role === "action-type") {
+      const actionRow = target.closest(".block-rule-action-row");
+      const valueInput = actionRow && actionRow.querySelector('[data-role="action-value"]');
+      if (valueInput) valueInput.disabled = target.value === "exitAll";
+    }
+    syncBlockRuleFormToEditor();
+  });
+  blockRuleFormEditor.addEventListener("click", (event) => {
+    if (blockRuleFormReadonly) return;
+    const target = event.target;
+    if (editingRuleFormMode === "wave") {
+      const removeRule = target.closest(".wave-remove-rule");
+      if (removeRule) {
+        const state = collectWaveRuleFormState();
+        const side = removeRule.dataset.side;
+        const index = Number(removeRule.dataset.index);
+        state[side].splice(index, 1);
+        renderWaveRuleFormEditor(state);
+        return;
+      }
+      if (target.closest("#addWaveBuyRuleButton")) {
+        const state = collectWaveRuleFormState();
+        state.buyRules.push({ enabled: true, drop: 5, target: 50 });
+        renderWaveRuleFormEditor(state);
+        return;
+      }
+      if (target.closest("#addWaveSellRuleButton")) {
+        const state = collectWaveRuleFormState();
+        state.sellRules.push({ enabled: true, rise: 10, reduce: 50 });
+        renderWaveRuleFormEditor(state);
+        return;
+      }
+      return;
+    }
+    if (editingRuleFormMode === "flat") return;
+    const addCondition = target.closest(".block-rule-add-condition");
+    if (addCondition) {
+      const side = addCondition.dataset.side;
+      const blockIndex = Number(addCondition.dataset.blockIndex);
+      blockRuleFormState = collectBlockRuleFormState();
+      blockRuleFormState[side][blockIndex].conditions.push(createEmptyBlockCondition());
+      renderBlockRuleFormEditor();
+      return;
+    }
+    const removeCondition = target.closest(".block-rule-remove-condition");
+    if (removeCondition) {
+      const side = removeCondition.dataset.side;
+      const blockIndex = Number(removeCondition.dataset.blockIndex);
+      const conditionIndex = Number(removeCondition.dataset.conditionIndex);
+      blockRuleFormState = collectBlockRuleFormState();
+      blockRuleFormState[side][blockIndex].conditions.splice(conditionIndex, 1);
+      renderBlockRuleFormEditor();
+      return;
+    }
+    const removeBlock = target.closest(".block-rule-remove-block");
+    if (removeBlock) {
+      const side = removeBlock.dataset.side;
+      const blockIndex = Number(removeBlock.dataset.blockIndex);
+      blockRuleFormState = collectBlockRuleFormState();
+      blockRuleFormState[side].splice(blockIndex, 1);
+      renderBlockRuleFormEditor();
+      return;
+    }
+    if (target.closest("#addBuyBlockRuleButton")) {
+      blockRuleFormState = collectBlockRuleFormState();
+      blockRuleFormState.buyBlockRules.push(createEmptyBlockRule());
+      renderBlockRuleFormEditor();
+      return;
+    }
+    if (target.closest("#addSellBlockRuleButton")) {
+      blockRuleFormState = collectBlockRuleFormState();
+      blockRuleFormState.sellBlockRules.push(createEmptyBlockRule());
+      renderBlockRuleFormEditor();
+      return;
+    }
+  });
+}
+
+if (refreshBlockRuleFormButton) {
+  refreshBlockRuleFormButton.addEventListener("click", () => {
+    refreshBlockRuleFormFromJson();
+  });
+}
+
 function openPresetParamEditor(presetName, options = {}) {
   const preset = options.preset || strategyPresets[presetName];
   if (!preset || !presetParamDialog || !presetParamEditor) return;
@@ -5076,6 +5729,41 @@ function openPresetParamEditor(presetName, options = {}) {
     savePresetParamButton.classList.toggle("hidden", readonly);
     savePresetParamButton.disabled = readonly;
   }
+  const strategyTypeForForm = preset.strategyType || "wave";
+  const isBlockRules = strategyTypeForForm === "block-rules";
+  const isWave = strategyTypeForForm === "wave";
+  const flatTypeConfig = OPTIMIZATION_TYPE_CONFIG[strategyTypeForForm];
+  const hasForm = isBlockRules || isWave || Boolean(flatTypeConfig);
+  blockRuleFormReadonly = readonly;
+  editingRuleFormMode = isBlockRules ? "block-rules" : isWave ? "wave" : flatTypeConfig ? "flat" : null;
+  editingRuleFormStrategyType = strategyTypeForForm;
+  if (blockRuleFormEditor) {
+    if (isBlockRules) {
+      blockRuleFormState = {
+        buyBlockRules: cloneRuleBlocks(editorPreset.buyBlockRules, defaultBuyBlockRules),
+        sellBlockRules: cloneRuleBlocks(editorPreset.sellBlockRules, defaultSellBlockRules),
+      };
+      blockRuleFormEditor.classList.remove("hidden");
+      renderBlockRuleFormEditor();
+    } else if (isWave) {
+      blockRuleFormEditor.classList.remove("hidden");
+      renderWaveRuleFormEditor({
+        waveThreshold: Math.max(0.1, Number(editorPreset.waveThreshold) || 5),
+        buyRules: cloneRules(editorPreset.buyRules, defaultBuyRules),
+        sellRules: cloneRules(editorPreset.sellRules, defaultSellRules),
+      });
+    } else if (flatTypeConfig) {
+      blockRuleFormEditor.classList.remove("hidden");
+      const rule = { ...flatTypeConfig.defaultRule, ...(editorPreset[flatTypeConfig.ruleKey] || {}) };
+      renderFlatRuleFormEditor(strategyTypeForForm, rule);
+    } else {
+      blockRuleFormEditor.classList.add("hidden");
+      blockRuleFormEditor.innerHTML = "";
+      blockRuleFormState = null;
+    }
+  }
+  if (blockRuleFormActions) blockRuleFormActions.classList.toggle("hidden", !hasForm || readonly);
+  if (presetParamEditorHint) presetParamEditorHint.classList.toggle("hidden", !hasForm);
   if (typeof presetParamDialog.showModal === "function") {
     presetParamDialog.showModal();
   } else {
@@ -5424,21 +6112,23 @@ async function saveGeneratedPreset(preset) {
   return presetName;
 }
 
-function computeDefaultParamRange(value) {
-  const current = Number(value) || 0;
-  if (current === 0) {
-    return { min: -5, max: 5, step: 1 };
+const DEFAULT_OPTIMIZATION_POINT_COUNT = 11;
+const MAX_OPTIMIZATION_POINT_COUNT = 200;
+const MAX_OPTIMIZATION_COMBINATIONS = 10000;
+
+function computeDefaultParamRange(value, isInteger, isPercent) {
+  if (isPercent) {
+    return { min: 0.1, max: 100, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
   }
-  const min = current * 0.6;
-  const max = current * 1.4;
-  const span = Math.abs(max - min);
-  const rawStep = span / 3;
-  const step = rawStep >= 1 ? Math.round(rawStep) || 1 : Math.round(rawStep * 100) / 100 || 0.1;
-  return {
-    min: Math.round(min * 100) / 100,
-    max: Math.round(max * 100) / 100,
-    step,
-  };
+  const current = Number(value) || 0;
+  const min = 1;
+  let max = (current - min) * 3;
+  if (isInteger) {
+    max = Math.max(min + 1, Math.round(max));
+  } else {
+    max = Math.round(max * 100) / 100;
+  }
+  return { min, max, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
 }
 
 function discoverBlockRuleParameters(preset) {
@@ -5449,6 +6139,9 @@ function discoverBlockRuleParameters(preset) {
     sustainedDays: "持续天数",
     value: "阈值",
   };
+  const integerFields = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
+  const percentIndicators = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "positionRatio"]);
+  const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       const blockLabel = `${sideLabel}规则${blockIndex + 1}`;
@@ -5459,14 +6152,18 @@ function discoverBlockRuleParameters(preset) {
           if (raw === null || raw === undefined || raw === "") return;
           const current = Number(raw);
           if (!Number.isFinite(current)) return;
-          const range = computeDefaultParamRange(current);
+          const isInteger = integerFields.has(field);
+          const isPercent = field === "value" && percentIndicators.has(condition.indicator);
+          const range = computeDefaultParamRange(current, isInteger, isPercent);
           descriptors.push({
             path: `${sideKey}[${blockIndex}].conditions[${conditionIndex}].${field}`,
             label: `${condLabel}·${fieldLabels[field]}`,
             currentValue: current,
+            isInteger,
+            locked: false,
             min: range.min,
             max: range.max,
-            step: range.step,
+            pointCount: range.pointCount,
           });
         });
       });
@@ -5475,14 +6172,18 @@ function discoverBlockRuleParameters(preset) {
         if (raw !== null && raw !== undefined && raw !== "") {
           const current = Number(raw);
           if (Number.isFinite(current)) {
-            const range = computeDefaultParamRange(current);
+            const isInteger = block.action.type === "targetShares";
+            const isPercent = percentActionTypes.has(block.action.type);
+            const range = computeDefaultParamRange(current, isInteger, isPercent);
             descriptors.push({
               path: `${sideKey}[${blockIndex}].action.value`,
               label: `${blockLabel}·动作数值`,
               currentValue: current,
+              isInteger,
+              locked: false,
               min: range.min,
               max: range.max,
-              step: range.step,
+              pointCount: range.pointCount,
             });
           }
         }
@@ -5494,20 +6195,271 @@ function discoverBlockRuleParameters(preset) {
   return descriptors;
 }
 
+const OPTIMIZATION_TYPE_CONFIG = {
+  "order-grid": {
+    ruleKey: "orderGridRule",
+    defaultRule: defaultOrderGridRule,
+    fields: [
+      { key: "lookbackDays", label: "回看天数", isInteger: true },
+      { key: "entryDrop", label: "首次建仓回撤%", isInteger: false, isPercent: true },
+      { key: "addDrop", label: "每次加仓步进%", isInteger: false, isPercent: true },
+      { key: "takeProfit", label: "止盈%", isInteger: false, isPercent: true },
+      { key: "orderCapitalPercent", label: "单笔仓位%", isInteger: false, isPercent: true },
+    ],
+    postProcess: (rule) => {
+      rule.maxLots = Math.max(1, Math.ceil(100 / Math.max(1, Number(rule.orderCapitalPercent) || 1)));
+    },
+  },
+  "local-high-ladder": {
+    ruleKey: "localLadderRule",
+    defaultRule: defaultLocalLadderRule,
+    fields: [
+      { key: "lookbackDays", label: "回看天数", isInteger: true },
+      { key: "entryDrop", label: "首次建仓回撤%", isInteger: false, isPercent: true },
+      { key: "ladderDrop", label: "每级加仓步进%", isInteger: false, isPercent: true },
+      { key: "buyAdd", label: "每级加仓比例%", isInteger: false, isPercent: true },
+      { key: "sellRise", label: "每级减仓涨幅%", isInteger: false, isPercent: true },
+    ],
+    postProcess: (rule) => {
+      rule.sellReduce = rule.buyAdd;
+      rule.maxTarget = 100;
+    },
+  },
+  "ma-rsi-band": {
+    ruleKey: "maRsiBandRule",
+    defaultRule: defaultMaRsiBandRule,
+    fields: [
+      { key: "fastMa", label: "快均线天数", isInteger: true },
+      { key: "slowMa", label: "慢均线天数", isInteger: true },
+      { key: "rsiBuy", label: "RSI买入阈值", isInteger: false },
+      { key: "rsiSell", label: "RSI卖出阈值", isInteger: false },
+    ],
+  },
+  "pe-volume": {
+    ruleKey: "peVolumeRule",
+    defaultRule: defaultPeVolumeRule,
+    fields: [
+      { key: "peLookbackDays", label: "PE回看天数", isInteger: true },
+      { key: "lowPePercentile", label: "低PE分位", isInteger: false },
+      { key: "highPePercentile", label: "高PE分位", isInteger: false },
+      { key: "volumeMaDays", label: "成交量均线天数", isInteger: true },
+      { key: "volumeBuyMultiplier", label: "放量买入倍数", isInteger: false },
+      { key: "volumeSellMultiplier", label: "缩量卖出倍数", isInteger: false },
+    ],
+    postProcess: (rule) => {
+      if (Number(rule.lowPePercentile) > Number(rule.highPePercentile)) {
+        const tmp = rule.lowPePercentile;
+        rule.lowPePercentile = rule.highPePercentile;
+        rule.highPePercentile = tmp;
+      }
+    },
+  },
+  "stagnation-reversal": {
+    ruleKey: "stagnationReversalRule",
+    defaultRule: defaultStagnationReversalRule,
+    fields: [
+      { key: "buyStalledDays", label: "买入·未创新低天数", isInteger: true },
+      { key: "sellStalledDays", label: "卖出·未创新高天数", isInteger: true },
+      { key: "buyTarget", label: "买入目标仓位%", isInteger: false, isPercent: true },
+      { key: "sellReduce", label: "卖出减仓%", isInteger: false, isPercent: true },
+    ],
+    postProcess: (rule) => {
+      rule.buyLookbackDays = rule.buyStalledDays;
+      rule.sellLookbackDays = rule.sellStalledDays;
+    },
+  },
+};
+
+function discoverWaveParameters(preset) {
+  const descriptors = [];
+  const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 5);
+  const wtRange = computeDefaultParamRange(waveThreshold, false, true);
+  descriptors.push({
+    path: "waveThreshold",
+    label: "波浪确认阈值%",
+    currentValue: waveThreshold,
+    isInteger: false,
+    locked: false,
+    min: wtRange.min,
+    max: wtRange.max,
+    pointCount: wtRange.pointCount,
+  });
+  const buyRules = cloneRules(preset && preset.buyRules, defaultBuyRules).filter((rule) => rule.enabled !== false);
+  const sellRules = cloneRules(preset && preset.sellRules, defaultSellRules).filter((rule) => rule.enabled !== false);
+  buyRules.forEach((rule, index) => {
+    [["drop", "回撤%"], ["target", "目标仓位%"]].forEach(([key, label]) => {
+      const current = Number(rule[key]) || 0;
+      const range = computeDefaultParamRange(current, false, true);
+      descriptors.push({
+        path: `buyRules[${index}].${key}`,
+        label: `买入规则${index + 1}·${label}`,
+        currentValue: current,
+        isInteger: false,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    });
+  });
+  sellRules.forEach((rule, index) => {
+    [["rise", "涨幅%"], ["reduce", "减仓%"]].forEach(([key, label]) => {
+      const current = Number(rule[key]) || 0;
+      const range = computeDefaultParamRange(current, false, true);
+      descriptors.push({
+        path: `sellRules[${index}].${key}`,
+        label: `卖出规则${index + 1}·${label}`,
+        currentValue: current,
+        isInteger: false,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    });
+  });
+  return descriptors;
+}
+
+function discoverOptimizationParameters(preset) {
+  if (!preset) return [];
+  const strategyType = preset.strategyType || "wave";
+  if (strategyType === "block-rules") return discoverBlockRuleParameters(preset);
+  if (strategyType === "wave") return discoverWaveParameters(preset);
+  const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
+  if (!typeConfig) return discoverWaveParameters(preset);
+  const rule = { ...typeConfig.defaultRule, ...(preset[typeConfig.ruleKey] || {}) };
+  return typeConfig.fields.map((field) => {
+    const current = Number(rule[field.key]);
+    const value = Number.isFinite(current) ? current : 0;
+    const range = computeDefaultParamRange(value, field.isInteger, field.isPercent);
+    return {
+      path: `${typeConfig.ruleKey}.${field.key}`,
+      label: field.label,
+      currentValue: value,
+      isInteger: field.isInteger,
+      locked: false,
+      min: range.min,
+      max: range.max,
+      pointCount: range.pointCount,
+    };
+  });
+}
+
+function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descriptors, combo) {
+  if (strategyType === "block-rules") {
+    const buyBlockRules = cloneRuleBlocks(sourcePreset.buyBlockRules, defaultBuyBlockRules);
+    const sellBlockRules = cloneRuleBlocks(sourcePreset.sellBlockRules, defaultSellBlockRules);
+    const root = { buyBlockRules, sellBlockRules };
+    descriptors.forEach((descriptor, index) => {
+      setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
+    });
+    return { ...base, buyBlockRules, sellBlockRules };
+  }
+  const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
+  if (typeConfig) {
+    const rule = { ...typeConfig.defaultRule, ...(sourcePreset[typeConfig.ruleKey] || {}) };
+    const root = { [typeConfig.ruleKey]: rule };
+    descriptors.forEach((descriptor, index) => {
+      setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
+    });
+    if (typeConfig.postProcess) typeConfig.postProcess(rule);
+    return { ...base, [typeConfig.ruleKey]: rule };
+  }
+  // wave (and unknown fallback types) use buyRules/sellRules arrays instead of a single flat rule object.
+  const buyRules = cloneRules(sourcePreset.buyRules, defaultBuyRules)
+    .filter((rule) => rule.enabled !== false)
+    .map((rule) => ({ ...rule }));
+  const sellRules = cloneRules(sourcePreset.sellRules, defaultSellRules)
+    .filter((rule) => rule.enabled !== false)
+    .map((rule) => ({ ...rule }));
+  const root = { waveThreshold: Math.max(0.1, Number(sourcePreset.waveThreshold) || 5), buyRules, sellRules };
+  descriptors.forEach((descriptor, index) => {
+    setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
+  });
+  return {
+    ...base,
+    waveThreshold: root.waveThreshold,
+    buyRules: root.buyRules,
+    sellRules: root.sellRules,
+    noNewHighExitRule: { enabled: false, ...defaultNoNewHighExitRule },
+  };
+}
+
 function renderOptimizationParamRanges(descriptors) {
   if (!optimizationParamRanges) return;
   if (!descriptors || descriptors.length === 0) {
     optimizationParamRanges.innerHTML = `<div class="ranking-empty">这个模型没有可调整的数值参数，将只测试当前参数。</div>`;
     return;
   }
-  optimizationParamRanges.innerHTML = descriptors.map((descriptor, index) => `
+  const header = `
+    <div class="optimization-param-range-row optimization-param-range-header">
+      <span></span><span>锁定</span><span>最小值</span><span>最大值</span><span>候选点数</span>
+    </div>
+  `;
+  optimizationParamRanges.innerHTML = header + descriptors.map((descriptor, index) => {
+    const inputStep = descriptor.isInteger ? "1" : "any";
+    const inputMin = descriptor.isInteger ? "1" : "";
+    const locked = Boolean(descriptor.locked);
+    return `
     <div class="optimization-param-range-row" data-param-index="${index}">
       <label>${escapeHtml(descriptor.label)}（当前 ${descriptor.currentValue}）</label>
-      <input type="number" step="any" data-role="min" value="${descriptor.min}" aria-label="最小值">
-      <input type="number" step="any" data-role="max" value="${descriptor.max}" aria-label="最大值">
-      <input type="number" step="any" data-role="step" value="${descriptor.step}" aria-label="步长">
+      <label class="optimization-param-lock"><input type="checkbox" data-role="locked" ${locked ? "checked" : ""}> 锁定</label>
+      <input type="number" step="${inputStep}" min="${inputMin}" data-role="min" value="${descriptor.min}" aria-label="最小值" ${locked ? "disabled" : ""}>
+      <input type="number" step="${inputStep}" min="${inputMin}" data-role="max" value="${descriptor.max}" aria-label="最大值" ${locked ? "disabled" : ""}>
+      <input type="number" step="1" min="2" max="${MAX_OPTIMIZATION_POINT_COUNT}" data-role="pointCount" value="${descriptor.pointCount}" aria-label="候选点数" ${locked ? "disabled" : ""}>
     </div>
-  `).join("");
+  `;
+  }).join("");
+}
+
+function formatCombinationCount(n) {
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  if (n <= 1e6) return Math.round(n).toLocaleString();
+  return n.toExponential(2);
+}
+
+function refreshOptimizationCombinationSummary() {
+  if (!optimizationCombinationCount || !blockRuleOptimizationState || !blockRuleOptimizationState.descriptors) return;
+  const liveDescriptors = readOptimizationParamRanges(blockRuleOptimizationState.descriptors);
+  const total = liveDescriptors.reduce((acc, d) => acc * Math.max(1, buildRangeValues(d).length), 1);
+  optimizationCombinationCount.textContent = formatCombinationCount(total);
+}
+
+if (optimizationParamRanges) {
+  optimizationParamRanges.addEventListener("change", (event) => {
+    const target = event.target;
+    if (target && target.dataset && target.dataset.role === "locked") {
+      const row = target.closest(".optimization-param-range-row");
+      if (row) {
+        ["min", "max", "pointCount"].forEach((role) => {
+          const input = row.querySelector(`[data-role="${role}"]`);
+          if (input) input.disabled = target.checked;
+        });
+      }
+    }
+    refreshOptimizationCombinationSummary();
+  });
+  optimizationParamRanges.addEventListener("input", () => {
+    refreshOptimizationCombinationSummary();
+  });
+}
+
+if (applyUniformPointCountButton) {
+  applyUniformPointCountButton.addEventListener("click", () => {
+    if (!optimizationParamRanges || !optimizationUniformPointCountInput) return;
+    const value = Math.min(
+      MAX_OPTIMIZATION_POINT_COUNT,
+      Math.max(2, Math.round(Number(optimizationUniformPointCountInput.value)) || DEFAULT_OPTIMIZATION_POINT_COUNT)
+    );
+    optimizationParamRanges.querySelectorAll(".optimization-param-range-row[data-param-index]").forEach((row) => {
+      const lockedInput = row.querySelector('[data-role="locked"]');
+      if (lockedInput && lockedInput.checked) return;
+      const pointCountInput = row.querySelector('[data-role="pointCount"]');
+      if (pointCountInput) pointCountInput.value = value;
+    });
+    refreshOptimizationCombinationSummary();
+  });
 }
 
 function readOptimizationParamRanges(descriptors) {
@@ -5515,15 +6467,19 @@ function readOptimizationParamRanges(descriptors) {
   return descriptors.map((descriptor, index) => {
     const row = optimizationParamRanges.querySelector(`[data-param-index="${index}"]`);
     if (!row) return descriptor;
-    const min = Number(row.querySelector('[data-role="min"]').value);
-    const max = Number(row.querySelector('[data-role="max"]').value);
-    const step = Number(row.querySelector('[data-role="step"]').value);
-    return {
-      ...descriptor,
-      min: Number.isFinite(min) ? min : descriptor.min,
-      max: Number.isFinite(max) ? max : descriptor.max,
-      step: Number.isFinite(step) && step > 0 ? step : descriptor.step,
-    };
+    const lockedInput = row.querySelector('[data-role="locked"]');
+    const locked = Boolean(lockedInput && lockedInput.checked);
+    let min = Number(row.querySelector('[data-role="min"]').value);
+    let max = Number(row.querySelector('[data-role="max"]').value);
+    let pointCount = Number(row.querySelector('[data-role="pointCount"]').value);
+    min = Number.isFinite(min) ? min : descriptor.min;
+    max = Number.isFinite(max) ? max : descriptor.max;
+    pointCount = Number.isFinite(pointCount) && pointCount >= 2 ? Math.round(pointCount) : descriptor.pointCount;
+    if (descriptor.isInteger) {
+      min = Math.max(1, Math.round(min));
+      max = Math.max(min, Math.round(max));
+    }
+    return { ...descriptor, min, max, pointCount, locked };
   });
 }
 
@@ -5540,27 +6496,84 @@ function setBlockRuleValueAtPath(root, path, value) {
 }
 
 function buildRangeValues(descriptor) {
+  if (descriptor.locked) {
+    return [descriptor.isInteger ? Math.max(1, Math.round(descriptor.currentValue)) : descriptor.currentValue];
+  }
   const min = Math.min(descriptor.min, descriptor.max);
   const max = Math.max(descriptor.min, descriptor.max);
-  const step = descriptor.step > 0 ? descriptor.step : 1;
+  const requestedCount = Math.min(MAX_OPTIMIZATION_POINT_COUNT, Math.max(2, Math.round(descriptor.pointCount) || DEFAULT_OPTIMIZATION_POINT_COUNT));
+  // Reserve one slot for the current value so "候选点数" (pointCount) means the
+  // total number of values tested, not the grid size before adding the current value.
+  const count = Math.max(1, requestedCount - 1);
   const values = [];
-  for (let value = min; value <= max + 1e-9; value += step) {
-    values.push(Math.round(value * 1000) / 1000);
-    if (values.length >= 8) break;
+  const seen = new Set();
+  const pushValue = (raw) => {
+    const rounded = descriptor.isInteger ? Math.max(1, Math.round(raw)) : Math.round(raw * 1000) / 1000;
+    if (!seen.has(rounded)) {
+      seen.add(rounded);
+      values.push(rounded);
+    }
+  };
+  // Both endpoints share the same sign and are non-zero: sample on a log scale so
+  // points cluster sensibly across a wide multiplicative range instead of a few
+  // linear jumps that skip right past the current value.
+  const sign = min > 0 && max > 0 ? 1 : (min < 0 && max < 0 ? -1 : 0);
+  if (sign !== 0) {
+    const logMin = Math.log(Math.abs(min));
+    const logMax = Math.log(Math.abs(max));
+    for (let i = 0; i < count; i += 1) {
+      const t = count > 1 ? i / (count - 1) : 0;
+      pushValue(sign * Math.exp(logMin + (logMax - logMin) * t));
+    }
+  } else {
+    const step = count > 1 ? (max - min) / (count - 1) : 0;
+    for (let i = 0; i < count; i += 1) {
+      pushValue(min + step * i);
+    }
   }
-  if (values.length === 0) values.push(descriptor.currentValue);
+  if (Number.isFinite(descriptor.currentValue)) {
+    pushValue(descriptor.isInteger ? Math.round(descriptor.currentValue) : descriptor.currentValue);
+  }
+  values.sort((a, b) => a - b);
   return values;
 }
 
-function buildOptimizationCandidates(basePreset, strategyType, paramDescriptors) {
+function buildOptimizationCandidates(basePreset, strategyType, paramDescriptors, maxCombinations) {
+  const combinationCap = Math.max(1, Math.round(Number(maxCombinations)) || MAX_OPTIMIZATION_COMBINATIONS);
   const base = {
     ...readBacktestConfig(),
     strategyType,
   };
   const candidates = [];
   const push = (config) => candidates.push(config);
+  const sourcePreset = strategyPresets[basePreset] || {};
 
-  if (strategyType === "order-grid") {
+  if (Array.isArray(paramDescriptors)) {
+    const descriptors = paramDescriptors;
+    const buildConfigForCombo = (combo) => buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descriptors, combo);
+    if (descriptors.length === 0) {
+      push(buildConfigForCombo([]));
+    } else {
+      const valueLists = descriptors.map((descriptor) => buildRangeValues(descriptor));
+      const totalCombinations = valueLists.reduce((acc, list) => acc * Math.max(1, list.length), 1);
+      if (totalCombinations <= combinationCap) {
+        let combos = [[]];
+        valueLists.forEach((values) => {
+          const next = [];
+          combos.forEach((combo) => {
+            values.forEach((value) => next.push([...combo, value]));
+          });
+          combos = next;
+        });
+        combos.forEach((combo) => push(buildConfigForCombo(combo)));
+      } else {
+        for (let i = 0; i < combinationCap; i += 1) {
+          const combo = valueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
+          push(buildConfigForCombo(combo));
+        }
+      }
+    }
+  } else if (strategyType === "order-grid") {
     [2, 3, 5].forEach((lookbackDays) => {
       [1.5, 2, 3].forEach((entryDrop) => {
         [1, 2, 3].forEach((addDrop) => {
@@ -5670,46 +6683,6 @@ function buildOptimizationCandidates(basePreset, strategyType, paramDescriptors)
         });
       });
     });
-  } else if (strategyType === "block-rules") {
-    const sourcePreset = strategyPresets[basePreset] || {};
-    const descriptors = Array.isArray(paramDescriptors) && paramDescriptors.length
-      ? paramDescriptors
-      : discoverBlockRuleParameters(sourcePreset);
-    const buildConfigForCombo = (combo) => {
-      const buyBlockRules = cloneRuleBlocks(sourcePreset.buyBlockRules, defaultBuyBlockRules);
-      const sellBlockRules = cloneRuleBlocks(sourcePreset.sellBlockRules, defaultSellBlockRules);
-      const root = { buyBlockRules, sellBlockRules };
-      descriptors.forEach((descriptor, index) => {
-        setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
-      });
-      return { ...base, buyBlockRules, sellBlockRules };
-    };
-    if (descriptors.length === 0) {
-      push({
-        ...base,
-        buyBlockRules: cloneRuleBlocks(sourcePreset.buyBlockRules, defaultBuyBlockRules),
-        sellBlockRules: cloneRuleBlocks(sourcePreset.sellBlockRules, defaultSellBlockRules),
-      });
-    } else {
-      const valueLists = descriptors.map((descriptor) => buildRangeValues(descriptor));
-      const totalCombinations = valueLists.reduce((acc, list) => acc * Math.max(1, list.length), 1);
-      if (totalCombinations <= 400) {
-        let combos = [[]];
-        valueLists.forEach((values) => {
-          const next = [];
-          combos.forEach((combo) => {
-            values.forEach((value) => next.push([...combo, value]));
-          });
-          combos = next;
-        });
-        combos.forEach((combo) => push(buildConfigForCombo(combo)));
-      } else {
-        for (let i = 0; i < 400; i += 1) {
-          const combo = valueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
-          push(buildConfigForCombo(combo));
-        }
-      }
-    }
   } else {
     [5, 10, 15, 20].forEach((waveThreshold) => {
       [20, 30, 40].forEach((firstTarget) => {
@@ -5777,8 +6750,11 @@ function describeWaveConfig(config) {
       buyRules.length
         ? `从最近确认的阶段高点开始计算回撤，达到 ${buyRules.map((rule) => `${formatPercent(rule.drop)} 调仓到 ${formatPercent(rule.target)}`).join("，")}。`
         : "当前没有启用买入规则，因此模型不会主动建仓。",
-      "每次买入不是买固定金额，而是把账户总仓位调整到该规则指定的目标仓位。"
-    ],
+      "每次买入不是买固定金额，而是把账户总仓位调整到该规则指定的目标仓位。",
+      buyRules.length > 1
+        ? "同一天如果回撤幅度同时满足多条买入规则，只按其中回撤幅度最大的那一条调仓，不会把几条规则依次都执行一遍。"
+        : ""
+    ].filter(Boolean),
     exit: [
       sellRules.length
         ? `卖出以最近一次模型买入价为参考，价格上涨到 ${sellRules.map((rule) => `${formatPercent(rule.rise)} 减仓 ${formatPercent(rule.reduce)}`).join("，")}。`
@@ -6123,9 +7099,9 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   if (!requireSignedInForSave()) return;
   const preset = strategyPresets[presetName];
   if (!preset) return;
-  const descriptors = discoverBlockRuleParameters(preset);
+  const descriptors = discoverOptimizationParameters(preset);
   blockRuleOptimizationState = { presetName, descriptors };
-  if (optimizationTitle) optimizationTitle.textContent = `${preset.label || "组合规则模型"} · 设置暴力测试范围`;
+  if (optimizationTitle) optimizationTitle.textContent = `${preset.label || getStrategyTypeLabel(preset.strategyType)} · 设置暴力测试范围`;
   if (optimizationSubtitle) optimizationSubtitle.textContent = "确认或修改每个参数的测试范围，然后点击“运行优化”。";
   if (optimizationReport) optimizationReport.innerHTML = "";
   if (optimizationNarrative) optimizationNarrative.innerHTML = "";
@@ -6134,6 +7110,12 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   renderOptimizationParamRanges(descriptors);
   if (optimizationParamRanges) optimizationParamRanges.classList.remove("hidden");
   if (runOptimizationButton) runOptimizationButton.classList.remove("hidden");
+  if (optimizationProgress) optimizationProgress.classList.add("hidden");
+  if (optimizationMaxCombinationsInput) optimizationMaxCombinationsInput.value = MAX_OPTIMIZATION_COMBINATIONS;
+  if (optimizationUniformPointCountInput) optimizationUniformPointCountInput.value = DEFAULT_OPTIMIZATION_POINT_COUNT;
+  if (optimizationUniformPointCountRow) optimizationUniformPointCountRow.classList.toggle("hidden", descriptors.length === 0);
+  if (optimizationCombinationSummary) optimizationCombinationSummary.classList.toggle("hidden", descriptors.length === 0);
+  refreshOptimizationCombinationSummary();
   if (optimizationDialog && !optimizationDialog.open) {
     if (typeof optimizationDialog.showModal === "function") {
       optimizationDialog.showModal();
@@ -6148,11 +7130,23 @@ if (runOptimizationButton) {
     if (!blockRuleOptimizationState) return;
     const { presetName, descriptors } = blockRuleOptimizationState;
     const editedDescriptors = readOptimizationParamRanges(descriptors);
+    const maxCombinations = optimizationMaxCombinationsInput
+      ? Math.max(1, Math.round(Number(optimizationMaxCombinationsInput.value)) || MAX_OPTIMIZATION_COMBINATIONS)
+      : MAX_OPTIMIZATION_COMBINATIONS;
     if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+    if (optimizationUniformPointCountRow) optimizationUniformPointCountRow.classList.add("hidden");
+    if (optimizationCombinationSummary) optimizationCombinationSummary.classList.add("hidden");
     runOptimizationButton.classList.add("hidden");
     blockRuleOptimizationState = null;
-    optimizePresetParameters(presetName, editedDescriptors);
+    optimizePresetParameters(presetName, editedDescriptors, maxCombinations);
   });
+}
+
+function setOptimizationProgress(done, total) {
+  if (!optimizationProgress) return;
+  const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  if (optimizationProgressBar) optimizationProgressBar.style.width = `${percent}%`;
+  if (optimizationProgressLabel) optimizationProgressLabel.textContent = `${percent}%（${done}/${total}）`;
 }
 
 function openOptimizationDialog(message) {
@@ -6162,9 +7156,18 @@ function openOptimizationDialog(message) {
   if (saveOptimizationButton) saveOptimizationButton.disabled = true;
   if (optimizationTitle) optimizationTitle.textContent = "参数优化中";
   if (optimizationSubtitle) optimizationSubtitle.textContent = message;
+  if (optimizationProgress) optimizationProgress.classList.remove("hidden");
+  setOptimizationProgress(0, 0);
+  if (optimizationDialog && !optimizationDialog.open) {
+    if (typeof optimizationDialog.showModal === "function") {
+      optimizationDialog.showModal();
+    } else {
+      optimizationDialog.setAttribute("open", "open");
+    }
+  }
 }
 
-function optimizePresetParameters(presetName, paramDescriptors) {
+function optimizePresetParameters(presetName, paramDescriptors, maxCombinations) {
   if (!requireSignedInForSave()) return;
   const preset = strategyPresets[presetName];
   if (!preset) return;
@@ -6188,7 +7191,7 @@ function optimizePresetParameters(presetName, paramDescriptors) {
   }
 
   const strategyType = preset.strategyType || "wave";
-  const candidates = buildOptimizationCandidates(presetName, strategyType, paramDescriptors);
+  const candidates = buildOptimizationCandidates(presetName, strategyType, paramDescriptors, maxCombinations);
   if (candidates.length === 0) {
     setStatus("这个模型没有可尝试的参数组合。", true);
     return;
@@ -6211,17 +7214,25 @@ function optimizePresetParameters(presetName, paramDescriptors) {
   let index = 0;
   let best = null;
   let baseResult = null;
-  const chunkSize = 12;
+  const chunkSize = 40;
+  const progressUpdateIntervalMs = 150;
+  let lastProgressUpdateAt = 0;
 
   openOptimizationDialog(`正在优化 ${preset.label}，共 ${candidates.length} 组参数。`);
-  setStatus(`正在尝试 ${preset.label} 的参数组合，不会打断当前模拟界面...`);
+  setStatus(`正在尝试 ${preset.label} 的参数组合...`);
 
   const runChunk = () => {
     if (runId !== activeOptimizationId) return;
     const end = Math.min(candidates.length, index + chunkSize);
     for (; index < end; index += 1) {
       const config = candidates[index];
-      const states = buildParallelBacktestStates(rowsForTest, config);
+      let states;
+      try {
+        states = buildParallelBacktestStates(rowsForTest, config);
+      } catch (error) {
+        console.error("跳过一个无法回测的候选参数组合：", error, config);
+        continue;
+      }
       const finalState = states[states.length - 1];
       if (!finalState) continue;
       const score = scoreBacktestState(finalState);
@@ -6230,14 +7241,22 @@ function optimizePresetParameters(presetName, paramDescriptors) {
       if (!best || score > best.score) best = result;
     }
 
-    if (optimizationSubtitle) {
-      optimizationSubtitle.textContent = `正在优化 ${preset.label}：${index}/${candidates.length}`;
+    const isDone = index >= candidates.length;
+    const now = Date.now();
+    if (isDone || now - lastProgressUpdateAt >= progressUpdateIntervalMs) {
+      lastProgressUpdateAt = now;
+      if (optimizationSubtitle) {
+        optimizationSubtitle.textContent = `正在优化 ${preset.label}：${index}/${candidates.length}`;
+      }
+      setOptimizationProgress(index, candidates.length);
     }
 
-    if (index < candidates.length) {
+    if (!isDone) {
       window.setTimeout(runChunk, 0);
       return;
     }
+
+    if (optimizationProgress) optimizationProgress.classList.add("hidden");
 
     if (!best || !baseResult) {
       setStatus("没有找到可用的优化结果。", true);
@@ -7744,13 +8763,7 @@ if (modelCompareTable) {
     }
     const optimizeButton = target && target.closest ? target.closest(".result-optimize-button") : null;
     if (optimizeButton) {
-      const optimizePresetName = optimizeButton.dataset.presetName;
-      const optimizePreset = strategyPresets[optimizePresetName];
-      if (optimizePreset && optimizePreset.strategyType === "block-rules") {
-        openBlockRuleOptimizationRangeEditor(optimizePresetName);
-      } else {
-        optimizePresetParameters(optimizePresetName);
-      }
+      openBlockRuleOptimizationRangeEditor(optimizeButton.dataset.presetName);
       return;
     }
     const tradesButton = target && target.closest ? target.closest(".result-trades-button") : null;
@@ -7838,7 +8851,10 @@ if (closeOptimizationButton && optimizationDialog) {
     optimizationPresetDraft = null;
     blockRuleOptimizationState = null;
     if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+    if (optimizationUniformPointCountRow) optimizationUniformPointCountRow.classList.add("hidden");
     if (runOptimizationButton) runOptimizationButton.classList.add("hidden");
+    if (optimizationProgress) optimizationProgress.classList.add("hidden");
+    if (optimizationCombinationSummary) optimizationCombinationSummary.classList.add("hidden");
     optimizationDialog.close();
   });
 }

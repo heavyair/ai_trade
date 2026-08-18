@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260817-block-rules">
+    <link rel="stylesheet" href="/styles.css?v=20260818-admin-view-rankings">
   </head>
   <body>
     <main class="shell">
@@ -107,8 +107,12 @@
               <textarea id="presetModelText" rows="5" maxlength="8000" spellcheck="false"></textarea>
             </label>
           </div>
+          <div id="blockRuleFormEditor" class="block-rule-form-editor hidden"></div>
+          <div id="blockRuleFormActions" class="block-rule-form-actions hidden">
+            <button type="button" id="refreshBlockRuleFormButton" class="ghost-button">根据下方 JSON 刷新表单</button>
+          </div>
           <label>
-            参数 JSON
+            参数 JSON<span id="presetParamEditorHint" class="field-hint hidden">（请优先使用上方表单编辑，这里的 JSON 会随表单操作自动更新）</span>
             <textarea id="presetParamEditor" rows="18" spellcheck="false"></textarea>
           </label>
           <div class="dialog-actions">
@@ -127,7 +131,17 @@
             </div>
             <button id="closeAdminButton" type="button" class="ghost-button">关闭</button>
           </div>
-          <div id="adminPresetList" class="admin-preset-list"></div>
+          <div class="auth-tabs">
+            <button id="adminPresetsTabButton" type="button" class="active">模型管理</button>
+            <button id="adminRankingsTabButton" type="button">历史测试记录</button>
+          </div>
+          <div id="adminPresetsPanel">
+            <div id="adminPresetList" class="admin-preset-list"></div>
+          </div>
+          <div id="adminRankingsPanel" class="hidden">
+            <p class="field-hint">所有 owner 的历史测试记录，按回报率从高到低排序。</p>
+            <div id="adminRankingList" class="admin-ranking-list"></div>
+          </div>
         </form>
       </dialog>
 
@@ -140,7 +154,25 @@
             </div>
             <button id="closeOptimizationButton" type="button" class="ghost-button">关闭</button>
           </div>
+          <div id="optimizationUniformPointCountRow" class="optimization-uniform-point-count hidden">
+            <label>统一候选点数（应用到全部未锁定字段）
+              <input id="optimizationUniformPointCountInput" type="number" min="2" max="200" step="1" value="11">
+            </label>
+            <button type="button" id="applyUniformPointCountButton" class="ghost-button">应用到全部</button>
+          </div>
           <div id="optimizationParamRanges" class="optimization-param-ranges hidden"></div>
+          <div id="optimizationCombinationSummary" class="optimization-combination-summary hidden">
+            <span>当前组合总可能数量：<strong id="optimizationCombinationCount">-</strong></span>
+            <label>总组合上限
+              <input id="optimizationMaxCombinationsInput" type="number" min="1" step="1" value="10000">
+            </label>
+          </div>
+          <div id="optimizationProgress" class="optimization-progress hidden">
+            <div class="optimization-progress-track">
+              <div id="optimizationProgressBar" class="optimization-progress-bar"></div>
+            </div>
+            <span id="optimizationProgressLabel" class="optimization-progress-label">0%</span>
+          </div>
           <div id="optimizationReport" class="optimization-report"></div>
           <div id="optimizationNarrative" class="optimization-narrative"></div>
           <pre id="optimizationParamPreview" class="code-preview">等待结果...</pre>
@@ -961,6 +993,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260817-block-rules"></script>
+    <script src="/app.js?v=20260818-admin-view-rankings"></script>
   </body>
 </html>

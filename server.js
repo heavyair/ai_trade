@@ -20,6 +20,8 @@ const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "t
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+const DEEPSEEK_API_KEY = String(process.env.DEEPSEEK_API_KEY || "").trim();
+const DEEPSEEK_MODEL = String(process.env.DEEPSEEK_MODEL || "deepseek-chat").trim();
 const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
@@ -402,21 +404,15 @@ function postJsonToResend(payload) {
   });
 }
 
-function postJsonToOpenAi(payload) {
-  if (!OPENAI_API_KEY) {
-    const error = new Error("AI 服务还没有配置 OPENAI_API_KEY。");
-    error.statusCode = 503;
-    throw error;
-  }
-
+function postJsonOverHttps(hostname, path, headers, payload) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const request = https.request({
       method: "POST",
-      hostname: "api.openai.com",
-      path: "/v1/responses",
+      hostname,
+      path,
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        ...headers,
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(body),
       },
@@ -473,8 +469,52 @@ function extractOpenAiText(payload) {
   return "";
 }
 
+function extractDeepSeekText(payload) {
+  const choices = payload && Array.isArray(payload.choices) ? payload.choices : [];
+  const message = choices[0] && choices[0].message;
+  return message && typeof message.content === "string" ? message.content : "";
+}
+
+async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName }) {
+  if (DEEPSEEK_API_KEY) {
+    const response = await postJsonOverHttps("api.deepseek.com", "/chat/completions", {
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    }, {
+      model: DEEPSEEK_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      response_format: { type: "json_object" },
+    });
+    return extractDeepSeekText(response);
+  }
+  if (OPENAI_API_KEY) {
+    const response = await postJsonOverHttps("api.openai.com", "/v1/responses", {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    }, {
+      model: OPENAI_MODEL,
+      input: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: schemaName,
+          schema,
+        },
+      },
+    });
+    return extractOpenAiText(response);
+  }
+  const error = new Error("AI 服务还没有配置 API Key（OPENAI_API_KEY 或 DEEPSEEK_API_KEY）。");
+  error.statusCode = 503;
+  throw error;
+}
+
 const BLOCK_RULE_INDICATORS = [
-  "drawdownFromHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
+  "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
   "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
   "positionRatio", "holdingDays",
 ];
@@ -689,14 +729,14 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件，或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，必须选这个类型，不要硬套其它模板。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
-    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(距高点回撤%)、riseFromLow(距低点反弹%)、maValue(均线偏离%)、maSlope(均线斜率%)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。action.type 只能是 targetPercent(调仓到目标百分比仓位)、targetShares(调仓到目标股数)、reducePercent(在当前仓位基础上减仓百分比)、exitAll(全部清仓，不需要 value)。",
-    "block-rules 示例——“跌超20%且8天没创新高就买1000股；连续3天10日均线下跌就清仓”对应：",
+    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(均线偏离%)、maSlope(均线斜率%)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。action.type 只能是 targetPercent(调仓到目标百分比仓位)、targetShares(调仓到目标股数)、reducePercent(在当前仓位基础上减仓百分比)、exitAll(全部清仓，不需要 value)。",
+    "block-rules 示例——“距离波浪模型最近高点跌超20%且8天没创新高就买1000股；连续3天10日均线下跌就清仓”对应（注意距离“最近高点”用的是 drawdownFromWaveHigh，不是 drawdownFromHigh）：",
     JSON.stringify({
       strategyType: "block-rules",
       buyBlockRules: [{
         enabled: true,
         conditions: [
-          { indicator: "drawdownFromHigh", lookbackDays: 60, comparator: ">", value: 20, slopeWindowDays: null, sustainedDays: null },
+          { indicator: "drawdownFromWaveHigh", lookbackDays: null, comparator: ">", value: 20, slopeWindowDays: null, sustainedDays: null },
           { indicator: "daysSinceNewHigh", lookbackDays: 20, comparator: ">=", value: 8, slopeWindowDays: null, sustainedDays: null },
         ],
         action: { type: "targetShares", value: 1000 },
@@ -711,32 +751,20 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     }),
     "不要生成 JavaScript。不要发明 App 不支持的策略类型。",
     "百分比用数字，例如 20 表示 20%。天数用交易日数量。",
+    "用户描述里如果明确提到了具体天数（例如“10日均线”“20日高点”“连续5天”），生成的 lookbackDays/slopeWindowDays/sustainedDays/buyLookbackDays 等字段必须原样使用该数字，禁止替换成其它数值；只有用户没有给出具体天数时才可以自行估算合理默认值。",
+    "严格按照以下 JSON Schema 输出一个 JSON 对象，不要有多余字段或说明文字：",
+    JSON.stringify(schema),
     `股票/标的：${symbol || "通用"}`,
     requestedLabel ? `用户指定名称：${requestedLabel}` : "",
     `用户描述：${description}`,
   ].filter(Boolean).join("\n");
 
-  const response = await postJsonToOpenAi({
-    model: OPENAI_MODEL,
-    input: [
-      {
-        role: "system",
-        content: "你是量化交易回测 App 的策略解析器。你只输出结构化 JSON，不能输出代码或解释性 Markdown。",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "ai_trade_model",
-        schema,
-      },
-    },
+  const text = await requestAiJsonModel({
+    systemPrompt: "你是量化交易回测 App 的策略解析器。你只输出结构化 JSON，不能输出代码或解释性 Markdown。",
+    userPrompt: prompt,
+    schema,
+    schemaName: "ai_trade_model",
   });
-  const text = extractOpenAiText(response);
   if (!text) {
     const error = new Error("AI 没有返回模型内容。");
     error.statusCode = 502;
@@ -1973,8 +2001,8 @@ async function handleGenerateModelApi(req, res) {
     const model = await generateModelFromDescription(description, symbol, label);
     sendJson(res, 200, {
       model,
-      modelProvider: "openai",
-      openAiModel: OPENAI_MODEL,
+      modelProvider: DEEPSEEK_API_KEY ? "deepseek" : "openai",
+      aiModel: DEEPSEEK_API_KEY ? DEEPSEEK_MODEL : OPENAI_MODEL,
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "AI 模型生成失败。" });
@@ -1995,6 +2023,30 @@ function mapAdminPresetRow(row) {
     originalText: row.original_text || meta.originalText || "",
     modelText: row.model_text || meta.modelText || row.original_text || "",
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+    config: row.config && typeof row.config === "object" ? row.config : {},
+    meta,
+  };
+}
+
+function mapAdminRankingRow(row) {
+  return {
+    key: row.key,
+    ownerEmail: row.owner_email || PUBLIC_OWNER_LABEL,
+    symbol: row.symbol,
+    symbolName: row.symbol_name,
+    periodLabel: row.period_label,
+    startDate: row.start_date ? new Date(row.start_date).toISOString().slice(0, 10) : "",
+    endDate: row.end_date ? new Date(row.end_date).toISOString().slice(0, 10) : "",
+    presetName: row.preset_name,
+    presetLabel: row.preset_label,
+    strategyType: row.strategy_type,
+    returnRate: Number(row.return_rate) || 0,
+    annualizedReturn: Number(row.annualized_return) || 0,
+    buyHoldReturnRate: Number(row.buy_hold_return_rate) || 0,
+    excessReturn: Number(row.excess_return) || 0,
+    maxDrawdown: Number(row.max_drawdown) || 0,
+    trades: row.trades || 0,
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
   };
 }
@@ -2092,6 +2144,30 @@ async function handleAdminPresetsApi(req, res) {
     }
 
     sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+async function handleAdminRankingsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT ranking_records.*, users.email AS owner_email
+      FROM ranking_records
+      LEFT JOIN users ON users.id = ranking_records.owner_user_id
+      WHERE ranking_records.hidden_at IS NULL
+      ORDER BY ranking_records.return_rate DESC
+      LIMIT 3000
+    `);
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      records: result.rows.map(mapAdminRankingRow),
+    });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
   }
@@ -3078,8 +3154,22 @@ function serveStatic(req, res, requestUrl) {
   });
 }
 
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception (server stays up):", error);
+});
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection (server stays up):", error);
+});
+
 const server = http.createServer((req, res) => {
-  const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  let requestUrl;
+  try {
+    requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  } catch (error) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Bad Request");
+    return;
+  }
 
   if (requestUrl.pathname === "/api/klines") {
     handleApi(req, res, requestUrl);
@@ -3103,6 +3193,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/presets") {
     handleAdminPresetsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/rankings") {
+    handleAdminRankingsApi(req, res);
     return;
   }
 
