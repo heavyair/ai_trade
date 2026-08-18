@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260818-admin-view-rankings">
+    <link rel="stylesheet" href="/styles.css?v=20260818-view-generated-params">
   </head>
   <body>
     <main class="shell">
@@ -49,14 +49,14 @@
         </div>
       </section>
 
-      <section id="newModelPage" class="wizard-page" data-wizard-page="new-model" aria-label="新建模型">
-        <form id="customModelForm" class="model-dialog-body">
+      <dialog id="newModelDialog" class="param-dialog" aria-label="新建模型">
+        <form id="customModelForm" class="param-dialog-body">
           <div class="dialog-head">
             <div>
               <h2 data-i18n="newModel">新建模型</h2>
               <p data-i18n="newModelSubtitle">用文字描述买卖规则，AI 会理解并生成受限的客户端模型预设。</p>
             </div>
-            <button class="ghost-button return-nav-button" type="button" data-i18n="backToNav">返回功能导航</button>
+            <button id="closeNewModelButton" class="ghost-button" type="button">关闭</button>
           </div>
           <div id="newModelAuthNote" class="auth-required-note hidden" data-i18n="newModelAuthNote">保存新模型需要免费注册、登录并验证电子邮件。模型会按电子邮件账户保存到服务器端。</div>
           <label>
@@ -75,12 +75,13 @@
           </div>
           <div class="dialog-actions">
             <button id="generateModelCodeButton" type="button" data-i18n="generateSafeModel">生成安全模型</button>
+            <button id="viewGeneratedModelParamsButton" type="button" class="ghost-button" disabled>查看参数</button>
             <button id="saveGeneratedModelButton" type="button" disabled data-i18n="saveAsPreset">保存为预设</button>
           </div>
           <div class="security-note" data-i18n="securityNote">安全策略：不会执行任意 JavaScript，不使用 eval / Function。AI 只生成受支持模型的参数 JSON，浏览器用受控回测引擎运行。</div>
           <pre id="generatedModelCode" class="code-preview" data-i18n="waitingGeneration">等待生成...</pre>
         </form>
-      </section>
+      </dialog>
 
       <dialog id="presetParamDialog" class="param-dialog">
         <form method="dialog" class="param-dialog-body">
@@ -993,6 +994,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260818-admin-view-rankings"></script>
+    <script src="/app.js?v=20260818-view-generated-params"></script>
   </body>
 </html>

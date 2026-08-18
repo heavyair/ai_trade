@@ -14,6 +14,8 @@ const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
 const simulationProgressButtons = Array.from(document.querySelectorAll("[data-simulation-step]"));
 const historyPanels = Array.from(document.querySelectorAll("[data-history-panel]"));
 const returnNavButtons = Array.from(document.querySelectorAll(".return-nav-button"));
+const newModelDialog = document.querySelector("#newModelDialog");
+const closeNewModelButton = document.querySelector("#closeNewModelButton");
 const authDialog = document.querySelector("#authDialog");
 const authForm = document.querySelector("#authForm");
 const authStatusText = document.querySelector("#authStatusText");
@@ -130,6 +132,7 @@ const customModelCreatorInput = document.querySelector("#customModelCreatorInput
 const customModelLabelInput = document.querySelector("#customModelLabelInput");
 const generateModelCodeButton = document.querySelector("#generateModelCodeButton");
 const saveGeneratedModelButton = document.querySelector("#saveGeneratedModelButton");
+const viewGeneratedModelParamsButton = document.querySelector("#viewGeneratedModelParamsButton");
 const generatedModelCode = document.querySelector("#generatedModelCode");
 const tradeDetailPanel = document.querySelector("#tradeDetailPanel");
 const localLadderPanel = document.querySelector("#localLadderPanel");
@@ -1827,6 +1830,11 @@ function setSimulationStep(stepName) {
 }
 
 function setWizardPage(pageName) {
+  if (pageName === "new-model") {
+    showDialog(newModelDialog);
+    return;
+  }
+  closeDialog(newModelDialog);
   const nextPage = pageName || "simulation";
   wizardButtons.forEach((button) => {
     const isActive = button.dataset.wizardTarget === nextPage;
@@ -1861,6 +1869,17 @@ function resetGeneratedModelDraft() {
   generatedPresetDraft = null;
   if (generatedModelCode) generatedModelCode.textContent = t("waitingGeneration");
   if (saveGeneratedModelButton) saveGeneratedModelButton.disabled = true;
+  if (viewGeneratedModelParamsButton) viewGeneratedModelParamsButton.disabled = true;
+}
+
+function openGeneratedModelParamsViewer() {
+  if (!generatedPresetDraft || !generatedPresetDraft.preset) return;
+  openPresetParamEditor("__generated_model_draft__", {
+    preset: generatedPresetDraft.preset,
+    readonly: true,
+    title: `查看参数：${generatedPresetDraft.preset.label || "生成的模型"}`,
+    subtitle: "这是刚生成、还未保存的模型草稿，只读预览。",
+  });
 }
 
 function renderRuleInputs(presetName = "optimized") {
@@ -8598,6 +8617,12 @@ if (closeTradeDetailButton && tradeDetailDialog) {
   });
 }
 
+if (closeNewModelButton && newModelDialog) {
+  closeNewModelButton.addEventListener("click", () => {
+    closeDialog(newModelDialog);
+  });
+}
+
 wizardButtons.forEach((button) => {
   button.addEventListener("click", () => {
     if (button.dataset.wizardTarget === "new-model") {
@@ -8886,8 +8911,15 @@ if (generateModelCodeButton) {
     }
     generatedPresetDraft = createSafePresetDraft(description, aiPatch);
     if (generatedModelCode) generatedModelCode.textContent = generatedPresetDraft.code;
+    if (viewGeneratedModelParamsButton) viewGeneratedModelParamsButton.disabled = false;
     setStatus(aiPatch ? "AI 已理解模型描述，并生成安全模型预设。" : fallbackMessage);
     syncModelAuthoringControls();
+  });
+}
+
+if (viewGeneratedModelParamsButton) {
+  viewGeneratedModelParamsButton.addEventListener("click", () => {
+    openGeneratedModelParamsViewer();
   });
 }
 

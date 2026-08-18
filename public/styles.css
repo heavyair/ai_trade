@@ -2068,23 +2068,6 @@ button:disabled {
   background: var(--panel);
 }
 
-.model-dialog::backdrop {
-  background: rgba(24, 34, 48, 0.42);
-}
-
-.model-dialog-body {
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-}
-
-#newModelPage .model-dialog-body {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
-}
-
 .dialog-head {
   display: flex;
   justify-content: space-between;
