@@ -1755,6 +1755,43 @@ button:disabled {
   font-weight: 700;
 }
 
+.admin-scan-sort-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-scan-sort-header:hover {
+  color: var(--accent);
+}
+
+.admin-scan-sort-header.active {
+  color: var(--accent);
+}
+
+.admin-scan-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #344054;
+}
+
+.admin-scan-filter-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-scan-filter-row input {
+  width: 90px;
+  padding: 5px 8px;
+  border: 1px solid #d6dfe8;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
 .selected-model-detail > strong {
   font-size: 15px;
 }

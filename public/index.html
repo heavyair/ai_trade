@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-scan-pagination">
+    <link rel="stylesheet" href="/styles.css?v=20260819-scan-sort-filter">
   </head>
   <body>
     <main class="shell">
@@ -146,7 +146,18 @@
             <div id="adminRankingList" class="admin-ranking-list"></div>
           </div>
           <div id="adminScanPanel" class="hidden">
-            <p class="field-hint">后台批量参数优化扫描结果：对每只标的用现有模型重新优化参数，按优化后收益率从高到低排序。</p>
+            <p class="field-hint">后台批量参数优化扫描结果：对每只标的用现有模型重新优化参数。点击表头可排序。</p>
+            <div id="adminScanFilterRow" class="admin-scan-filter-row">
+              <label>全仓买入持有收益率上限(%)
+                <input id="adminScanFilterBuyHoldMax" type="number" step="1" placeholder="不限" value="50">
+              </label>
+              <label>优化后收益率下限(%)
+                <input id="adminScanFilterBestReturnMin" type="number" step="1" placeholder="不限" value="100">
+              </label>
+              <button type="button" id="adminScanApplyFilterButton" class="ghost-button">应用筛选</button>
+              <button type="button" id="adminScanClearFilterButton" class="ghost-button">清除筛选</button>
+              <span id="adminScanFilterSummary" class="field-hint"></span>
+            </div>
             <div id="adminScanList" class="admin-ranking-list"></div>
           </div>
           <div id="adminScanStatusPanel" class="hidden">
@@ -1011,6 +1022,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-scan-pagination"></script>
+    <script src="/app.js?v=20260819-scan-sort-filter"></script>
   </body>
 </html>

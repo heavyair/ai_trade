@@ -112,6 +112,11 @@ const adminScanPanel = document.querySelector("#adminScanPanel");
 const adminScanStatusPanel = document.querySelector("#adminScanStatusPanel");
 const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
+const adminScanFilterBuyHoldMaxInput = document.querySelector("#adminScanFilterBuyHoldMax");
+const adminScanFilterBestReturnMinInput = document.querySelector("#adminScanFilterBestReturnMin");
+const adminScanApplyFilterButton = document.querySelector("#adminScanApplyFilterButton");
+const adminScanClearFilterButton = document.querySelector("#adminScanClearFilterButton");
+const adminScanFilterSummary = document.querySelector("#adminScanFilterSummary");
 const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary");
 const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
@@ -1332,6 +1337,56 @@ async function loadAdminRankings() {
 let adminScanCache = [];
 let adminScanPage = 0;
 const adminScanPageSize = 10;
+let adminScanSortKey = "bestReturnRate";
+let adminScanSortDirection = "desc";
+let adminScanFilterBuyHoldMax = 50;
+let adminScanFilterBestReturnMin = 100;
+
+const ADMIN_SCAN_COLUMNS = [
+  { key: "symbolName", label: "标的" },
+  { key: "presetLabel", label: "模型" },
+  { key: "strategyType", label: "类型" },
+  { key: "baselineReturnRate", label: "原参数收益率" },
+  { key: "bestReturnRate", label: "优化后收益率" },
+  { key: "improvement", label: "提升" },
+  { key: "bestMaxDrawdown", label: "最大回撤" },
+  { key: "buyHoldReturnRate", label: "全仓买入持有收益率" },
+  { key: "vsBuyHold", label: "跑赢买入持有" },
+  { key: "bestTrades", label: "交易次数" },
+  { key: "testedCandidates", label: "测试组合数" },
+  { key: "scannedAt", label: "扫描时间" },
+];
+
+function getAdminScanSortValue(record, key) {
+  if (key === "improvement") return record.bestReturnRate - record.baselineReturnRate;
+  if (key === "vsBuyHold") return record.bestReturnRate - record.buyHoldReturnRate;
+  if (key === "symbolName") return record.symbolName || record.symbol || "";
+  if (key === "presetLabel") return record.presetLabel || "";
+  if (key === "strategyType") return getStrategyTypeLabel(record.strategyType || "wave");
+  if (key === "scannedAt") return record.scannedAt || "";
+  return Number(record[key]) || 0;
+}
+
+function filterAdminScanRecords(records) {
+  return records.filter((record) => {
+    if (Number.isFinite(adminScanFilterBuyHoldMax) && !(record.buyHoldReturnRate < adminScanFilterBuyHoldMax)) return false;
+    if (Number.isFinite(adminScanFilterBestReturnMin) && !(record.bestReturnRate > adminScanFilterBestReturnMin)) return false;
+    return true;
+  });
+}
+
+function sortAdminScanRecords(records) {
+  const key = adminScanSortKey;
+  const dir = adminScanSortDirection === "asc" ? 1 : -1;
+  return [...records].sort((a, b) => {
+    const va = getAdminScanSortValue(a, key);
+    const vb = getAdminScanSortValue(b, key);
+    if (typeof va === "string" || typeof vb === "string") {
+      return dir * String(va).localeCompare(String(vb), "zh-CN");
+    }
+    return dir * (va - vb);
+  });
+}
 
 function renderAdminScanPagination(page, pageCount, totalRecords) {
   if (pageCount <= 1) return "";
@@ -1346,17 +1401,27 @@ function renderAdminScanPagination(page, pageCount, totalRecords) {
   `;
 }
 
-function renderAdminScanList(records = []) {
+function renderAdminScanList() {
   if (!adminScanList) return;
-  if (!records.length) {
-    adminScanList.innerHTML = '<div class="ranking-empty">还没有后台优化扫描结果。</div>';
+
+  if (adminScanFilterSummary) {
+    const activeFilters = Number.isFinite(adminScanFilterBuyHoldMax) || Number.isFinite(adminScanFilterBestReturnMin);
+    adminScanFilterSummary.textContent = activeFilters
+      ? `共 ${adminScanCache.length} 条，符合筛选条件 ${filterAdminScanRecords(adminScanCache).length} 条`
+      : `共 ${adminScanCache.length} 条`;
+  }
+
+  const filtered = filterAdminScanRecords(adminScanCache);
+  if (!filtered.length) {
+    adminScanList.innerHTML = `<div class="ranking-empty">${adminScanCache.length ? "没有符合筛选条件的记录。" : "还没有后台优化扫描结果。"}</div>`;
     return;
   }
-  const pageCount = Math.max(1, Math.ceil(records.length / adminScanPageSize));
+  const sorted = sortAdminScanRecords(filtered);
+  const pageCount = Math.max(1, Math.ceil(sorted.length / adminScanPageSize));
   adminScanPage = Math.min(Math.max(0, adminScanPage), pageCount - 1);
   const pageStart = adminScanPage * adminScanPageSize;
-  const pageRecords = records.slice(pageStart, pageStart + adminScanPageSize);
-  const paginationHtml = renderAdminScanPagination(adminScanPage, pageCount, records.length);
+  const pageRecords = sorted.slice(pageStart, pageStart + adminScanPageSize);
+  const paginationHtml = renderAdminScanPagination(adminScanPage, pageCount, sorted.length);
   const rows = pageRecords.map((record) => {
     const improvement = record.bestReturnRate - record.baselineReturnRate;
     const improvementClass = improvement > 0 ? "up" : improvement < 0 ? "down" : "";
@@ -1381,23 +1446,17 @@ function renderAdminScanList(records = []) {
       </tr>
     `;
   }).join("");
+  const headerCells = ADMIN_SCAN_COLUMNS.map((column) => {
+    const active = adminScanSortKey === column.key;
+    const arrow = active ? (adminScanSortDirection === "asc" ? " ▲" : " ▼") : "";
+    return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-admin-scan-sort-key="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
+  }).join("");
   adminScanList.innerHTML = `
     ${paginationHtml}
     <table class="admin-ranking-table">
       <thead>
         <tr>
-          <th>标的</th>
-          <th>模型</th>
-          <th>类型</th>
-          <th>原参数收益率</th>
-          <th>优化后收益率</th>
-          <th>提升</th>
-          <th>最大回撤</th>
-          <th>全仓买入持有收益率</th>
-          <th>跑赢买入持有</th>
-          <th>交易次数</th>
-          <th>测试组合数</th>
-          <th>扫描时间</th>
+          ${headerCells}
           <th></th>
         </tr>
       </thead>
@@ -1415,7 +1474,7 @@ async function loadAdminScanResults() {
     const payload = await readJsonResponse(response, "读取后台优化扫描结果失败。");
     adminScanCache = Array.isArray(payload.records) ? payload.records : [];
     adminScanPage = 0;
-    renderAdminScanList(adminScanCache);
+    renderAdminScanList();
   } catch (error) {
     adminScanList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
@@ -1449,8 +1508,47 @@ if (adminScanList) {
     const pageButton = target && target.closest ? target.closest(".admin-scan-page-button") : null;
     if (pageButton) {
       adminScanPage = Math.max(0, Number(pageButton.dataset.adminScanPage) || 0);
-      renderAdminScanList(adminScanCache);
+      renderAdminScanList();
+      return;
     }
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header") : null;
+    if (sortHeader) {
+      const key = sortHeader.dataset.adminScanSortKey;
+      if (adminScanSortKey === key) {
+        adminScanSortDirection = adminScanSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        adminScanSortKey = key;
+        adminScanSortDirection = "desc";
+      }
+      adminScanPage = 0;
+      renderAdminScanList();
+    }
+  });
+}
+
+function readAdminScanFilterInput(input) {
+  if (!input || input.value.trim() === "") return null;
+  const value = Number(input.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+if (adminScanApplyFilterButton) {
+  adminScanApplyFilterButton.addEventListener("click", () => {
+    adminScanFilterBuyHoldMax = readAdminScanFilterInput(adminScanFilterBuyHoldMaxInput);
+    adminScanFilterBestReturnMin = readAdminScanFilterInput(adminScanFilterBestReturnMinInput);
+    adminScanPage = 0;
+    renderAdminScanList();
+  });
+}
+
+if (adminScanClearFilterButton) {
+  adminScanClearFilterButton.addEventListener("click", () => {
+    adminScanFilterBuyHoldMax = null;
+    adminScanFilterBestReturnMin = null;
+    if (adminScanFilterBuyHoldMaxInput) adminScanFilterBuyHoldMaxInput.value = "";
+    if (adminScanFilterBestReturnMinInput) adminScanFilterBestReturnMinInput.value = "";
+    adminScanPage = 0;
+    renderAdminScanList();
   });
 }
 
