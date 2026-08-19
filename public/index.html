@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-rerun-outer-trycatch">
+    <link rel="stylesheet" href="/styles.css?v=20260819-rerun-reuse-charts">
   </head>
   <body>
     <main class="shell">
@@ -188,10 +188,18 @@
             <button type="button" id="adminRerunZoomInButton" class="ghost-button">放大</button>
             <span id="adminRerunProgressLabel" class="field-hint"></span>
           </div>
-          <div id="adminRerunChart" class="admin-rerun-chart"></div>
-          <div id="adminRerunMetrics" class="optimization-report"></div>
-          <div class="section-label">下单明细</div>
+          <div class="trade-price-wrap">
+            <svg id="adminRerunChartSvg" role="img" aria-label="回测价格曲线和下单标记"></svg>
+          </div>
+          <div class="section-label">下单明细（点击一行查看该笔交易详情）</div>
           <div id="adminRerunTradeList" class="admin-ranking-list"></div>
+          <div id="adminRerunTradeDetailPanel" class="admin-rerun-trade-detail hidden">
+            <strong id="adminRerunTradeDetailTitle"></strong>
+            <div class="trade-price-wrap">
+              <svg id="adminRerunTradeDetailChart" role="img" aria-label="所选交易详情曲线"></svg>
+            </div>
+          </div>
+          <div id="adminRerunMetrics" class="optimization-report"></div>
         </form>
       </dialog>
 
@@ -1048,6 +1056,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-rerun-outer-trycatch"></script>
+    <script src="/app.js?v=20260819-rerun-reuse-charts"></script>
   </body>
 </html>

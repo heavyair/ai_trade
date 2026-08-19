@@ -1773,43 +1773,13 @@ button:disabled {
   gap: 8px;
 }
 
-.admin-rerun-chart {
-  width: 100%;
-  height: 340px;
-  border: 1px solid #e5ebf3;
+.admin-rerun-trade-detail {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #dce8ec;
   border-radius: 8px;
-  background: #fbfcff;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.admin-rerun-chart svg {
-  display: block;
-  height: 340px;
-}
-
-.admin-rerun-chart .rerun-price-line {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.6;
-}
-
-.admin-rerun-chart .rerun-axis {
-  stroke: #e5ebf3;
-  stroke-width: 1;
-}
-
-.admin-rerun-chart .rerun-axis-text {
-  fill: var(--muted);
-  font-size: 10px;
-}
-
-.admin-rerun-chart .rerun-buy-marker {
-  fill: #1a8f5a;
-}
-
-.admin-rerun-chart .rerun-sell-marker {
-  fill: #c0392b;
+  background: #f8fbfc;
 }
 
 .admin-scan-sort-header:hover {
@@ -1968,7 +1938,9 @@ button:disabled {
 }
 
 #returnCompareChart,
-#tradePriceChart {
+#tradePriceChart,
+#adminRerunChartSvg,
+#adminRerunTradeDetailChart {
   display: block;
   width: 100%;
   height: 100%;

@@ -131,9 +131,12 @@ const adminRerunZoomOutButton = document.querySelector("#adminRerunZoomOutButton
 const adminRerunZoomResetButton = document.querySelector("#adminRerunZoomResetButton");
 const adminRerunZoomInButton = document.querySelector("#adminRerunZoomInButton");
 const adminRerunProgressLabel = document.querySelector("#adminRerunProgressLabel");
-const adminRerunChart = document.querySelector("#adminRerunChart");
+const adminRerunChartSvg = document.querySelector("#adminRerunChartSvg");
 const adminRerunMetrics = document.querySelector("#adminRerunMetrics");
 const adminRerunTradeList = document.querySelector("#adminRerunTradeList");
+const adminRerunTradeDetailPanel = document.querySelector("#adminRerunTradeDetailPanel");
+const adminRerunTradeDetailTitle = document.querySelector("#adminRerunTradeDetailTitle");
+const adminRerunTradeDetailChart = document.querySelector("#adminRerunTradeDetailChart");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -1559,65 +1562,15 @@ function stopAdminRerunPlayback() {
   if (adminRerunPauseButton) adminRerunPauseButton.disabled = true;
 }
 
-function buildAdminRerunChartSvg(rows, upToIndex, trades, zoom = 1) {
-  const baseWidth = adminRerunChart ? Math.max(640, Math.round(adminRerunChart.getBoundingClientRect().width) || 860) : 860;
-  const width = Math.round(baseWidth * zoom);
-  const height = 340;
-  const pad = { top: 20, right: 20, bottom: 26, left: 56 };
-  const innerWidth = width - pad.left - pad.right;
-  const innerHeight = height - pad.top - pad.bottom;
-  const highs = rows.map((row) => row.high);
-  const lows = rows.map((row) => row.low);
-  const max = Math.max(...highs);
-  const min = Math.min(...lows);
-  const spread = max - min || max * 0.02 || 1;
-  const yMax = max + spread * 0.06;
-  const yMin = Math.max(0, min - spread * 0.06);
-  const scaleY = (value) => pad.top + ((yMax - value) / (yMax - yMin)) * innerHeight;
-
-  const visibleRows = rows.slice(0, upToIndex + 1);
-  const linePath = visibleRows
-    .map((row, index) => {
-      const command = index === 0 ? "M" : "L";
-      return `${command}${pointX(index, rows.length, pad.left, innerWidth).toFixed(2)},${scaleY(row.close).toFixed(2)}`;
-    })
-    .join(" ");
-
-  const priceTicks = Array.from({ length: 4 }, (_, index) => yMin + ((yMax - yMin) / 3) * index);
-  const priceTickNodes = priceTicks.map((value) => `
-    <line class="rerun-axis" x1="${pad.left}" y1="${scaleY(value).toFixed(2)}" x2="${width - pad.right}" y2="${scaleY(value).toFixed(2)}"></line>
-    <text class="rerun-axis-text" x="4" y="${(scaleY(value) + 3).toFixed(2)}">${formatPrice(value)}</text>
-  `).join("");
-
-  const visibleTrades = (trades || []).filter((trade) => Number.isInteger(trade.rowIndex) && trade.rowIndex <= upToIndex);
-  const markerNodes = visibleTrades.map((trade) => {
-    const x = pointX(trade.rowIndex, rows.length, pad.left, innerWidth);
-    const y = scaleY(trade.price);
-    const isBuy = trade.side === "buy";
-    return `<circle class="${isBuy ? "rerun-buy-marker" : "rerun-sell-marker"}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="4"></circle>`;
-  }).join("");
-
-  const currentRow = rows[upToIndex];
-  const dateLabel = currentRow
-    ? `<text class="rerun-axis-text" x="${width - pad.right - 90}" y="${pad.top + 12}">${escapeHtml(currentRow.date)}</text>`
-    : "";
-
-  return `
-    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      ${priceTickNodes}
-      <path class="rerun-price-line" d="${linePath}"></path>
-      ${markerNodes}
-      ${dateLabel}
-    </svg>
-  `;
-}
-
 function renderAdminRerunTradeListHtml(trades) {
   if (!trades || trades.length === 0) {
     return '<div class="ranking-empty">还没有产生交易。</div>';
   }
-  const rows = trades.slice().reverse().map((trade) => `
-    <tr class="${trade.side}">
+  // Reversed (most recent first) to match renderTradeLog's convention; data-trade-index
+  // indexes into this same reversed order so the click handler can look the row back up.
+  const reversed = trades.slice().reverse();
+  const rows = reversed.map((trade, index) => `
+    <tr class="${trade.side}" data-trade-index="${index}">
       <td>${escapeHtml(trade.date)}</td>
       <td>${trade.side === "buy" ? "买入" : "卖出"}</td>
       <td>${formatPrice(trade.price)}</td>
@@ -1645,13 +1598,37 @@ function renderAdminRerunTradeListHtml(trades) {
   `;
 }
 
+function openAdminRerunTradeDetail(trade) {
+  if (!adminRerunState || !trade) return;
+  if (adminRerunTradeDetailPanel) adminRerunTradeDetailPanel.classList.remove("hidden");
+  if (adminRerunTradeDetailTitle) {
+    adminRerunTradeDetailTitle.textContent = `${trade.date} ${trade.label} ${formatPrice(trade.price)} · ${trade.reason || ""}`;
+  }
+  if (!adminRerunTradeDetailChart) return;
+  const visibleStates = adminRerunState.states.slice(0, adminRerunState.index + 1);
+  drawTradePriceChartInto(adminRerunTradeDetailChart, 4, visibleStates, {
+    selectedTrade: trade,
+    strategyType: adminRerunState.strategyType,
+  });
+  window.requestAnimationFrame(() => {
+    const wrap = adminRerunTradeDetailChart.parentElement;
+    if (!wrap) return;
+    const count = Math.max(1, adminRerunState.rows.length - 1);
+    const rowIndex = Math.max(0, Math.min(Number(trade.rowIndex) || 0, count));
+    const ratio = rowIndex / count;
+    wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) * ratio - wrap.clientWidth * 0.35);
+  });
+}
+
 function renderAdminRerunFrame() {
   if (!adminRerunState) return;
-  const { rows, states, index } = adminRerunState;
+  const { rows, states, index, allTrades } = adminRerunState;
   const state = states[index];
 
   try {
-    if (adminRerunChart) adminRerunChart.innerHTML = buildAdminRerunChartSvg(rows, index, state.trades, adminRerunChartZoom);
+    if (adminRerunChartSvg) {
+      drawModelOrderPriceChartInto(adminRerunChartSvg, rows, allTrades, { zoom: adminRerunChartZoom, upToIndex: index });
+    }
   } catch (error) {
     console.error("重跑图表渲染失败：", error);
   }
@@ -1667,6 +1644,7 @@ function renderAdminRerunFrame() {
     if (adminRerunTradeList && trades.length !== adminRerunState.lastRenderedTradeCount) {
       adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(trades);
       adminRerunState.lastRenderedTradeCount = trades.length;
+      adminRerunState.lastRenderedTrades = trades.slice().reverse();
     }
   } catch (error) {
     console.error("重跑交易明细渲染失败：", error);
@@ -1737,10 +1715,11 @@ async function openAdminRerun(scanId) {
   adminRerunState = null;
   if (adminRerunTitle) adminRerunTitle.textContent = `重新运行：${record.symbolName || record.symbol}（${record.presetLabel}）`;
   if (adminRerunSubtitle) adminRerunSubtitle.textContent = "正在加载历史数据...";
-  if (adminRerunChart) adminRerunChart.innerHTML = "";
+  if (adminRerunChartSvg) adminRerunChartSvg.innerHTML = "";
   if (adminRerunTradeList) adminRerunTradeList.innerHTML = "";
   if (adminRerunMetrics) adminRerunMetrics.innerHTML = "";
   if (adminRerunProgressLabel) adminRerunProgressLabel.textContent = "";
+  if (adminRerunTradeDetailPanel) adminRerunTradeDetailPanel.classList.add("hidden");
   showDialog(adminRerunDialog);
 
   try {
@@ -1765,7 +1744,12 @@ async function openAdminRerun(scanId) {
       codeInput.value = savedCode;
     }
 
-    adminRerunState = { rows, states, index: 0, playing: false, timerId: null, lastRenderedTradeCount: -1 };
+    const finalTrades = Array.isArray(states[states.length - 1].trades) ? states[states.length - 1].trades : [];
+    adminRerunState = {
+      rows, states, index: 0, playing: false, timerId: null,
+      lastRenderedTradeCount: -1, lastRenderedTrades: [],
+      allTrades: finalTrades, strategyType: record.strategyType || config.strategyType || "wave",
+    };
     adminRerunChartZoom = 1;
     if (adminRerunSubtitle) {
       adminRerunSubtitle.textContent = `${rows.length} 个交易日 · ${start} 至 ${end} · 初始资金 ¥2,000,000 · 数据源 ${result.source || ""}`;
@@ -1803,6 +1787,15 @@ if (adminRerunZoomResetButton) {
 }
 if (adminRerunZoomInButton) {
   adminRerunZoomInButton.addEventListener("click", () => setAdminRerunChartZoom(adminRerunChartZoom + 1));
+}
+if (adminRerunTradeList) {
+  adminRerunTradeList.addEventListener("click", (event) => {
+    const target = event.target;
+    const row = target && target.closest ? target.closest("[data-trade-index]") : null;
+    if (!row || !adminRerunState) return;
+    const trade = adminRerunState.lastRenderedTrades[Number(row.dataset.tradeIndex)];
+    if (trade) openAdminRerunTradeDetail(trade);
+  });
 }
 
 if (adminScanList) {
@@ -8340,22 +8333,26 @@ function buildSelectedTradeContext(rows, finalState, trade) {
 }
 
 function drawTradePriceChart(states, options = {}) {
+  drawTradePriceChartInto(tradePriceChart, tradePriceZoom, states, options);
+}
+
+function drawTradePriceChartInto(target, zoom, states, options = {}) {
   const usableStates = states.filter((state) => state && state.row);
-  const rect = tradePriceChart.parentElement
-    ? tradePriceChart.parentElement.getBoundingClientRect()
-    : tradePriceChart.getBoundingClientRect();
+  const rect = target.parentElement
+    ? target.parentElement.getBoundingClientRect()
+    : target.getBoundingClientRect();
   const viewportWidth = Math.max(720, Math.round(rect.width));
-  const width = Math.round(viewportWidth * tradePriceZoom);
+  const width = Math.round(viewportWidth * zoom);
   const height = Math.max(280, Math.round(rect.height));
   const pad = { top: 26, right: 74, bottom: 42, left: 58 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
 
-  tradePriceChart.style.width = `${width}px`;
-  tradePriceChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  target.style.width = `${width}px`;
+  target.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
   if (usableStates.length === 0) {
-    tradePriceChart.innerHTML = `
+    target.innerHTML = `
       <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
       <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">点击模型或交易记录后显示价格曲线</text>
     `;
@@ -8369,7 +8366,7 @@ function drawTradePriceChart(states, options = {}) {
   const trades = selectedTrade ? [selectedTrade] : [];
   const waveHighs = tradeContext ? tradeContext.highs : [];
   const indicatorLows = tradeContext ? tradeContext.lows : [];
-  const indicatorType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
+  const indicatorType = options.strategyType || (indicatorModelSelect ? indicatorModelSelect.value : "wave");
   const highPointLabel = indicatorType === "local-high-ladder"
     ? "近端高点"
     : indicatorType === "ma-rsi-band"
@@ -8507,7 +8504,7 @@ function drawTradePriceChart(states, options = {}) {
     })
     .join("");
 
-  tradePriceChart.innerHTML = `
+  target.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
     ${ticks
       .map((value) => {
@@ -8541,29 +8538,42 @@ function drawTradePriceChart(states, options = {}) {
 function drawModelOrderPriceChart(result) {
   if (!modelOrderPriceChart) return;
   const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
-  const rect = modelOrderPriceChart.parentElement
-    ? modelOrderPriceChart.parentElement.getBoundingClientRect()
-    : modelOrderPriceChart.getBoundingClientRect();
+  const rows = usableStates.map((state) => state.row);
+  const trades = withTradeModelLabel(result.finalState.trades || [], result.label);
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades);
+}
+
+// Shared by the main "模型对比" order chart and the admin scan re-run replay: draws a
+// full price line with buy/sell trade dots. `options.upToIndex` lets a caller reveal
+// the line/markers progressively while keeping the axes (computed from the full `rows`)
+// stable across frames, so a partial reveal doesn't rescale/jump as more data appears.
+function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
+  if (!target) return;
+  const zoom = options.zoom || 1.35;
+  const rect = target.parentElement
+    ? target.parentElement.getBoundingClientRect()
+    : target.getBoundingClientRect();
   const viewportWidth = Math.max(720, Math.round(rect.width));
-  const width = Math.round(viewportWidth * 1.35);
+  const width = Math.round(viewportWidth * zoom);
   const height = Math.max(280, Math.round(rect.height));
   const pad = { top: 24, right: 74, bottom: 42, left: 58 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
 
-  modelOrderPriceChart.style.width = `${width}px`;
-  modelOrderPriceChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  target.style.width = `${width}px`;
+  target.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-  if (usableStates.length === 0) {
-    modelOrderPriceChart.innerHTML = `
+  if (rows.length === 0) {
+    target.innerHTML = `
       <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
-      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">点击交易记录按钮后显示下单价格曲线</text>
+      <text class="tick-label" x="${width / 2}" y="${height / 2}" text-anchor="middle">${escapeHtml(options.emptyMessage || "点击交易记录按钮后显示下单价格曲线")}</text>
     `;
     return;
   }
 
-  const rows = usableStates.map((state) => state.row);
-  const trades = withTradeModelLabel(result.finalState.trades || [], result.label);
+  const upToIndex = Number.isInteger(options.upToIndex) ? Math.max(0, Math.min(options.upToIndex, rows.length - 1)) : rows.length - 1;
+  const visibleRows = rows.slice(0, upToIndex + 1);
+  const visibleTrades = trades.filter((trade) => Number.isInteger(trade.rowIndex) && trade.rowIndex <= upToIndex);
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
   trades.forEach((trade) => priceValues.push(trade.price));
   const max = Math.max(...priceValues);
@@ -8573,7 +8583,7 @@ function drawModelOrderPriceChart(result) {
   const yMin = Math.max(0, min - spread * 0.12);
   const scaleY = (value) => pad.top + ((yMax - value) / (yMax - yMin)) * innerHeight;
   const xForIndex = (index) => pointX(index, rows.length, pad.left, innerWidth);
-  const pricePath = rows
+  const pricePath = visibleRows
     .map((row, index) => `${index === 0 ? "M" : "L"}${xForIndex(index).toFixed(2)},${scaleY(row.close).toFixed(2)}`)
     .join(" ");
   const ticks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
@@ -8582,7 +8592,7 @@ function drawModelOrderPriceChart(result) {
     Math.floor((rows.length - 1) * 0.5),
     rows.length - 1,
   ]));
-  const tradeNodes = trades
+  const tradeNodes = visibleTrades
     .map((trade) => {
       const rowIndex = Math.max(0, Math.min(Number(trade.rowIndex) || 0, rows.length - 1));
       const x = xForIndex(rowIndex);
@@ -8597,7 +8607,7 @@ function drawModelOrderPriceChart(result) {
     })
     .join("");
 
-  modelOrderPriceChart.innerHTML = `
+  target.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
     ${ticks
       .map((value) => {
