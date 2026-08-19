@@ -105,11 +105,15 @@ const adminPresetList = document.querySelector("#adminPresetList");
 const adminPresetsTabButton = document.querySelector("#adminPresetsTabButton");
 const adminRankingsTabButton = document.querySelector("#adminRankingsTabButton");
 const adminScanTabButton = document.querySelector("#adminScanTabButton");
+const adminScanStatusTabButton = document.querySelector("#adminScanStatusTabButton");
 const adminPresetsPanel = document.querySelector("#adminPresetsPanel");
 const adminRankingsPanel = document.querySelector("#adminRankingsPanel");
 const adminScanPanel = document.querySelector("#adminScanPanel");
+const adminScanStatusPanel = document.querySelector("#adminScanStatusPanel");
 const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
+const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary");
+const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -1421,18 +1425,93 @@ if (adminScanList) {
   });
 }
 
+function renderAdminScanStatus(status) {
+  if (!adminScanStatusSummary || !adminScanStatusModelList) return;
+  const completionRate = status.totalPairs > 0 ? status.completedPairs / status.totalPairs : 0;
+  adminScanStatusSummary.innerHTML = `
+    <article>
+      <span>模型数</span>
+      <strong>${status.totalModels}</strong>
+      <p>当前未隐藏的已保存模型数量。</p>
+    </article>
+    <article>
+      <span>股票数</span>
+      <strong>${status.eligibleStocks} / ${status.totalStocks}</strong>
+      <p>目标股票池共 ${status.totalStocks} 只，其中 ${status.eligibleStocks} 只历史数据达标（≥250个交易日）。</p>
+    </article>
+    <article>
+      <span>组合测试完成率</span>
+      <strong>${formatPercent(completionRate * 100)}</strong>
+      <p>已完成 ${status.completedPairs} / ${status.totalPairs} 组（模型 × 股票）。</p>
+    </article>
+    <article>
+      <span>股票测试完成率</span>
+      <strong>${formatPercent(status.stockCompletionRate * 100)}</strong>
+      <p>已跑完全部 ${status.totalModels} 个模型的股票有 ${status.stocksFullyTested} / ${status.eligibleStocks} 只。</p>
+    </article>
+    <article>
+      <span>已尝试参数组合总次数</span>
+      <strong>${formatCombinationCount(status.totalCandidatesTested)}</strong>
+      <p>所有已完成组合累计测试过的候选参数总数。</p>
+    </article>
+  `;
+
+  if (!status.perModel.length) {
+    adminScanStatusModelList.innerHTML = '<div class="ranking-empty">还没有模型完成任何测试。</div>';
+    return;
+  }
+  const rows = status.perModel.map((model) => `
+    <tr>
+      <td>${escapeHtml(model.label)}</td>
+      <td>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}</td>
+      <td>${model.testedStocks} / ${model.eligibleStocks}</td>
+      <td>${formatPercent(model.rate * 100)}</td>
+    </tr>
+  `).join("");
+  adminScanStatusModelList.innerHTML = `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>
+          <th>模型</th>
+          <th>类型</th>
+          <th>已测试股票 / 有效股票</th>
+          <th>完成率</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function loadAdminScanStatus() {
+  if (!adminScanStatusSummary) return;
+  adminScanStatusSummary.innerHTML = '<div class="ranking-empty">正在读取后台计算状态...</div>';
+  if (adminScanStatusModelList) adminScanStatusModelList.innerHTML = "";
+  try {
+    const response = await fetch("/api/admin/optimization-scan-status", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取后台计算状态失败。");
+    renderAdminScanStatus(payload);
+  } catch (error) {
+    adminScanStatusSummary.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
 function setAdminTab(tab) {
   const showRankings = tab === "rankings";
   const showScan = tab === "scan";
-  const showPresets = !showRankings && !showScan;
+  const showScanStatus = tab === "scanStatus";
+  const showPresets = !showRankings && !showScan && !showScanStatus;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
+  if (adminScanStatusTabButton) adminScanStatusTabButton.classList.toggle("active", showScanStatus);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
+  if (adminScanStatusPanel) adminScanStatusPanel.classList.toggle("hidden", !showScanStatus);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
+  if (showScanStatus) loadAdminScanStatus();
 }
 
 if (adminPresetsTabButton) {
@@ -1443,6 +1522,9 @@ if (adminRankingsTabButton) {
 }
 if (adminScanTabButton) {
   adminScanTabButton.addEventListener("click", () => setAdminTab("scan"));
+}
+if (adminScanStatusTabButton) {
+  adminScanStatusTabButton.addEventListener("click", () => setAdminTab("scanStatus"));
 }
 
 function openAdminDialog() {

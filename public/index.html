@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-scan-viewparams-buyhold">
+    <link rel="stylesheet" href="/styles.css?v=20260819-admin-scan-status">
   </head>
   <body>
     <main class="shell">
@@ -136,6 +136,7 @@
             <button id="adminPresetsTabButton" type="button" class="active">模型管理</button>
             <button id="adminRankingsTabButton" type="button">历史测试记录</button>
             <button id="adminScanTabButton" type="button">后台模型排行</button>
+            <button id="adminScanStatusTabButton" type="button">后台计算状态</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -147,6 +148,12 @@
           <div id="adminScanPanel" class="hidden">
             <p class="field-hint">后台批量参数优化扫描结果：对每只标的用现有模型重新优化参数，按优化后收益率从高到低排序。</p>
             <div id="adminScanList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminScanStatusPanel" class="hidden">
+            <p class="field-hint">后台批量优化扫描的整体进度：模型数、股票数、完成率、已尝试参数组合总次数。</p>
+            <div id="adminScanStatusSummary" class="optimization-report"></div>
+            <div class="section-label">按模型拆分的测试完成率</div>
+            <div id="adminScanStatusModelList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1004,6 +1011,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-scan-viewparams-buyhold"></script>
+    <script src="/app.js?v=20260819-admin-scan-status"></script>
   </body>
 </html>

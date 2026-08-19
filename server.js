@@ -2225,6 +2225,117 @@ async function handleAdminOptimizationScanApi(req, res) {
   }
 }
 
+const OPTIMIZATION_SCAN_MIN_ROWS = 250;
+
+function loadOptimizationUniverse() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, "scripts", "universe", "symbols.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.symbols) ? parsed.symbols : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+async function handleAdminOptimizationScanStatusApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const universe = loadOptimizationUniverse();
+    const totalStocks = universe.length;
+
+    const hasTable = await dbQuery(`
+      SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
+    `);
+    if (hasTable.rows.length === 0 || totalStocks === 0) {
+      sendJson(res, 200, {
+        adminEmail: ADMIN_EMAIL,
+        totalModels: 0,
+        totalStocks,
+        eligibleStocks: 0,
+        totalPairs: 0,
+        completedPairs: 0,
+        totalCandidatesTested: 0,
+        stockCompletionRate: 0,
+        stocksFullyTested: 0,
+        perModel: [],
+      });
+      return;
+    }
+
+    const presetsResult = await dbQuery(`
+      SELECT id, label, strategy_type FROM strategy_presets WHERE hidden_at IS NULL
+    `);
+    const presets = presetsResult.rows;
+    const totalModels = presets.length;
+
+    const eligibleRowsResult = await dbQuery(`
+      SELECT symbol, market FROM daily_prices
+      GROUP BY symbol, market
+      HAVING COUNT(*) >= $1
+    `, [OPTIMIZATION_SCAN_MIN_ROWS]);
+    const eligibleSet = new Set(eligibleRowsResult.rows.map((row) => `${row.symbol}:${row.market}`));
+    const eligibleStocks = universe.filter((entry) => {
+      const dbMarket = entry.market === "CN" ? (/^[569]/.test(entry.code) ? "1" : "0") : "US";
+      return eligibleSet.has(`${entry.code}:${dbMarket}`);
+    }).length;
+
+    const totalsResult = await dbQuery(`
+      SELECT COUNT(*) AS completed_pairs, COALESCE(SUM(tested_candidates), 0) AS total_candidates
+      FROM optimization_scan_results
+    `);
+    const completedPairs = Number(totalsResult.rows[0].completed_pairs) || 0;
+    const totalCandidatesTested = Number(totalsResult.rows[0].total_candidates) || 0;
+
+    const perModelResult = await dbQuery(`
+      SELECT preset_id, COUNT(DISTINCT symbol || ':' || market) AS tested_stocks
+      FROM optimization_scan_results
+      GROUP BY preset_id
+    `);
+    const testedByPreset = new Map(perModelResult.rows.map((row) => [row.preset_id, Number(row.tested_stocks) || 0]));
+
+    const perStockResult = await dbQuery(`
+      SELECT symbol, market, COUNT(DISTINCT preset_id) AS tested_models
+      FROM optimization_scan_results
+      GROUP BY symbol, market
+    `);
+    const stocksFullyTested = perStockResult.rows.filter((row) => Number(row.tested_models) >= totalModels && totalModels > 0).length;
+
+    const perModel = presets.map((preset) => {
+      const testedStocks = testedByPreset.get(preset.id) || 0;
+      return {
+        presetId: preset.id,
+        label: preset.label,
+        strategyType: preset.strategy_type,
+        testedStocks,
+        eligibleStocks,
+        rate: eligibleStocks > 0 ? testedStocks / eligibleStocks : 0,
+      };
+    });
+
+    const totalPairs = totalModels * eligibleStocks;
+
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      totalModels,
+      totalStocks,
+      eligibleStocks,
+      totalPairs,
+      completedPairs,
+      totalCandidatesTested,
+      stockCompletionRate: eligibleStocks > 0 ? stocksFullyTested / eligibleStocks : 0,
+      stocksFullyTested,
+      perModel,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
 async function handleRankingsApi(req, res) {
   try {
     if (req.method === "GET") {
@@ -3255,6 +3366,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan") {
     handleAdminOptimizationScanApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/optimization-scan-status") {
+    handleAdminOptimizationScanStatusApi(req, res);
     return;
   }
 
