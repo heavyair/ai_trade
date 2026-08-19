@@ -12,7 +12,9 @@
 // the background and be safely re-run/resumed: each (symbol, preset) result is upserted,
 // and already-scanned pairs are skipped unless --rescan is passed.
 //
-// Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minRows=250] [--rescan]
+// Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minRows=250] [--rescan] [--presetIds=id1,id2]
+//   --presetIds restricts the scan to specific (already-active) preset IDs, e.g. for an
+//   admin-triggered "rescan just this model" run instead of the full active set.
 
 const fs = require("fs");
 const path = require("path");
@@ -27,10 +29,15 @@ const getArg = (name, fallback) => {
   const found = args.find((a) => a.startsWith(`--${name}=`));
   return found ? Number(found.split("=")[1]) : fallback;
 };
+const getArgString = (name) => {
+  const found = args.find((a) => a.startsWith(`--${name}=`));
+  return found ? found.split("=").slice(1).join("=") : "";
+};
 const CANDIDATES_PER_PAIR = Math.max(1, getArg("candidates", 300));
 const MIN_ROWS = Math.max(30, getArg("minRows", 250));
 const SYMBOL_LIMIT = getArg("limit", 0);
 const RESCAN = args.includes("--rescan");
+const PRESET_IDS_FILTER = getArgString("presetIds").split(",").map((s) => s.trim()).filter(Boolean);
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
@@ -240,8 +247,9 @@ async function main() {
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
   const symbols = SYMBOL_LIMIT > 0 ? manifest.symbols.slice(0, SYMBOL_LIMIT) : manifest.symbols;
-  const presets = await loadActivePresets();
-  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minRows=${MIN_ROWS} rescan=${RESCAN}`);
+  const presetIdFilterSet = PRESET_IDS_FILTER.length > 0 ? new Set(PRESET_IDS_FILTER) : null;
+  const presets = (await loadActivePresets()).filter((p) => !presetIdFilterSet || presetIdFilterSet.has(p.id));
+  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minRows=${MIN_ROWS} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}`);
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
   const rowsCache = new Map();

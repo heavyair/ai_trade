@@ -3,7 +3,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -2237,6 +2237,69 @@ function loadOptimizationUniverse() {
   }
 }
 
+// Tracks the currently-running admin-triggered scan child process, if any. Deliberately
+// NOT detached: if this server process is killed/redeployed, the scan child dies with it
+// rather than continuing to write results against a possibly-stale codebase.
+let activeScanProcess = null;
+let activeScanInfo = null;
+
+function isScanRunning() {
+  return Boolean(activeScanProcess && activeScanInfo);
+}
+
+async function handleAdminOptimizationScanRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "已有扫描任务在运行中，请等它完成后再启动新的。", info: activeScanInfo });
+      return;
+    }
+
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const presetIds = Array.isArray(payload.presetIds)
+      ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
+      : [];
+
+    const scriptPath = path.join(__dirname, "scripts", "universe", "run-optimization-scan.js");
+    const logPath = path.join(__dirname, "scripts", "universe", "scan.log");
+    const logFd = fs.openSync(logPath, "a");
+    const scanArgs = [scriptPath, "--rescan", "--candidates=300", "--minRows=250"];
+    if (presetIds.length > 0) scanArgs.push(`--presetIds=${presetIds.join(",")}`);
+
+    const startedAt = new Date().toISOString();
+    fs.writeSync(logFd, `\n\n=== admin-triggered scan started ${startedAt} by ${admin.email} presetIds=${presetIds.join(",") || "(all active)"} ===\n`);
+
+    const child = spawn(process.execPath, scanArgs, {
+      cwd: __dirname,
+      env: process.env,
+      stdio: ["ignore", logFd, logFd],
+    });
+    activeScanProcess = child;
+    activeScanInfo = { startedAt, presetIds, triggeredBy: admin.email, pid: child.pid };
+
+    child.on("exit", (code) => {
+      fs.writeSync(logFd, `\n=== admin-triggered scan exited with code ${code} ===\n`);
+      fs.closeSync(logFd);
+      activeScanProcess = null;
+      activeScanInfo = null;
+    });
+    child.on("error", (error) => {
+      console.error("optimization scan child process error:", error);
+      activeScanProcess = null;
+      activeScanInfo = null;
+    });
+
+    sendJson(res, 200, { started: true, presetIds, startedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
+  }
+}
+
 async function handleAdminOptimizationScanStatusApi(req, res) {
   try {
     await requireAdminUser(req);
@@ -2263,6 +2326,8 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
         stockCompletionRate: 0,
         stocksFullyTested: 0,
         perModel: [],
+        scanRunning: isScanRunning(),
+        scanInfo: activeScanInfo,
       });
       return;
     }
@@ -2330,6 +2395,8 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       stockCompletionRate: eligibleStocks > 0 ? stocksFullyTested / eligibleStocks : 0,
       stocksFullyTested,
       perModel,
+      scanRunning: isScanRunning(),
+      scanInfo: activeScanInfo,
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
@@ -3371,6 +3438,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan-status") {
     handleAdminOptimizationScanStatusApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
+    handleAdminOptimizationScanRunApi(req, res);
     return;
   }
 

@@ -119,6 +119,9 @@ const adminScanClearFilterButton = document.querySelector("#adminScanClearFilter
 const adminScanFilterSummary = document.querySelector("#adminScanFilterSummary");
 const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary");
 const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
+const adminScanRunSelectedButton = document.querySelector("#adminScanRunSelectedButton");
+const adminScanRunAllButton = document.querySelector("#adminScanRunAllButton");
+const adminScanRunStatus = document.querySelector("#adminScanRunStatus");
 const adminRerunDialog = document.querySelector("#adminRerunDialog");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
 const adminRerunSubtitle = document.querySelector("#adminRerunSubtitle");
@@ -1896,41 +1899,98 @@ function renderAdminScanStatus(status) {
 
   if (!status.perModel.length) {
     adminScanStatusModelList.innerHTML = '<div class="ranking-empty">还没有模型完成任何测试。</div>';
-    return;
+  } else {
+    const rows = status.perModel.map((model) => `
+      <tr>
+        <td><input type="checkbox" class="admin-scan-model-checkbox" data-preset-id="${escapeHtml(model.presetId)}"></td>
+        <td>${escapeHtml(model.label)}</td>
+        <td>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}</td>
+        <td>${model.testedStocks} / ${model.eligibleStocks}</td>
+        <td>${formatPercent(model.rate * 100)}</td>
+      </tr>
+    `).join("");
+    adminScanStatusModelList.innerHTML = `
+      <table class="admin-ranking-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>模型</th>
+            <th>类型</th>
+            <th>已测试股票 / 有效股票</th>
+            <th>完成率</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
   }
-  const rows = status.perModel.map((model) => `
-    <tr>
-      <td>${escapeHtml(model.label)}</td>
-      <td>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}</td>
-      <td>${model.testedStocks} / ${model.eligibleStocks}</td>
-      <td>${formatPercent(model.rate * 100)}</td>
-    </tr>
-  `).join("");
-  adminScanStatusModelList.innerHTML = `
-    <table class="admin-ranking-table">
-      <thead>
-        <tr>
-          <th>模型</th>
-          <th>类型</th>
-          <th>已测试股票 / 有效股票</th>
-          <th>完成率</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
+
+  const running = Boolean(status.scanRunning);
+  if (adminScanRunSelectedButton) adminScanRunSelectedButton.disabled = running;
+  if (adminScanRunAllButton) adminScanRunAllButton.disabled = running;
+  if (adminScanRunStatus) {
+    adminScanRunStatus.textContent = running
+      ? `扫描进行中（由 ${status.scanInfo && status.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(status.scanInfo && status.scanInfo.startedAt))} 启动）...`
+      : "";
+  }
+  if (running) {
+    scheduleAdminScanStatusPoll();
+  } else {
+    stopAdminScanStatusPoll();
+  }
+}
+
+let adminScanStatusPollTimer = null;
+
+function scheduleAdminScanStatusPoll() {
+  if (adminScanStatusPollTimer) return;
+  adminScanStatusPollTimer = window.setInterval(() => {
+    if (!adminScanStatusPanel || adminScanStatusPanel.classList.contains("hidden")) {
+      stopAdminScanStatusPoll();
+      return;
+    }
+    loadAdminScanStatus();
+  }, 5000);
+}
+
+function stopAdminScanStatusPoll() {
+  if (adminScanStatusPollTimer) {
+    window.clearInterval(adminScanStatusPollTimer);
+    adminScanStatusPollTimer = null;
+  }
 }
 
 async function loadAdminScanStatus() {
   if (!adminScanStatusSummary) return;
-  adminScanStatusSummary.innerHTML = '<div class="ranking-empty">正在读取后台计算状态...</div>';
-  if (adminScanStatusModelList) adminScanStatusModelList.innerHTML = "";
+  // Skip the loading placeholder on background polls (while a scan is running) so the
+  // already-rendered numbers don't flicker blank every 5 seconds — only show it on the
+  // very first load, when there's nothing on screen yet.
+  if (!adminScanStatusSummary.innerHTML.trim()) {
+    adminScanStatusSummary.innerHTML = '<div class="ranking-empty">正在读取后台计算状态...</div>';
+  }
   try {
     const response = await fetch("/api/admin/optimization-scan-status", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取后台计算状态失败。");
     renderAdminScanStatus(payload);
   } catch (error) {
     adminScanStatusSummary.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function triggerAdminScanRun(presetIds) {
+  if (adminScanRunStatus) adminScanRunStatus.textContent = "正在启动扫描...";
+  try {
+    const response = await fetch("/api/admin/optimization-scan/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presetIds }),
+    });
+    await readJsonResponse(response, "启动扫描失败。");
+    setStatus(presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。");
+    await loadAdminScanStatus();
+  } catch (error) {
+    if (adminScanRunStatus) adminScanRunStatus.textContent = "";
+    setStatus(`启动扫描失败：${error.message}`, true);
   }
 }
 
@@ -1963,6 +2023,23 @@ if (adminScanTabButton) {
 }
 if (adminScanStatusTabButton) {
   adminScanStatusTabButton.addEventListener("click", () => setAdminTab("scanStatus"));
+}
+if (adminScanRunSelectedButton) {
+  adminScanRunSelectedButton.addEventListener("click", () => {
+    const checked = Array.from(document.querySelectorAll(".admin-scan-model-checkbox:checked"));
+    const presetIds = checked.map((input) => input.dataset.presetId).filter(Boolean);
+    if (presetIds.length === 0) {
+      setStatus("请先勾选要重新扫描的模型。", true);
+      return;
+    }
+    triggerAdminScanRun(presetIds);
+  });
+}
+if (adminScanRunAllButton) {
+  adminScanRunAllButton.addEventListener("click", () => {
+    if (!window.confirm("确定要对全部当前模型重新扫描全部股票吗？这会覆盖已有结果，且可能耗时较久。")) return;
+    triggerAdminScanRun([]);
+  });
 }
 
 function openAdminDialog() {
