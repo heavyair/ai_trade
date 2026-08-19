@@ -1330,6 +1330,21 @@ async function loadAdminRankings() {
 }
 
 let adminScanCache = [];
+let adminScanPage = 0;
+const adminScanPageSize = 10;
+
+function renderAdminScanPagination(page, pageCount, totalRecords) {
+  if (pageCount <= 1) return "";
+  return `
+    <div class="ranking-pagination" aria-label="后台模型排行分页">
+      <span>第 ${page + 1} / ${pageCount} 页，共 ${totalRecords} 条</span>
+      <div>
+        <button class="ranking-page-button admin-scan-page-button" type="button" data-admin-scan-page="${page - 1}"${page <= 0 ? " disabled" : ""}>上一页</button>
+        <button class="ranking-page-button admin-scan-page-button" type="button" data-admin-scan-page="${page + 1}"${page >= pageCount - 1 ? " disabled" : ""}>下一页</button>
+      </div>
+    </div>
+  `;
+}
 
 function renderAdminScanList(records = []) {
   if (!adminScanList) return;
@@ -1337,7 +1352,12 @@ function renderAdminScanList(records = []) {
     adminScanList.innerHTML = '<div class="ranking-empty">还没有后台优化扫描结果。</div>';
     return;
   }
-  const rows = records.map((record) => {
+  const pageCount = Math.max(1, Math.ceil(records.length / adminScanPageSize));
+  adminScanPage = Math.min(Math.max(0, adminScanPage), pageCount - 1);
+  const pageStart = adminScanPage * adminScanPageSize;
+  const pageRecords = records.slice(pageStart, pageStart + adminScanPageSize);
+  const paginationHtml = renderAdminScanPagination(adminScanPage, pageCount, records.length);
+  const rows = pageRecords.map((record) => {
     const improvement = record.bestReturnRate - record.baselineReturnRate;
     const improvementClass = improvement > 0 ? "up" : improvement < 0 ? "down" : "";
     const bestClass = record.bestReturnRate > 0 ? "up" : record.bestReturnRate < 0 ? "down" : "";
@@ -1362,6 +1382,7 @@ function renderAdminScanList(records = []) {
     `;
   }).join("");
   adminScanList.innerHTML = `
+    ${paginationHtml}
     <table class="admin-ranking-table">
       <thead>
         <tr>
@@ -1382,6 +1403,7 @@ function renderAdminScanList(records = []) {
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    ${paginationHtml}
   `;
 }
 
@@ -1392,6 +1414,7 @@ async function loadAdminScanResults() {
     const response = await fetch("/api/admin/optimization-scan", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取后台优化扫描结果失败。");
     adminScanCache = Array.isArray(payload.records) ? payload.records : [];
+    adminScanPage = 0;
     renderAdminScanList(adminScanCache);
   } catch (error) {
     adminScanList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
@@ -1421,6 +1444,12 @@ if (adminScanList) {
     const viewButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
     if (viewButton) {
       openAdminScanParamViewer(viewButton.dataset.scanId);
+      return;
+    }
+    const pageButton = target && target.closest ? target.closest(".admin-scan-page-button") : null;
+    if (pageButton) {
+      adminScanPage = Math.max(0, Number(pageButton.dataset.adminScanPage) || 0);
+      renderAdminScanList(adminScanCache);
     }
   });
 }
