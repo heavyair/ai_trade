@@ -63,19 +63,83 @@ async function ensureResultsTable() {
   `);
 }
 
+// Strategy types whose config "shape" is fixed by strategyType alone (a single flat
+// rule object) — for these, different saved presets are just different starting
+// parameter values, and buildRangeValues() already generates a search range around
+// whatever value it's given, so scanning more than one per type re-explores nearly
+// the same space for several times the compute cost.
+const FLAT_PARAM_TYPES = new Set(["wave", "order-grid", "ma-rsi-band", "pe-volume", "stagnation-reversal", "local-high-ladder"]);
+
+// block-rules presets can encode genuinely different indicator/condition combinations
+// (that's the point of the type), so they can't be collapsed to "one per type" the way
+// flat-rule presets can. Two presets are considered the same underlying model only if
+// their block structure (indicators + comparators + action types, ignoring thresholds)
+// matches exactly.
+function computeBlockRuleSignature(preset) {
+  const summarizeBlocks = (blocks) => (Array.isArray(blocks) ? blocks : []).map((block) => ({
+    conditions: (Array.isArray(block.conditions) ? block.conditions : []).map((c) => `${c.indicator}${c.comparator}`),
+    actionType: block.action && block.action.type,
+  }));
+  return JSON.stringify({ buy: summarizeBlocks(preset.buyBlockRules), sell: summarizeBlocks(preset.sellBlockRules) });
+}
+
+// Collapses near-duplicate presets ("same model, different parameters") down to one
+// representative (the most recently updated) per type/signature, so the batch scan
+// spends its compute on distinct models rather than repeatedly re-optimizing what is
+// effectively the same starting point.
+function dedupePresetsForScan(presets) {
+  const flatBestByType = new Map();
+  const blockRuleBestBySignature = new Map();
+  const others = [];
+  const skipped = [];
+
+  presets.forEach((preset) => {
+    if (FLAT_PARAM_TYPES.has(preset.strategyType)) {
+      const existing = flatBestByType.get(preset.strategyType);
+      if (!existing || preset.updatedAt > existing.updatedAt) {
+        if (existing) skipped.push({ preset: existing, reason: `与 ${preset.label} 同为 ${preset.strategyType} 类型，取较新的一个` });
+        flatBestByType.set(preset.strategyType, preset);
+      } else {
+        skipped.push({ preset, reason: `与 ${existing.label} 同为 ${preset.strategyType} 类型，取较新的一个` });
+      }
+    } else if (preset.strategyType === "block-rules") {
+      const signature = computeBlockRuleSignature(preset);
+      const existing = blockRuleBestBySignature.get(signature);
+      if (!existing || preset.updatedAt > existing.updatedAt) {
+        if (existing) skipped.push({ preset: existing, reason: `与 ${preset.label} 规则结构相同，取较新的一个` });
+        blockRuleBestBySignature.set(signature, preset);
+      } else {
+        skipped.push({ preset, reason: `与 ${existing.label} 规则结构相同，取较新的一个` });
+      }
+    } else {
+      others.push(preset);
+    }
+  });
+
+  const kept = [...flatBestByType.values(), ...blockRuleBestBySignature.values(), ...others];
+  return { kept, skipped };
+}
+
 async function loadActivePresets() {
   const result = await pool.query(`
-    SELECT id, name, label, strategy_type, config, meta
+    SELECT id, name, label, strategy_type, config, meta, updated_at
     FROM strategy_presets
     WHERE hidden_at IS NULL
     ORDER BY strategy_type, name
   `);
-  return result.rows.map((row) => ({
+  const all = result.rows.map((row) => ({
     id: row.id,
     label: row.label,
     strategyType: row.strategy_type,
+    updatedAt: row.updated_at,
     ...row.config,
   }));
+  const { kept, skipped } = dedupePresetsForScan(all);
+  if (skipped.length > 0) {
+    console.log(`skipping ${skipped.length} near-duplicate preset(s) as scan starting points:`);
+    skipped.forEach(({ preset, reason }) => console.log(`  - ${preset.label} (${preset.strategyType}): ${reason}`));
+  }
+  return kept;
 }
 
 async function loadRows(symbol, market) {
