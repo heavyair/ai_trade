@@ -842,6 +842,7 @@ function sanitizeStoredPreset(name, preset) {
       isOwner: Boolean(preset.meta && preset.meta.isOwner),
       isPublic: Boolean(preset.meta && preset.meta.isPublic),
       isLegacy: Boolean(preset.meta && preset.meta.isLegacy),
+      originalModelId: String(preset.meta && preset.meta.originalModelId || "0").slice(0, 120),
     },
   };
 }
@@ -1229,12 +1230,20 @@ function renderAdminPresetList(presets = []) {
       .filter(Boolean)
       .map((owner) => `<option value="${escapeHtml(owner)}"${owner === ownerValue ? " selected" : ""}>${escapeHtml(owner)}</option>`)
       .join("");
+    const originalModelId = String(preset.originalModelId || "0");
+    const isOrigin = originalModelId === "0";
+    const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
+    const lineageText = isOrigin
+      ? "原始手工模型"
+      : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
+    const isRepresentative = Boolean(preset.isRepresentative);
     return `
       <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
         <div>
           <strong>${escapeHtml(preset.label || preset.name)}</strong>
           <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
           <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
+          <small class="${isOrigin ? "up" : ""}">${lineageText}${isRepresentative ? " · <b>扫描代表模型</b>" : ""}</small>
           <p>${escapeHtml(textPreview)}</p>
         </div>
         <div class="admin-preset-actions">
@@ -1244,6 +1253,7 @@ function renderAdminPresetList(presets = []) {
           </label>
           <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
           <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
+          <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
           <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
         </div>
       </article>
@@ -1295,6 +1305,21 @@ async function loadAdminPresets() {
     renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
   } catch (error) {
     adminPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function toggleAdminScanRepresentative(modelId, currentlyRepresentative) {
+  try {
+    const response = await fetch("/api/admin/optimization-scan/representatives", {
+      method: currentlyRepresentative ? "DELETE" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelId }),
+    });
+    await readJsonResponse(response, "操作失败。");
+    setStatus(currentlyRepresentative ? "已从扫描代表集合移除。" : "已加入扫描代表集合。");
+    await loadAdminPresets();
+  } catch (error) {
+    setStatus(`操作失败：${error.message}`, true);
   }
 }
 
@@ -1541,6 +1566,7 @@ async function saveAdminScanRecordAsPreset(scanId) {
     createdAt: todayText(),
     updatedAt: todayText(),
     originalText: `后台批量优化扫描：${record.symbolName || record.symbol}（${record.symbol}），基于模型「${record.presetLabel}」重新优化参数。`,
+    originalModelId: record.presetId,
   });
   const presetName = await saveGeneratedPreset(preset);
   if (presetName) {
@@ -6876,6 +6902,7 @@ function createSafePresetDraft(description, aiPatch = null) {
     updatedAt: now,
     originalText: text,
     modelText: aiPatch && aiPatch.reason ? `${text}\n\nAI 理解：${aiPatch.reason}` : text,
+    originalModelId: "0",
   };
   const preset = createPresetFromConfig(label, config, meta);
   const code = `// Safe client-side strategy preset. No eval / Function is used.
@@ -7546,6 +7573,10 @@ function scoreBacktestState(state) {
 function buildOptimizationPreset(presetName, config, rowsForTest) {
   const sourcePreset = strategyPresets[presetName] || {};
   const now = todayText();
+  // Inherit the ROOT ancestor's id (not presetName itself, unless presetName IS the root)
+  // so a multi-generation chain of optimize-and-save always collapses back to one origin.
+  const sourceOriginalModelId = sourcePreset.meta && sourcePreset.meta.originalModelId;
+  const originalModelId = sourceOriginalModelId && sourceOriginalModelId !== "0" ? sourceOriginalModelId : presetName;
   return createPresetFromConfig(`${sourcePreset.label || getStrategyTypeLabel(config.strategyType)} 优化参数`, config, {
     targetSymbol: normalizeSymbolInput(codeInput.value) || "通用",
     provedPeriod: activeBacktestRangeLabel || `${rowsForTest[0].date}至${rowsForTest[rowsForTest.length - 1].date}`,
@@ -7554,6 +7585,7 @@ function buildOptimizationPreset(presetName, config, rowsForTest) {
     updatedAt: now,
     originalText: sourcePreset.meta && sourcePreset.meta.originalText || "",
     modelText: sourcePreset.meta && sourcePreset.meta.modelText || sourcePreset.meta && sourcePreset.meta.originalText || "",
+    originalModelId,
   });
 }
 
@@ -9510,6 +9542,11 @@ if (adminPresetList) {
       const card = ownerButton.closest("[data-admin-preset-id]");
       const select = card ? card.querySelector(".admin-owner-select") : null;
       updateAdminPresetOwner(ownerButton.dataset.presetId, select ? select.value : "");
+      return;
+    }
+    const toggleButton = event.target && event.target.closest ? event.target.closest(".admin-toggle-representative-button") : null;
+    if (toggleButton) {
+      toggleAdminScanRepresentative(toggleButton.dataset.presetId, toggleButton.dataset.representative === "1");
       return;
     }
     const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;

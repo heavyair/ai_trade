@@ -4,7 +4,6 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
-const { dedupePresetsForScan } = require("./scripts/universe/dedupe-presets.js");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -295,6 +294,18 @@ async function initializeDatabase() {
       reason TEXT NOT NULL DEFAULT '',
       reference JSONB NOT NULL DEFAULT '{}'::jsonb
     );
+
+    -- Explicit, admin-curated set of which presets the batch optimization scan actually
+    -- tests. Replaces an earlier heuristic ("most recently updated wins" per strategy
+    -- type / block-rules structural signature) that could silently misjudge two
+    -- genuinely different hand-crafted strategies as "the same model, different params"
+    -- and drop one from scanning with no visibility into why.
+    CREATE TABLE IF NOT EXISTS optimization_scan_representatives (
+      model_id TEXT PRIMARY KEY REFERENCES strategy_presets(id) ON DELETE CASCADE,
+      added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS original_model_id TEXT NOT NULL DEFAULT '0';
   `);
 
   await normalizeExistingPresetLabels();
@@ -1088,6 +1099,11 @@ function sanitizeServerPreset(name, preset) {
       isOwner: Boolean(meta.isOwner),
       isPublic: Boolean(meta.isPublic),
       isLegacy: Boolean(meta.isLegacy),
+      // "0" means this preset is itself an origin (hand-crafted, not derived from
+      // another saved model); otherwise this is the id of the ROOT ancestor preset it
+      // was derived from (via 优化参数保存 or admin 另存为模型), propagated transitively
+      // so a multi-generation derivation chain still collapses to a single root id.
+      originalModelId: String(meta.originalModelId || "0").slice(0, 120),
     },
   };
 }
@@ -1297,9 +1313,9 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options
   const configPayload = buildPresetConfigPayload(safePreset);
   await dbPool.query(`
     INSERT INTO strategy_presets (
-      id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, created_at, updated_at
+      id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, original_model_id, created_at, updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE
       SET label = EXCLUDED.label,
           strategy_type = EXCLUDED.strategy_type,
@@ -1308,6 +1324,7 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options
           original_text = COALESCE(NULLIF(strategy_presets.original_text, ''), EXCLUDED.original_text),
           model_text = EXCLUDED.model_text,
           is_legacy = EXCLUDED.is_legacy,
+          original_model_id = EXCLUDED.original_model_id,
           updated_at = NOW()
   `, [
     presetId,
@@ -1320,6 +1337,7 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options
     safePreset.meta && safePreset.meta.originalText ? safePreset.meta.originalText : "",
     safePreset.meta && safePreset.meta.modelText ? safePreset.meta.modelText : "",
     Boolean(isLegacy),
+    safePreset.meta && safePreset.meta.originalModelId ? safePreset.meta.originalModelId : "0",
   ]);
 }
 
@@ -2027,6 +2045,8 @@ function mapAdminPresetRow(row) {
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
     config: row.config && typeof row.config === "object" ? row.config : {},
     meta,
+    originalModelId: row.original_model_id || meta.originalModelId || "0",
+    isRepresentative: Boolean(row.is_representative),
   };
 }
 
@@ -2058,9 +2078,11 @@ async function handleAdminPresetsApi(req, res) {
 
     if (req.method === "GET") {
       const result = await dbQuery(`
-        SELECT strategy_presets.*, users.email AS owner_email
+        SELECT strategy_presets.*, users.email AS owner_email,
+               (r.model_id IS NOT NULL) AS is_representative
         FROM strategy_presets
         LEFT JOIN users ON users.id = strategy_presets.owner_user_id
+        LEFT JOIN optimization_scan_representatives r ON r.model_id = strategy_presets.id
         ORDER BY strategy_presets.updated_at DESC
         LIMIT 2000
       `);
@@ -2287,6 +2309,35 @@ function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
   });
 }
 
+async function handleAdminScanRepresentativesApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const modelId = String(payload.modelId || "").trim();
+    if (!modelId) {
+      sendJson(res, 400, { error: "缺少 modelId。" });
+      return;
+    }
+    if (req.method === "POST") {
+      await dbQuery(
+        "INSERT INTO optimization_scan_representatives (model_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        [modelId]
+      );
+      sendJson(res, 200, { added: modelId });
+    } else {
+      await dbQuery("DELETE FROM optimization_scan_representatives WHERE model_id = $1", [modelId]);
+      sendJson(res, 200, { removed: modelId });
+    }
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "操作失败。" });
+  }
+}
+
 async function handleAdminOptimizationScanRunApi(req, res) {
   try {
     const admin = await requireAdminUser(req);
@@ -2358,22 +2409,16 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       return;
     }
 
+    // Source of truth for "which models does the scan/checkbox list cover" is the
+    // explicit optimization_scan_representatives table (admin-curated), not a heuristic
+    // guess — see that table's comment in initializeDatabase for why.
     const presetsResult = await dbQuery(`
-      SELECT id, label, strategy_type, config, updated_at FROM strategy_presets WHERE hidden_at IS NULL
+      SELECT sp.id, sp.label, sp.strategy_type
+      FROM optimization_scan_representatives r
+      JOIN strategy_presets sp ON sp.id = r.model_id
+      WHERE sp.hidden_at IS NULL
     `);
-    // A rescan only ever actually uses the deduped "kept" set (see dedupePresetsForScan) —
-    // showing every active preset as a separately-checkable row in the admin UI let an
-    // admin select one that gets silently dropped during the real scan (e.g. two wave
-    // presets that are just different parameter values of the same model), so "重新扫描"
-    // on that row matched zero presets and did nothing. Apply the same dedup here so the
-    // checkbox list only ever offers presets that will actually be scanned.
-    const { kept: presets } = dedupePresetsForScan(presetsResult.rows.map((row) => ({
-      id: row.id,
-      label: row.label,
-      strategyType: row.strategy_type,
-      updatedAt: row.updated_at,
-      ...row.config,
-    })));
+    const presets = presetsResult.rows.map((row) => ({ id: row.id, label: row.label, strategyType: row.strategy_type }));
     const totalModels = presets.length;
 
     const eligibleRowsResult = await dbQuery(`
@@ -3482,6 +3527,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
     handleAdminOptimizationScanRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/optimization-scan/representatives") {
+    handleAdminScanRepresentativesApi(req, res);
     return;
   }
 

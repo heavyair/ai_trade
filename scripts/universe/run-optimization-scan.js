@@ -20,7 +20,6 @@ const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
-const { dedupePresetsForScan } = require("./dedupe-presets.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -76,26 +75,25 @@ async function ensureResultsTable() {
   `);
 }
 
+// Source of truth for "which presets does the batch scan test" is the explicit,
+// admin-curated optimization_scan_representatives table — not a heuristic guess. See
+// that table's comment in server.js's schema init for why the earlier "most recently
+// updated wins" heuristic was replaced.
 async function loadActivePresets() {
   const result = await pool.query(`
-    SELECT id, name, label, strategy_type, config, meta, updated_at
-    FROM strategy_presets
-    WHERE hidden_at IS NULL
-    ORDER BY strategy_type, name
+    SELECT sp.id, sp.name, sp.label, sp.strategy_type, sp.config, sp.meta, sp.updated_at
+    FROM optimization_scan_representatives r
+    JOIN strategy_presets sp ON sp.id = r.model_id
+    WHERE sp.hidden_at IS NULL
+    ORDER BY sp.strategy_type, sp.name
   `);
-  const all = result.rows.map((row) => ({
+  return result.rows.map((row) => ({
     id: row.id,
     label: row.label,
     strategyType: row.strategy_type,
     updatedAt: row.updated_at,
     ...row.config,
   }));
-  const { kept, skipped } = dedupePresetsForScan(all);
-  if (skipped.length > 0) {
-    console.log(`skipping ${skipped.length} near-duplicate preset(s) as scan starting points:`);
-    skipped.forEach(({ preset, reason }) => console.log(`  - ${preset.label} (${preset.strategyType}): ${reason}`));
-  }
-  return kept;
 }
 
 async function loadRows(symbol, market) {
