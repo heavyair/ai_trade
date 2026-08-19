@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-scan-rerun-save">
+    <link rel="stylesheet" href="/styles.css?v=20260819-rerun-zoom-fix">
   </head>
   <body>
     <main class="shell">
@@ -183,6 +183,9 @@
             <button type="button" id="adminRerunPauseButton" class="ghost-button" disabled>暂停</button>
             <button type="button" id="adminRerunSkipButton" class="ghost-button">跳到最后</button>
             <button type="button" id="adminRerunRestartButton" class="ghost-button">重新播放</button>
+            <button type="button" id="adminRerunZoomOutButton" class="ghost-button">缩小</button>
+            <button type="button" id="adminRerunZoomResetButton" class="ghost-button">重置</button>
+            <button type="button" id="adminRerunZoomInButton" class="ghost-button">放大</button>
             <span id="adminRerunProgressLabel" class="field-hint"></span>
           </div>
           <div id="adminRerunChart" class="admin-rerun-chart"></div>
@@ -1045,6 +1048,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-scan-rerun-save"></script>
+    <script src="/app.js?v=20260819-rerun-zoom-fix"></script>
   </body>
 </html>

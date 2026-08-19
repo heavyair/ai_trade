@@ -127,6 +127,9 @@ const adminRerunPlayButton = document.querySelector("#adminRerunPlayButton");
 const adminRerunPauseButton = document.querySelector("#adminRerunPauseButton");
 const adminRerunSkipButton = document.querySelector("#adminRerunSkipButton");
 const adminRerunRestartButton = document.querySelector("#adminRerunRestartButton");
+const adminRerunZoomOutButton = document.querySelector("#adminRerunZoomOutButton");
+const adminRerunZoomResetButton = document.querySelector("#adminRerunZoomResetButton");
+const adminRerunZoomInButton = document.querySelector("#adminRerunZoomInButton");
 const adminRerunProgressLabel = document.querySelector("#adminRerunProgressLabel");
 const adminRerunChart = document.querySelector("#adminRerunChart");
 const adminRerunMetrics = document.querySelector("#adminRerunMetrics");
@@ -1539,6 +1542,12 @@ async function saveAdminScanRecordAsPreset(scanId) {
 }
 
 let adminRerunState = null;
+let adminRerunChartZoom = 1;
+
+function setAdminRerunChartZoom(nextZoom) {
+  adminRerunChartZoom = Math.min(12, Math.max(1, nextZoom));
+  if (adminRerunState) renderAdminRerunFrame();
+}
 
 function stopAdminRerunPlayback() {
   if (adminRerunState && adminRerunState.timerId) {
@@ -1550,8 +1559,9 @@ function stopAdminRerunPlayback() {
   if (adminRerunPauseButton) adminRerunPauseButton.disabled = true;
 }
 
-function buildAdminRerunChartSvg(rows, upToIndex, trades) {
-  const width = 900;
+function buildAdminRerunChartSvg(rows, upToIndex, trades, zoom = 1) {
+  const baseWidth = adminRerunChart ? Math.max(640, Math.round(adminRerunChart.getBoundingClientRect().width) || 860) : 860;
+  const width = Math.round(baseWidth * zoom);
   const height = 340;
   const pad = { top: 20, right: 20, bottom: 26, left: 56 };
   const innerWidth = width - pad.left - pad.right;
@@ -1593,7 +1603,7 @@ function buildAdminRerunChartSvg(rows, upToIndex, trades) {
     : "";
 
   return `
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
       ${priceTickNodes}
       <path class="rerun-price-line" d="${linePath}"></path>
       ${markerNodes}
@@ -1640,8 +1650,21 @@ function renderAdminRerunFrame() {
   const { rows, states, index } = adminRerunState;
   const state = states[index];
 
-  if (adminRerunChart) adminRerunChart.innerHTML = buildAdminRerunChartSvg(rows, index, state.trades);
-  if (adminRerunTradeList) adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(state.trades);
+  try {
+    if (adminRerunChart) adminRerunChart.innerHTML = buildAdminRerunChartSvg(rows, index, state.trades, adminRerunChartZoom);
+  } catch (error) {
+    console.error("重跑图表渲染失败：", error);
+  }
+  // Rebuilding a table with hundreds/thousands of rows every ~33ms tick is wasted work
+  // once the trade count hasn't actually changed since the last frame — skip it.
+  if (adminRerunTradeList && state.trades.length !== adminRerunState.lastRenderedTradeCount) {
+    try {
+      adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(state.trades);
+      adminRerunState.lastRenderedTradeCount = state.trades.length;
+    } catch (error) {
+      console.error("重跑交易明细渲染失败：", error);
+    }
+  }
   if (adminRerunMetrics) {
     adminRerunMetrics.innerHTML = `
       <article><span>当前日期</span><strong>${escapeHtml(rows[index].date)}</strong></article>
@@ -1731,7 +1754,8 @@ async function openAdminRerun(scanId) {
       codeInput.value = savedCode;
     }
 
-    adminRerunState = { rows, states, index: 0, playing: false, timerId: null };
+    adminRerunState = { rows, states, index: 0, playing: false, timerId: null, lastRenderedTradeCount: -1 };
+    adminRerunChartZoom = 1;
     if (adminRerunSubtitle) {
       adminRerunSubtitle.textContent = `${rows.length} 个交易日 · ${start} 至 ${end} · 初始资金 ¥2,000,000 · 数据源 ${result.source || ""}`;
     }
@@ -1759,6 +1783,15 @@ if (adminRerunSkipButton) {
 }
 if (adminRerunRestartButton) {
   adminRerunRestartButton.addEventListener("click", () => restartAdminRerunPlayback());
+}
+if (adminRerunZoomOutButton) {
+  adminRerunZoomOutButton.addEventListener("click", () => setAdminRerunChartZoom(adminRerunChartZoom - 1));
+}
+if (adminRerunZoomResetButton) {
+  adminRerunZoomResetButton.addEventListener("click", () => setAdminRerunChartZoom(1));
+}
+if (adminRerunZoomInButton) {
+  adminRerunZoomInButton.addEventListener("click", () => setAdminRerunChartZoom(adminRerunChartZoom + 1));
 }
 
 if (adminScanList) {
