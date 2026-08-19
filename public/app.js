@@ -7191,7 +7191,7 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   if (!preset) return;
   const descriptors = discoverOptimizationParameters(preset);
   blockRuleOptimizationState = { presetName, descriptors };
-  if (optimizationTitle) optimizationTitle.textContent = `${preset.label || getStrategyTypeLabel(preset.strategyType)} · 设置暴力测试范围`;
+  if (optimizationTitle) optimizationTitle.textContent = `${preset.label || getStrategyTypeLabel(preset.strategyType)} · 设置参数优化范围`;
   if (optimizationSubtitle) optimizationSubtitle.textContent = "确认或修改每个参数的测试范围，然后点击“运行优化”。";
   if (optimizationReport) optimizationReport.innerHTML = "";
   if (optimizationNarrative) optimizationNarrative.innerHTML = "";
