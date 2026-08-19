@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-name-model-on-optimize-save">
+    <link rel="stylesheet" href="/styles.css?v=20260819-admin-scan-ranking">
   </head>
   <body>
     <main class="shell">
@@ -135,6 +135,7 @@
           <div class="auth-tabs">
             <button id="adminPresetsTabButton" type="button" class="active">模型管理</button>
             <button id="adminRankingsTabButton" type="button">历史测试记录</button>
+            <button id="adminScanTabButton" type="button">后台模型排行</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -142,6 +143,10 @@
           <div id="adminRankingsPanel" class="hidden">
             <p class="field-hint">所有 owner 的历史测试记录，按回报率从高到低排序。</p>
             <div id="adminRankingList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminScanPanel" class="hidden">
+            <p class="field-hint">后台批量参数优化扫描结果：对每只标的用现有模型重新优化参数，按优化后收益率从高到低排序。</p>
+            <div id="adminScanList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -999,6 +1004,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-name-model-on-optimize-save"></script>
+    <script src="/app.js?v=20260819-admin-scan-ranking"></script>
   </body>
 </html>

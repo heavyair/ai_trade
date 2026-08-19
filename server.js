@@ -2173,6 +2173,56 @@ async function handleAdminRankingsApi(req, res) {
   }
 }
 
+function mapAdminOptimizationScanRow(row) {
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    market: row.market,
+    symbolName: row.symbol_name,
+    presetId: row.preset_id,
+    presetLabel: row.preset_label,
+    strategyType: row.strategy_type,
+    rowsTested: row.rows_tested || 0,
+    baselineReturnRate: Number(row.baseline_return_rate) || 0,
+    baselineMaxDrawdown: Number(row.baseline_max_drawdown) || 0,
+    bestReturnRate: Number(row.best_return_rate) || 0,
+    bestMaxDrawdown: Number(row.best_max_drawdown) || 0,
+    bestScore: Number(row.best_score) || 0,
+    bestTrades: row.best_trades || 0,
+    testedCandidates: row.tested_candidates || 0,
+    bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+    scannedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
+  };
+}
+
+async function handleAdminOptimizationScanApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const hasTable = await dbQuery(`
+      SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
+    `);
+    if (hasTable.rows.length === 0) {
+      sendJson(res, 200, { adminEmail: ADMIN_EMAIL, records: [] });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT * FROM optimization_scan_results
+      ORDER BY best_return_rate DESC
+      LIMIT 3000
+    `);
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      records: result.rows.map(mapAdminOptimizationScanRow),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
 async function handleRankingsApi(req, res) {
   try {
     if (req.method === "GET") {
@@ -3198,6 +3248,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/rankings") {
     handleAdminRankingsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/optimization-scan") {
+    handleAdminOptimizationScanApi(req, res);
     return;
   }
 

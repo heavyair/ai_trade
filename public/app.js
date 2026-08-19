@@ -104,9 +104,12 @@ const closeAdminButton = document.querySelector("#closeAdminButton");
 const adminPresetList = document.querySelector("#adminPresetList");
 const adminPresetsTabButton = document.querySelector("#adminPresetsTabButton");
 const adminRankingsTabButton = document.querySelector("#adminRankingsTabButton");
+const adminScanTabButton = document.querySelector("#adminScanTabButton");
 const adminPresetsPanel = document.querySelector("#adminPresetsPanel");
 const adminRankingsPanel = document.querySelector("#adminRankingsPanel");
+const adminScanPanel = document.querySelector("#adminScanPanel");
 const adminRankingList = document.querySelector("#adminRankingList");
+const adminScanList = document.querySelector("#adminScanList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -1322,13 +1325,76 @@ async function loadAdminRankings() {
   }
 }
 
+function renderAdminScanList(records = []) {
+  if (!adminScanList) return;
+  if (!records.length) {
+    adminScanList.innerHTML = '<div class="ranking-empty">还没有后台优化扫描结果。</div>';
+    return;
+  }
+  const rows = records.map((record) => {
+    const improvement = record.bestReturnRate - record.baselineReturnRate;
+    const improvementClass = improvement > 0 ? "up" : improvement < 0 ? "down" : "";
+    const bestClass = record.bestReturnRate > 0 ? "up" : record.bestReturnRate < 0 ? "down" : "";
+    return `
+      <tr>
+        <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
+        <td>${escapeHtml(record.presetLabel || "")}</td>
+        <td>${escapeHtml(getStrategyTypeLabel(record.strategyType || "wave"))}</td>
+        <td>${formatPercent(record.baselineReturnRate)}</td>
+        <td class="${bestClass}">${formatPercent(record.bestReturnRate)}</td>
+        <td class="${improvementClass}">${formatPercent(improvement)}</td>
+        <td>${formatPercent(record.bestMaxDrawdown)}</td>
+        <td>${record.bestTrades || 0}</td>
+        <td>${record.testedCandidates || 0}</td>
+        <td>${escapeHtml(formatAdminDate(record.scannedAt))}</td>
+      </tr>
+    `;
+  }).join("");
+  adminScanList.innerHTML = `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>
+          <th>标的</th>
+          <th>模型</th>
+          <th>类型</th>
+          <th>原参数收益率</th>
+          <th>优化后收益率</th>
+          <th>提升</th>
+          <th>最大回撤</th>
+          <th>交易次数</th>
+          <th>测试组合数</th>
+          <th>扫描时间</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function loadAdminScanResults() {
+  if (!adminScanList) return;
+  adminScanList.innerHTML = '<div class="ranking-empty">正在读取后台优化扫描结果...</div>';
+  try {
+    const response = await fetch("/api/admin/optimization-scan", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取后台优化扫描结果失败。");
+    renderAdminScanList(Array.isArray(payload.records) ? payload.records : []);
+  } catch (error) {
+    adminScanList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
 function setAdminTab(tab) {
   const showRankings = tab === "rankings";
-  if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", !showRankings);
+  const showScan = tab === "scan";
+  const showPresets = !showRankings && !showScan;
+  if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
-  if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", showRankings);
+  if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
+  if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
+  if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
   if (showRankings) loadAdminRankings();
+  if (showScan) loadAdminScanResults();
 }
 
 if (adminPresetsTabButton) {
@@ -1336,6 +1402,9 @@ if (adminPresetsTabButton) {
 }
 if (adminRankingsTabButton) {
   adminRankingsTabButton.addEventListener("click", () => setAdminTab("rankings"));
+}
+if (adminScanTabButton) {
+  adminScanTabButton.addEventListener("click", () => setAdminTab("scan"));
 }
 
 function openAdminDialog() {
