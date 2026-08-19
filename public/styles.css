@@ -2290,6 +2290,24 @@ textarea:focus {
   font-size: 13px;
 }
 
+.optimization-save-name {
+  font-size: 13px;
+  color: #344054;
+}
+
+.optimization-save-name label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.optimization-save-name input {
+  padding: 7px 10px;
+  border: 1px solid #d6dfe8;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
 .optimization-param-ranges {
   display: grid;
   gap: 8px;

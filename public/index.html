@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-rename-optimization-label">
+    <link rel="stylesheet" href="/styles.css?v=20260819-name-model-on-optimize-save">
   </head>
   <body>
     <main class="shell">
@@ -177,6 +177,11 @@
           <div id="optimizationReport" class="optimization-report"></div>
           <div id="optimizationNarrative" class="optimization-narrative"></div>
           <pre id="optimizationParamPreview" class="code-preview">等待结果...</pre>
+          <div id="optimizationSaveNameRow" class="optimization-save-name hidden">
+            <label>保存为模型名称
+              <input id="optimizationSaveNameInput" type="text" maxlength="80" placeholder="输入模型名称">
+            </label>
+          </div>
           <div class="dialog-actions">
             <button id="runOptimizationButton" type="button" class="hidden">运行优化</button>
             <button id="saveOptimizationButton" type="button" disabled>保存优化参数</button>
@@ -994,6 +999,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-rename-optimization-label"></script>
+    <script src="/app.js?v=20260819-name-model-on-optimize-save"></script>
   </body>
 </html>

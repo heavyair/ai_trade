@@ -126,6 +126,8 @@ const optimizationProgressLabel = document.querySelector("#optimizationProgressL
 const runOptimizationButton = document.querySelector("#runOptimizationButton");
 const closeOptimizationButton = document.querySelector("#closeOptimizationButton");
 const saveOptimizationButton = document.querySelector("#saveOptimizationButton");
+const optimizationSaveNameRow = document.querySelector("#optimizationSaveNameRow");
+const optimizationSaveNameInput = document.querySelector("#optimizationSaveNameInput");
 const customModelForm = document.querySelector("#customModelForm");
 const customModelPrompt = document.querySelector("#customModelPrompt");
 const customModelCreatorInput = document.querySelector("#customModelCreatorInput");
@@ -7174,6 +7176,8 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
   renderOptimizationNarrative(bestResult.config);
   optimizationParamPreview.textContent = JSON.stringify(getSerializablePreset(optimizationPresetDraft), null, 2);
   if (saveOptimizationButton) saveOptimizationButton.disabled = false;
+  if (optimizationSaveNameRow) optimizationSaveNameRow.classList.remove("hidden");
+  if (optimizationSaveNameInput) optimizationSaveNameInput.value = optimizationPresetDraft.label || "";
   if (optimizationDialog && !optimizationDialog.open) {
     if (typeof optimizationDialog.showModal === "function") {
       optimizationDialog.showModal();
@@ -7197,6 +7201,7 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   if (optimizationNarrative) optimizationNarrative.innerHTML = "";
   if (optimizationParamPreview) optimizationParamPreview.textContent = "等待运行...";
   if (saveOptimizationButton) saveOptimizationButton.disabled = true;
+  if (optimizationSaveNameRow) optimizationSaveNameRow.classList.add("hidden");
   renderOptimizationParamRanges(descriptors);
   if (optimizationParamRanges) optimizationParamRanges.classList.remove("hidden");
   if (runOptimizationButton) runOptimizationButton.classList.remove("hidden");
@@ -7244,6 +7249,7 @@ function openOptimizationDialog(message) {
   if (optimizationNarrative) optimizationNarrative.innerHTML = "";
   if (optimizationParamPreview) optimizationParamPreview.textContent = "优化进行中...";
   if (saveOptimizationButton) saveOptimizationButton.disabled = true;
+  if (optimizationSaveNameRow) optimizationSaveNameRow.classList.add("hidden");
   if (optimizationTitle) optimizationTitle.textContent = "参数优化中";
   if (optimizationSubtitle) optimizationSubtitle.textContent = message;
   if (optimizationProgress) optimizationProgress.classList.remove("hidden");
@@ -7366,6 +7372,12 @@ async function saveOptimizationPreset() {
     setStatus("没有可保存的优化参数。", true);
     return;
   }
+  const enteredLabel = optimizationSaveNameInput ? optimizationSaveNameInput.value.trim().slice(0, 80) : "";
+  if (!enteredLabel) {
+    setStatus("请输入模型名称。", true);
+    return;
+  }
+  optimizationPresetDraft.label = enteredLabel;
   const presetName = await saveGeneratedPreset(optimizationPresetDraft);
   if (!presetName) return;
   const checkbox = Array.from(document.querySelectorAll(".model-compare-enabled"))
