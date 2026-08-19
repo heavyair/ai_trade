@@ -2099,11 +2099,32 @@ async function handleAdminPresetsApi(req, res) {
       const body = await readRequestBody(req);
       const payload = body ? JSON.parse(body) : {};
       const id = String(payload.id || "").trim();
-      const owner = String(payload.owner || "").trim();
       if (!id) {
         sendJson(res, 400, { error: "缺少模型 ID。" });
         return;
       }
+
+      if (payload.label !== undefined) {
+        const label = String(payload.label || "").trim().slice(0, 80);
+        if (!label) {
+          sendJson(res, 400, { error: "模型名称不能为空。" });
+          return;
+        }
+        const updated = await dbQuery(`
+          UPDATE strategy_presets
+          SET label = $1, updated_at = NOW()
+          WHERE id = $2
+          RETURNING id, label
+        `, [label, id]);
+        if (updated.rows.length === 0) {
+          sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+          return;
+        }
+        sendJson(res, 200, { updated: updated.rows[0] });
+        return;
+      }
+
+      const owner = String(payload.owner || "").trim();
       if (!owner) {
         sendJson(res, 400, { error: "缺少 owner。" });
         return;

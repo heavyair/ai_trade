@@ -1252,6 +1252,7 @@ function renderAdminPresetList(presets = []) {
             <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
           </label>
           <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
+          <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
           <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
           <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
           <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
@@ -2113,6 +2114,31 @@ async function updateAdminPresetOwner(id, owner) {
     await loadAdminPresets();
   } catch (error) {
     setStatus(`修改 owner 失败：${error.message}`, true);
+  }
+}
+
+async function renameAdminPreset(id, currentLabel) {
+  if (!id) return;
+  const nextLabel = window.prompt("输入新的模型名称：", currentLabel || "");
+  if (nextLabel === null) return;
+  const trimmed = nextLabel.trim().slice(0, 80);
+  if (!trimmed) {
+    setStatus("模型名称不能为空。", true);
+    return;
+  }
+  if (trimmed === currentLabel) return;
+  try {
+    const response = await fetch("/api/admin/presets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, label: trimmed }),
+    });
+    await readJsonResponse(response, "重命名失败。");
+    setStatus(`已重命名为：${trimmed}。`);
+    await initializeServerCustomPresets();
+    await loadAdminPresets();
+  } catch (error) {
+    setStatus(`重命名失败：${error.message}`, true);
   }
 }
 
@@ -9547,6 +9573,11 @@ if (adminPresetList) {
     const toggleButton = event.target && event.target.closest ? event.target.closest(".admin-toggle-representative-button") : null;
     if (toggleButton) {
       toggleAdminScanRepresentative(toggleButton.dataset.presetId, toggleButton.dataset.representative === "1");
+      return;
+    }
+    const renameButton = event.target && event.target.closest ? event.target.closest(".admin-rename-preset-button") : null;
+    if (renameButton) {
+      renameAdminPreset(renameButton.dataset.presetId, renameButton.dataset.presetLabel);
       return;
     }
     const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;
