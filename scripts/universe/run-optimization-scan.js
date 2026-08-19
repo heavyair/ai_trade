@@ -53,9 +53,13 @@ async function ensureResultsTable() {
       best_trades INTEGER NOT NULL DEFAULT 0,
       tested_candidates INTEGER NOT NULL DEFAULT 0,
       best_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+      buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
       scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(symbol, market, preset_id)
     );
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0;
   `);
 }
 
@@ -140,9 +144,10 @@ async function saveResult(row) {
     INSERT INTO optimization_scan_results (
       id, symbol, market, symbol_name, preset_id, preset_label, strategy_type, rows_tested,
       baseline_return_rate, baseline_max_drawdown, best_return_rate, best_max_drawdown,
-      best_score, best_trades, tested_candidates, best_config, scanned_at
+      best_score, best_trades, tested_candidates, best_config,
+      buy_hold_return_rate, buy_hold_max_drawdown, scanned_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,NOW())
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
       preset_label = EXCLUDED.preset_label,
@@ -155,11 +160,14 @@ async function saveResult(row) {
       best_trades = EXCLUDED.best_trades,
       tested_candidates = EXCLUDED.tested_candidates,
       best_config = EXCLUDED.best_config,
+      buy_hold_return_rate = EXCLUDED.buy_hold_return_rate,
+      buy_hold_max_drawdown = EXCLUDED.buy_hold_max_drawdown,
       scanned_at = NOW()
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
     row.baselineReturnRate, row.baselineMaxDrawdown, row.bestReturnRate, row.bestMaxDrawdown,
     row.bestScore, row.bestTrades, row.testedCandidates, JSON.stringify(row.bestConfig),
+    row.buyHoldReturnRate, row.buyHoldMaxDrawdown,
   ]);
 }
 
@@ -173,6 +181,7 @@ async function main() {
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
   const rowsCache = new Map();
+  const buyHoldCache = new Map();
   let pairIndex = 0;
   let skipped = 0;
   let dataSkipped = 0;
@@ -194,6 +203,13 @@ async function main() {
       pairIndex += presets.length;
       console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS}), skipping all presets`);
       continue;
+    }
+
+    let buyHold = buyHoldCache.get(`${symbolEntry.code}:${dbMarket}`);
+    if (buyHold === undefined) {
+      const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
+      buyHold = buyHoldStates[buyHoldStates.length - 1];
+      buyHoldCache.set(`${symbolEntry.code}:${dbMarket}`, buyHold);
     }
 
     engine.setActiveLotSizeSymbol(symbolEntry.code);
@@ -242,6 +258,8 @@ async function main() {
           bestTrades: best.last.trades.length,
           testedCandidates: candidates.length,
           bestConfig: best.config,
+          buyHoldReturnRate: buyHold.returnRate,
+          buyHoldMaxDrawdown: buyHold.maxDrawdown,
         });
 
         if (pairIndex % 20 === 0 || pairIndex === totalPairs) {

@@ -1325,6 +1325,8 @@ async function loadAdminRankings() {
   }
 }
 
+let adminScanCache = [];
+
 function renderAdminScanList(records = []) {
   if (!adminScanList) return;
   if (!records.length) {
@@ -1335,6 +1337,8 @@ function renderAdminScanList(records = []) {
     const improvement = record.bestReturnRate - record.baselineReturnRate;
     const improvementClass = improvement > 0 ? "up" : improvement < 0 ? "down" : "";
     const bestClass = record.bestReturnRate > 0 ? "up" : record.bestReturnRate < 0 ? "down" : "";
+    const vsBuyHold = record.bestReturnRate - record.buyHoldReturnRate;
+    const vsBuyHoldClass = vsBuyHold > 0 ? "up" : vsBuyHold < 0 ? "down" : "";
     return `
       <tr>
         <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
@@ -1344,9 +1348,12 @@ function renderAdminScanList(records = []) {
         <td class="${bestClass}">${formatPercent(record.bestReturnRate)}</td>
         <td class="${improvementClass}">${formatPercent(improvement)}</td>
         <td>${formatPercent(record.bestMaxDrawdown)}</td>
+        <td>${formatPercent(record.buyHoldReturnRate)}</td>
+        <td class="${vsBuyHoldClass}">${formatPercent(vsBuyHold)}</td>
         <td>${record.bestTrades || 0}</td>
         <td>${record.testedCandidates || 0}</td>
         <td>${escapeHtml(formatAdminDate(record.scannedAt))}</td>
+        <td><button type="button" class="admin-view-params-button" data-scan-id="${escapeHtml(record.id)}">查看参数</button></td>
       </tr>
     `;
   }).join("");
@@ -1361,9 +1368,12 @@ function renderAdminScanList(records = []) {
           <th>优化后收益率</th>
           <th>提升</th>
           <th>最大回撤</th>
+          <th>全仓买入持有收益率</th>
+          <th>跑赢买入持有</th>
           <th>交易次数</th>
           <th>测试组合数</th>
           <th>扫描时间</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -1377,10 +1387,38 @@ async function loadAdminScanResults() {
   try {
     const response = await fetch("/api/admin/optimization-scan", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取后台优化扫描结果失败。");
-    renderAdminScanList(Array.isArray(payload.records) ? payload.records : []);
+    adminScanCache = Array.isArray(payload.records) ? payload.records : [];
+    renderAdminScanList(adminScanCache);
   } catch (error) {
     adminScanList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
+}
+
+function openAdminScanParamViewer(scanId) {
+  const record = adminScanCache.find((item) => item.id === scanId);
+  if (!record) return;
+  const config = record.bestConfig && typeof record.bestConfig === "object" ? record.bestConfig : {};
+  const viewPreset = {
+    ...config,
+    label: `${record.presetLabel} · ${record.symbolName || record.symbol}`,
+    strategyType: record.strategyType || config.strategyType || "wave",
+  };
+  openPresetParamEditor(scanId, {
+    preset: viewPreset,
+    readonly: true,
+    title: `查看优化后参数：${record.symbolName || record.symbol}（${record.presetLabel}）`,
+    subtitle: `优化后收益率 ${formatPercent(record.bestReturnRate)} · 最大回撤 ${formatPercent(record.bestMaxDrawdown)} · 只读`,
+  });
+}
+
+if (adminScanList) {
+  adminScanList.addEventListener("click", (event) => {
+    const target = event.target;
+    const viewButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
+    if (viewButton) {
+      openAdminScanParamViewer(viewButton.dataset.scanId);
+    }
+  });
 }
 
 function setAdminTab(tab) {

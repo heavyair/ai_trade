@@ -2191,6 +2191,8 @@ function mapAdminOptimizationScanRow(row) {
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
     bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+    buyHoldReturnRate: Number(row.buy_hold_return_rate) || 0,
+    buyHoldMaxDrawdown: Number(row.buy_hold_max_drawdown) || 0,
     scannedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
   };
 }
