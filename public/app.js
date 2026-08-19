@@ -2182,8 +2182,7 @@ function cloneRules(rules, defaults) {
   return (rules || defaults).map((rule) => ({ ...rule }));
 }
 
-function createConfigFromPreset(presetName, baseConfig) {
-  const preset = strategyPresets[presetName] || strategyPresets.optimized;
+function buildConfigFromPresetObject(preset, baseConfig) {
   return {
     ...baseConfig,
     strategyType: preset.strategyType || "wave",
@@ -2219,6 +2218,11 @@ function createConfigFromPreset(presetName, baseConfig) {
       ...(preset.noNewHighExitRule || {}),
     },
   };
+}
+
+function createConfigFromPreset(presetName, baseConfig) {
+  const preset = strategyPresets[presetName] || strategyPresets.optimized;
+  return buildConfigFromPresetObject(preset, baseConfig);
 }
 
 function getPresetLatestRankingRecord(presetName) {
@@ -3396,6 +3400,20 @@ function getTradeAccountState(account, price) {
   };
 }
 
+function isStarMarketSymbol(symbol) {
+  return /^688/.test(String(symbol || "").trim());
+}
+
+function getMinTradeLotSize() {
+  const symbol = normalizeSymbolInput(codeInput.value);
+  return isStarMarketSymbol(symbol) ? 200 : 100;
+}
+
+function roundDownToLot(shares, lotSize) {
+  if (!(lotSize > 0)) return Math.floor(shares);
+  return Math.floor(shares / lotSize) * lotSize;
+}
+
 function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPercent, trades, tradeFee = 0) {
   const price = row.close;
   const equity = account.cash + account.shares * price;
@@ -3403,7 +3421,7 @@ function buyToTarget(account, row, rowIndex, targetPercent, reference, triggerPe
   const targetValue = equity * (targetPercent / 100);
   const availableCash = Math.max(0, account.cash - tradeFee);
   const buyValue = Math.min(availableCash, targetValue - currentValue);
-  const shares = Math.floor(buyValue / price);
+  const shares = roundDownToLot(Math.floor(buyValue / price), getMinTradeLotSize());
 
   if (shares <= 0) return false;
 
@@ -3438,7 +3456,10 @@ function sellByReduction(account, row, rowIndex, reducePercent, reference, trigg
   const targetRatio = Math.max(0, currentRatio - reducePercent);
   const targetValue = equity * (targetRatio / 100);
   const sellValue = Math.max(0, currentValue - targetValue);
-  const shares = Math.min(account.shares, Math.floor(sellValue / price));
+  const rawShares = Math.min(account.shares, Math.floor(sellValue / price));
+  // A full exit is always allowed regardless of lot size; a partial sell must round
+  // down to a whole lot so we never leave (or create) an unsellable sub-lot trade.
+  const shares = rawShares >= account.shares ? rawShares : roundDownToLot(rawShares, getMinTradeLotSize());
 
   if (shares <= 0) return false;
 
@@ -3478,7 +3499,7 @@ function rebalanceToTarget(account, row, rowIndex, targetPercent, reference, rea
 
   if (delta > 0) {
     const maxShares = Math.floor(Math.max(0, account.cash - tradeFee) / price);
-    const shares = Math.min(delta, maxShares);
+    const shares = roundDownToLot(Math.min(delta, maxShares), getMinTradeLotSize());
     if (shares <= 0) return false;
 
     account.cash -= shares * price + tradeFee;
@@ -3504,7 +3525,9 @@ function rebalanceToTarget(account, row, rowIndex, targetPercent, reference, rea
     return trade;
   }
 
-  const shares = Math.min(account.shares, -delta);
+  const rawShares = Math.min(account.shares, -delta);
+  const isFullExit = rawShares >= account.shares;
+  const shares = isFullExit ? rawShares : roundDownToLot(rawShares, getMinTradeLotSize());
   if (shares <= 0) return false;
 
   account.cash += shares * price - tradeFee;
@@ -3533,7 +3556,7 @@ function rebalanceToTarget(account, row, rowIndex, targetPercent, reference, rea
 function buyFixedCapitalLot(account, row, rowIndex, capitalAmount, reference, triggerPercent, reason, trades, tradeFee = 0) {
   const price = row.close;
   const buyValue = Math.min(Math.max(0, account.cash - tradeFee), capitalAmount);
-  const shares = Math.floor(buyValue / price);
+  const shares = roundDownToLot(Math.floor(buyValue / price), getMinTradeLotSize());
   if (shares <= 0) return false;
 
   account.cash -= shares * price + tradeFee;
@@ -5738,7 +5761,7 @@ function openPresetParamEditor(presetName, options = {}) {
     presetModelText.value = modelText;
     presetModelText.disabled = readonly || !canEdit;
   }
-  renderPresetParamNarrativeFromPreset(preset, options.config || createConfigFromPreset(presetName, readBacktestConfig()));
+  renderPresetParamNarrativeFromPreset(preset, options.config || buildConfigFromPresetObject(preset, readBacktestConfig()));
   const editorPreset = readonly && options.config
     ? stripPresetDisplayFields(options.config)
     : getSerializablePreset(preset);
