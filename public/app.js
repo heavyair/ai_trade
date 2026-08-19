@@ -5551,6 +5551,7 @@ function renderWaveRuleFormEditor(config) {
   const buyRules = Array.isArray(config && config.buyRules) ? config.buyRules : [];
   const sellRules = Array.isArray(config && config.sellRules) ? config.sellRules : [];
   const waveThreshold = config && config.waveThreshold !== undefined ? config.waveThreshold : 5;
+  const riskRule = { ...defaultNoNewHighExitRule, ...((config && config.noNewHighExitRule) || {}) };
   const renderRuleBlock = (rule, sideKey, index, fieldA, labelA, fieldB, labelB) => `
     <div class="block-rule-block" data-wave-side="${sideKey}" data-block-index="${index}">
       <div class="block-rule-block-head">
@@ -5584,6 +5585,16 @@ function renderWaveRuleFormEditor(config) {
         <button type="button" class="ghost-button" id="addWaveSellRuleButton">+ 添加卖出规则</button>
       </div>
     </div>
+    <div class="block-rule-block">
+      <div class="block-rule-block-head">
+        <label><input type="checkbox" data-role="wave-risk-enabled" ${riskRule.enabled ? "checked" : ""}> 启用风控平仓（滞涨止损）</label>
+      </div>
+      <div class="flat-rule-form">
+        <label class="flat-rule-field"><span>回看天数</span><input type="number" step="1" min="2" data-role="wave-risk-lookbackDays" value="${riskRule.lookbackDays}"></label>
+        <label class="flat-rule-field"><span>未创新高天数</span><input type="number" step="1" min="1" data-role="wave-risk-stalledDays" value="${riskRule.stalledDays}"></label>
+        <label class="flat-rule-field"><span>触发时减仓%</span><input type="number" step="any" min="0" max="100" data-role="wave-risk-reduce" value="${riskRule.reduce}"></label>
+      </div>
+    </div>
   `;
   if (blockRuleFormReadonly) {
     blockRuleFormEditor.querySelectorAll("input, button").forEach((el) => { el.disabled = true; });
@@ -5592,7 +5603,7 @@ function renderWaveRuleFormEditor(config) {
 }
 
 function collectWaveRuleFormState() {
-  if (!blockRuleFormEditor) return { waveThreshold: 5, buyRules: [], sellRules: [] };
+  if (!blockRuleFormEditor) return { waveThreshold: 5, buyRules: [], sellRules: [], noNewHighExitRule: { ...defaultNoNewHighExitRule, enabled: false } };
   const thresholdInput = blockRuleFormEditor.querySelector('[data-role="wave-threshold"]');
   const waveThreshold = thresholdInput ? Number(thresholdInput.value) || 5 : 5;
   const collectSide = (sideKey, fieldA, fieldB) => {
@@ -5604,10 +5615,21 @@ function collectWaveRuleFormState() {
       return { enabled, [fieldA]: a, [fieldB]: b };
     });
   };
+  const riskEnabledInput = blockRuleFormEditor.querySelector('[data-role="wave-risk-enabled"]');
+  const riskLookbackInput = blockRuleFormEditor.querySelector('[data-role="wave-risk-lookbackDays"]');
+  const riskStalledInput = blockRuleFormEditor.querySelector('[data-role="wave-risk-stalledDays"]');
+  const riskReduceInput = blockRuleFormEditor.querySelector('[data-role="wave-risk-reduce"]');
+  const noNewHighExitRule = {
+    enabled: Boolean(riskEnabledInput && riskEnabledInput.checked),
+    lookbackDays: Math.max(2, Math.round(Number(riskLookbackInput && riskLookbackInput.value) || defaultNoNewHighExitRule.lookbackDays)),
+    stalledDays: Math.max(1, Math.round(Number(riskStalledInput && riskStalledInput.value) || defaultNoNewHighExitRule.stalledDays)),
+    reduce: Math.min(100, Math.max(0, Number(riskReduceInput && riskReduceInput.value) || defaultNoNewHighExitRule.reduce)),
+  };
   return {
     waveThreshold,
     buyRules: collectSide("buyRules", "drop", "target"),
     sellRules: collectSide("sellRules", "rise", "reduce"),
+    noNewHighExitRule,
   };
 }
 
@@ -5623,6 +5645,7 @@ function syncWaveRuleFormToEditor() {
   base.waveThreshold = state.waveThreshold;
   base.buyRules = state.buyRules;
   base.sellRules = state.sellRules;
+  base.noNewHighExitRule = state.noNewHighExitRule;
   presetParamEditor.value = JSON.stringify(base, null, 2);
 }
 
@@ -5793,6 +5816,11 @@ function openPresetParamEditor(presetName, options = {}) {
         waveThreshold: Math.max(0.1, Number(editorPreset.waveThreshold) || 5),
         buyRules: cloneRules(editorPreset.buyRules, defaultBuyRules),
         sellRules: cloneRules(editorPreset.sellRules, defaultSellRules),
+        noNewHighExitRule: {
+          ...defaultNoNewHighExitRule,
+          ...(editorPreset.noNewHighExitRule || {}),
+          enabled: Boolean(editorPreset.noNewHighExitRule && editorPreset.noNewHighExitRule.enabled),
+        },
       });
     } else if (flatTypeConfig) {
       blockRuleFormEditor.classList.remove("hidden");
@@ -6419,6 +6447,8 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
   descriptors.forEach((descriptor, index) => {
     setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
   });
+  enforceMonotonicRules(root.buyRules, "drop", "target");
+  enforceMonotonicRules(root.sellRules, "rise", "reduce");
   return {
     ...base,
     waveThreshold: root.waveThreshold,
@@ -6426,6 +6456,24 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
     sellRules: root.sellRules,
     noNewHighExitRule: { enabled: false, ...defaultNoNewHighExitRule },
   };
+}
+
+// Independently-sampled optimization candidates can pair a deep drawdown/rise
+// threshold with a small target/reduce (or vice versa), which is backwards for a
+// tiered wave model — deeper drawdowns should always target at least as much
+// position as shallower ones (and bigger rises should reduce at least as much).
+// Re-pairing the same sampled values in sorted order fixes this without discarding
+// any of the search diversity, and as a side effect leaves the rules array itself
+// sorted by threshold for a sane narrative/UI display.
+function enforceMonotonicRules(rules, thresholdKey, targetKey) {
+  if (!Array.isArray(rules) || rules.length < 2) return rules;
+  const thresholds = rules.map((rule) => rule[thresholdKey]).sort((a, b) => a - b);
+  const targets = rules.map((rule) => rule[targetKey]).sort((a, b) => a - b);
+  rules.forEach((rule, index) => {
+    rule[thresholdKey] = thresholds[index];
+    rule[targetKey] = targets[index];
+  });
+  return rules;
 }
 
 function renderOptimizationParamRanges(descriptors) {
