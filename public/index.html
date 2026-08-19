@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-admin-trigger-scan">
+    <link rel="stylesheet" href="/styles.css?v=20260819-scan-crash-resume">
   </head>
   <body>
     <main class="shell">
@@ -168,6 +168,7 @@
             <div class="admin-rerun-controls">
               <button type="button" id="adminScanRunSelectedButton" class="ghost-button">对勾选的模型重新扫描</button>
               <button type="button" id="adminScanRunAllButton" class="ghost-button">对全部模型重新扫描</button>
+              <button type="button" id="adminScanResumeButton" class="ghost-button hidden">继续上次中断的扫描</button>
               <span id="adminScanRunStatus" class="field-hint"></span>
             </div>
           </div>
@@ -1061,6 +1062,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-admin-trigger-scan"></script>
+    <script src="/app.js?v=20260819-scan-crash-resume"></script>
   </body>
 </html>

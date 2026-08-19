@@ -38,6 +38,11 @@ const MIN_ROWS = Math.max(30, getArg("minRows", 250));
 const SYMBOL_LIMIT = getArg("limit", 0);
 const RESCAN = args.includes("--rescan");
 const PRESET_IDS_FILTER = getArgString("presetIds").split(",").map((s) => s.trim()).filter(Boolean);
+// When resuming a --rescan run that crashed partway through, pass the ORIGINAL session's
+// start time here so pairs already redone since then are skipped instead of redone again
+// (plain --rescan with no session marker always redoes everything, since a fresh rescan
+// is supposed to override every existing row regardless of age).
+const SESSION_SINCE = getArgString("sessionSince") || null;
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
@@ -201,10 +206,19 @@ function buildCandidates(preset, descriptors, baseConfig) {
 }
 
 async function alreadyScanned(symbol, market, presetId) {
-  if (RESCAN) return false;
+  if (!RESCAN) {
+    const result = await pool.query(
+      "SELECT 1 FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3",
+      [symbol, market, presetId]
+    );
+    return result.rowCount > 0;
+  }
+  if (!SESSION_SINCE) return false;
+  // Resuming: only skip a pair if it was already redone since THIS rescan session
+  // started, not merely because a (possibly stale/pre-fix) row exists from earlier.
   const result = await pool.query(
-    "SELECT 1 FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3",
-    [symbol, market, presetId]
+    "SELECT 1 FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3 AND scanned_at >= $4",
+    [symbol, market, presetId, SESSION_SINCE]
   );
   return result.rowCount > 0;
 }
@@ -264,24 +278,36 @@ async function main() {
       ? (/^[569]/.test(symbolEntry.code) ? "1" : "0")
       : "US";
 
-    let rows = rowsCache.get(`${symbolEntry.code}:${dbMarket}`);
-    if (rows === undefined) {
-      rows = await loadRows(symbolEntry.code, dbMarket);
-      rowsCache.set(`${symbolEntry.code}:${dbMarket}`, rows);
-    }
+    // A transient DB hiccup here (or anywhere per-symbol, before the per-pair try/catch
+    // below even starts) would otherwise be an uncaught rejection that kills the whole
+    // process — catch it, skip this one symbol, and keep going instead of crashing a
+    // multi-hour run over what's usually a momentary connection blip.
+    let rows;
+    let buyHold;
+    try {
+      rows = rowsCache.get(`${symbolEntry.code}:${dbMarket}`);
+      if (rows === undefined) {
+        rows = await loadRows(symbolEntry.code, dbMarket);
+        rowsCache.set(`${symbolEntry.code}:${dbMarket}`, rows);
+      }
 
-    if (rows.length < MIN_ROWS) {
-      dataSkipped += presets.length;
+      if (rows.length < MIN_ROWS) {
+        dataSkipped += presets.length;
+        pairIndex += presets.length;
+        console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS}), skipping all presets`);
+        continue;
+      }
+
+      buyHold = buyHoldCache.get(`${symbolEntry.code}:${dbMarket}`);
+      if (buyHold === undefined) {
+        const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
+        buyHold = buyHoldStates[buyHoldStates.length - 1];
+        buyHoldCache.set(`${symbolEntry.code}:${dbMarket}`, buyHold);
+      }
+    } catch (error) {
+      console.error(`[error] loading ${symbolEntry.code}: ${error.message}`);
       pairIndex += presets.length;
-      console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS}), skipping all presets`);
       continue;
-    }
-
-    let buyHold = buyHoldCache.get(`${symbolEntry.code}:${dbMarket}`);
-    if (buyHold === undefined) {
-      const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
-      buyHold = buyHoldStates[buyHoldStates.length - 1];
-      buyHoldCache.set(`${symbolEntry.code}:${dbMarket}`, buyHold);
     }
 
     engine.setActiveLotSizeSymbol(symbolEntry.code);
@@ -289,12 +315,13 @@ async function main() {
 
     for (const preset of presets) {
       pairIndex += 1;
-      if (await alreadyScanned(symbolEntry.code, dbMarket, preset.id)) {
-        skipped += 1;
-        continue;
-      }
 
       try {
+        if (await alreadyScanned(symbolEntry.code, dbMarket, preset.id)) {
+          skipped += 1;
+          continue;
+        }
+
         const config0 = engine.buildConfigFromPresetObject(preset, { ...baseConfig, strategyType: preset.strategyType });
         const baselineStates = engine.buildBacktestStates(rows, config0);
         const baselineLast = baselineStates[baselineStates.length - 1];

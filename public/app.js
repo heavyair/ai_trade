@@ -121,6 +121,7 @@ const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary")
 const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
 const adminScanRunSelectedButton = document.querySelector("#adminScanRunSelectedButton");
 const adminScanRunAllButton = document.querySelector("#adminScanRunAllButton");
+const adminScanResumeButton = document.querySelector("#adminScanResumeButton");
 const adminScanRunStatus = document.querySelector("#adminScanRunStatus");
 const adminRerunDialog = document.querySelector("#adminRerunDialog");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
@@ -1928,10 +1929,24 @@ function renderAdminScanStatus(status) {
   const running = Boolean(status.scanRunning);
   if (adminScanRunSelectedButton) adminScanRunSelectedButton.disabled = running;
   if (adminScanRunAllButton) adminScanRunAllButton.disabled = running;
+
+  const last = status.lastScanResult;
+  const crashed = Boolean(last && last.exitCode !== 0);
+  if (adminScanResumeButton) {
+    adminScanResumeButton.classList.toggle("hidden", running || !crashed);
+    adminScanResumeButton.disabled = running;
+  }
+
   if (adminScanRunStatus) {
-    adminScanRunStatus.textContent = running
-      ? `扫描进行中（由 ${status.scanInfo && status.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(status.scanInfo && status.scanInfo.startedAt))} 启动）...`
-      : "";
+    if (running) {
+      adminScanRunStatus.textContent = `扫描进行中（由 ${status.scanInfo && status.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(status.scanInfo && status.scanInfo.startedAt))} 启动）...`;
+    } else if (crashed) {
+      adminScanRunStatus.textContent = `上次扫描异常退出（退出码 ${last.exitCode}，${escapeHtml(formatAdminDate(last.endedAt))}）——可以点"继续上次中断的扫描"接着跑，不会重复已经完成的部分。`;
+    } else if (last) {
+      adminScanRunStatus.textContent = `上次扫描已正常完成（${escapeHtml(formatAdminDate(last.endedAt))}）。`;
+    } else {
+      adminScanRunStatus.textContent = "";
+    }
   }
   if (running) {
     scheduleAdminScanStatusPoll();
@@ -1977,16 +1992,18 @@ async function loadAdminScanStatus() {
   }
 }
 
-async function triggerAdminScanRun(presetIds) {
-  if (adminScanRunStatus) adminScanRunStatus.textContent = "正在启动扫描...";
+async function triggerAdminScanRun(presetIds, options = {}) {
+  if (adminScanRunStatus) adminScanRunStatus.textContent = options.resume ? "正在继续上次中断的扫描..." : "正在启动扫描...";
   try {
     const response = await fetch("/api/admin/optimization-scan/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ presetIds }),
+      body: JSON.stringify({ presetIds, resume: Boolean(options.resume) }),
     });
     await readJsonResponse(response, "启动扫描失败。");
-    setStatus(presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。");
+    setStatus(options.resume
+      ? "已继续上次中断的扫描。"
+      : (presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。"));
     await loadAdminScanStatus();
   } catch (error) {
     if (adminScanRunStatus) adminScanRunStatus.textContent = "";
@@ -2039,6 +2056,11 @@ if (adminScanRunAllButton) {
   adminScanRunAllButton.addEventListener("click", () => {
     if (!window.confirm("确定要对全部当前模型重新扫描全部股票吗？这会覆盖已有结果，且可能耗时较久。")) return;
     triggerAdminScanRun([]);
+  });
+}
+if (adminScanResumeButton) {
+  adminScanResumeButton.addEventListener("click", () => {
+    triggerAdminScanRun([], { resume: true });
   });
 }
 

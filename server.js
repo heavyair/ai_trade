@@ -2242,9 +2242,48 @@ function loadOptimizationUniverse() {
 // rather than continuing to write results against a possibly-stale codebase.
 let activeScanProcess = null;
 let activeScanInfo = null;
+// Set once the previous run's child process exits, so the admin UI can tell "last run
+// crashed" (exitCode !== 0) from "last run finished normally" (exitCode === 0), and so a
+// "resume" request can replay the exact same session (same sessionStartedAt/presetIds).
+let lastScanResult = null;
 
 function isScanRunning() {
   return Boolean(activeScanProcess && activeScanInfo);
+}
+
+function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
+  const scriptPath = path.join(__dirname, "scripts", "universe", "run-optimization-scan.js");
+  const logPath = path.join(__dirname, "scripts", "universe", "scan.log");
+  const logFd = fs.openSync(logPath, "a");
+  const scanArgs = [
+    scriptPath, "--rescan", "--candidates=300", "--minRows=250",
+    `--sessionSince=${sessionStartedAt}`,
+  ];
+  if (presetIds.length > 0) scanArgs.push(`--presetIds=${presetIds.join(",")}`);
+
+  fs.writeSync(logFd, `\n\n=== admin-triggered scan started, session=${sessionStartedAt} by ${triggeredBy} presetIds=${presetIds.join(",") || "(all active)"} ===\n`);
+
+  const child = spawn(process.execPath, scanArgs, {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ["ignore", logFd, logFd],
+  });
+  activeScanProcess = child;
+  activeScanInfo = { startedAt: sessionStartedAt, sessionStartedAt, presetIds, triggeredBy, pid: child.pid };
+
+  child.on("exit", (code) => {
+    fs.writeSync(logFd, `\n=== admin-triggered scan exited with code ${code} ===\n`);
+    fs.closeSync(logFd);
+    lastScanResult = { sessionStartedAt, presetIds, triggeredBy, exitCode: code, endedAt: new Date().toISOString() };
+    activeScanProcess = null;
+    activeScanInfo = null;
+  });
+  child.on("error", (error) => {
+    console.error("optimization scan child process error:", error);
+    lastScanResult = { sessionStartedAt, presetIds, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message };
+    activeScanProcess = null;
+    activeScanInfo = null;
+  });
 }
 
 async function handleAdminOptimizationScanRunApi(req, res) {
@@ -2261,40 +2300,25 @@ async function handleAdminOptimizationScanRunApi(req, res) {
 
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
-    const presetIds = Array.isArray(payload.presetIds)
-      ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
-      : [];
 
-    const scriptPath = path.join(__dirname, "scripts", "universe", "run-optimization-scan.js");
-    const logPath = path.join(__dirname, "scripts", "universe", "scan.log");
-    const logFd = fs.openSync(logPath, "a");
-    const scanArgs = [scriptPath, "--rescan", "--candidates=300", "--minRows=250"];
-    if (presetIds.length > 0) scanArgs.push(`--presetIds=${presetIds.join(",")}`);
+    let presetIds;
+    let sessionStartedAt;
+    if (payload.resume) {
+      if (!lastScanResult || lastScanResult.exitCode === 0) {
+        sendJson(res, 400, { error: "没有可以继续的中断扫描（上一次不是异常退出）。" });
+        return;
+      }
+      presetIds = lastScanResult.presetIds;
+      sessionStartedAt = lastScanResult.sessionStartedAt;
+    } else {
+      presetIds = Array.isArray(payload.presetIds)
+        ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
+        : [];
+      sessionStartedAt = new Date().toISOString();
+    }
 
-    const startedAt = new Date().toISOString();
-    fs.writeSync(logFd, `\n\n=== admin-triggered scan started ${startedAt} by ${admin.email} presetIds=${presetIds.join(",") || "(all active)"} ===\n`);
-
-    const child = spawn(process.execPath, scanArgs, {
-      cwd: __dirname,
-      env: process.env,
-      stdio: ["ignore", logFd, logFd],
-    });
-    activeScanProcess = child;
-    activeScanInfo = { startedAt, presetIds, triggeredBy: admin.email, pid: child.pid };
-
-    child.on("exit", (code) => {
-      fs.writeSync(logFd, `\n=== admin-triggered scan exited with code ${code} ===\n`);
-      fs.closeSync(logFd);
-      activeScanProcess = null;
-      activeScanInfo = null;
-    });
-    child.on("error", (error) => {
-      console.error("optimization scan child process error:", error);
-      activeScanProcess = null;
-      activeScanInfo = null;
-    });
-
-    sendJson(res, 200, { started: true, presetIds, startedAt });
+    launchScanProcess({ presetIds, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, presetIds, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
   }
@@ -2328,6 +2352,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
         perModel: [],
         scanRunning: isScanRunning(),
         scanInfo: activeScanInfo,
+        lastScanResult,
       });
       return;
     }
@@ -2397,6 +2422,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       perModel,
       scanRunning: isScanRunning(),
       scanInfo: activeScanInfo,
+      lastScanResult,
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
