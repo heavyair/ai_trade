@@ -6839,6 +6839,10 @@ function discoverBlockRuleParameters(preset) {
     value: "阈值",
   };
   const integerFields = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
+  // These indicators are inherently day-counts, so their comparison threshold (the
+  // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
+  // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
+  const dayCountIndicators = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
   const percentIndicators = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "positionRatio"]);
   const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
   const walkBlocks = (blocks, sideLabel, sideKey) => {
@@ -6851,7 +6855,7 @@ function discoverBlockRuleParameters(preset) {
           if (raw === null || raw === undefined || raw === "") return;
           const current = Number(raw);
           if (!Number.isFinite(current)) return;
-          const isInteger = integerFields.has(field);
+          const isInteger = integerFields.has(field) || (field === "value" && dayCountIndicators.has(condition.indicator));
           const isPercent = field === "value" && percentIndicators.has(condition.indicator);
           const range = computeDefaultParamRange(current, isInteger, isPercent);
           descriptors.push({
