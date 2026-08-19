@@ -1663,6 +1663,9 @@ function renderAdminRerunFrame() {
       adminRerunState.lastRenderedTradeCount = state.trades.length;
     } catch (error) {
       console.error("重跑交易明细渲染失败：", error);
+      // Surface the failure instead of silently leaving the panel blank — otherwise a
+      // thrown error here reads to the user as "trades never show" with no clue why.
+      adminRerunTradeList.innerHTML = `<div class="ranking-empty">交易明细渲染出错：${escapeHtml(error && error.message || String(error))}</div>`;
     }
   }
   if (adminRerunMetrics) {
