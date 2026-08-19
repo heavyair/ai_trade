@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
+const { dedupePresetsForScan } = require("./scripts/universe/dedupe-presets.js");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -2358,9 +2359,21 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
     }
 
     const presetsResult = await dbQuery(`
-      SELECT id, label, strategy_type FROM strategy_presets WHERE hidden_at IS NULL
+      SELECT id, label, strategy_type, config, updated_at FROM strategy_presets WHERE hidden_at IS NULL
     `);
-    const presets = presetsResult.rows;
+    // A rescan only ever actually uses the deduped "kept" set (see dedupePresetsForScan) —
+    // showing every active preset as a separately-checkable row in the admin UI let an
+    // admin select one that gets silently dropped during the real scan (e.g. two wave
+    // presets that are just different parameter values of the same model), so "重新扫描"
+    // on that row matched zero presets and did nothing. Apply the same dedup here so the
+    // checkbox list only ever offers presets that will actually be scanned.
+    const { kept: presets } = dedupePresetsForScan(presetsResult.rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      strategyType: row.strategy_type,
+      updatedAt: row.updated_at,
+      ...row.config,
+    })));
     const totalModels = presets.length;
 
     const eligibleRowsResult = await dbQuery(`
@@ -2400,7 +2413,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       return {
         presetId: preset.id,
         label: preset.label,
-        strategyType: preset.strategy_type,
+        strategyType: preset.strategyType,
         testedStocks,
         eligibleStocks,
         rate: eligibleStocks > 0 ? testedStocks / eligibleStocks : 0,
