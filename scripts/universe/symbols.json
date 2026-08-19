@@ -1,0 +1,2424 @@
+{
+  "generatedAt": "2026-08-19",
+  "notes": "CSI 300 (沪深300) constituents fetched live via AKShare index_stock_cons_csindex(symbol=\"000300\") on 2026-08-19. Nasdaq-100 (纳指100) constituents sourced from a public constituents list (~Feb 2026 snapshot) plus QQQ and NET (Cloudflare) added explicitly. Both indices rebalance periodically (CSI 300 semi-annually, Nasdaq-100 annually in December plus occasional special replacements) — re-run scripts/universe/refresh-csi300.js and refresh the Nasdaq-100 list periodically to keep this current.",
+  "symbols": [
+    {
+      "code": "000001",
+      "market": "CN",
+      "name": "平安银行",
+      "index": "csi300"
+    },
+    {
+      "code": "000002",
+      "market": "CN",
+      "name": "万科A",
+      "index": "csi300"
+    },
+    {
+      "code": "000063",
+      "market": "CN",
+      "name": "中兴通讯",
+      "index": "csi300"
+    },
+    {
+      "code": "000100",
+      "market": "CN",
+      "name": "TCL科技",
+      "index": "csi300"
+    },
+    {
+      "code": "000157",
+      "market": "CN",
+      "name": "中联重科",
+      "index": "csi300"
+    },
+    {
+      "code": "000166",
+      "market": "CN",
+      "name": "申万宏源",
+      "index": "csi300"
+    },
+    {
+      "code": "000301",
+      "market": "CN",
+      "name": "东方盛虹",
+      "index": "csi300"
+    },
+    {
+      "code": "000333",
+      "market": "CN",
+      "name": "美的集团",
+      "index": "csi300"
+    },
+    {
+      "code": "000338",
+      "market": "CN",
+      "name": "潍柴动力",
+      "index": "csi300"
+    },
+    {
+      "code": "000408",
+      "market": "CN",
+      "name": "藏格矿业",
+      "index": "csi300"
+    },
+    {
+      "code": "000425",
+      "market": "CN",
+      "name": "徐工机械",
+      "index": "csi300"
+    },
+    {
+      "code": "000538",
+      "market": "CN",
+      "name": "云南白药",
+      "index": "csi300"
+    },
+    {
+      "code": "000568",
+      "market": "CN",
+      "name": "泸州老窖",
+      "index": "csi300"
+    },
+    {
+      "code": "000596",
+      "market": "CN",
+      "name": "古井贡酒",
+      "index": "csi300"
+    },
+    {
+      "code": "000617",
+      "market": "CN",
+      "name": "中油资本",
+      "index": "csi300"
+    },
+    {
+      "code": "000625",
+      "market": "CN",
+      "name": "长安汽车",
+      "index": "csi300"
+    },
+    {
+      "code": "000630",
+      "market": "CN",
+      "name": "铜陵有色",
+      "index": "csi300"
+    },
+    {
+      "code": "000651",
+      "market": "CN",
+      "name": "格力电器",
+      "index": "csi300"
+    },
+    {
+      "code": "000657",
+      "market": "CN",
+      "name": "中钨高新",
+      "index": "csi300"
+    },
+    {
+      "code": "000708",
+      "market": "CN",
+      "name": "中信特钢",
+      "index": "csi300"
+    },
+    {
+      "code": "000725",
+      "market": "CN",
+      "name": "京东方A",
+      "index": "csi300"
+    },
+    {
+      "code": "000768",
+      "market": "CN",
+      "name": "中航西飞",
+      "index": "csi300"
+    },
+    {
+      "code": "000776",
+      "market": "CN",
+      "name": "广发证券",
+      "index": "csi300"
+    },
+    {
+      "code": "000792",
+      "market": "CN",
+      "name": "盐湖股份",
+      "index": "csi300"
+    },
+    {
+      "code": "000807",
+      "market": "CN",
+      "name": "云铝股份",
+      "index": "csi300"
+    },
+    {
+      "code": "000858",
+      "market": "CN",
+      "name": "五粮液",
+      "index": "csi300"
+    },
+    {
+      "code": "000895",
+      "market": "CN",
+      "name": "双汇发展",
+      "index": "csi300"
+    },
+    {
+      "code": "000938",
+      "market": "CN",
+      "name": "紫光股份",
+      "index": "csi300"
+    },
+    {
+      "code": "000963",
+      "market": "CN",
+      "name": "华东医药",
+      "index": "csi300"
+    },
+    {
+      "code": "000975",
+      "market": "CN",
+      "name": "山金国际",
+      "index": "csi300"
+    },
+    {
+      "code": "000977",
+      "market": "CN",
+      "name": "浪潮信息",
+      "index": "csi300"
+    },
+    {
+      "code": "000988",
+      "market": "CN",
+      "name": "华工科技",
+      "index": "csi300"
+    },
+    {
+      "code": "000999",
+      "market": "CN",
+      "name": "华润三九",
+      "index": "csi300"
+    },
+    {
+      "code": "001280",
+      "market": "CN",
+      "name": "中国铀业",
+      "index": "csi300"
+    },
+    {
+      "code": "001391",
+      "market": "CN",
+      "name": "国货航",
+      "index": "csi300"
+    },
+    {
+      "code": "001965",
+      "market": "CN",
+      "name": "招商公路",
+      "index": "csi300"
+    },
+    {
+      "code": "001979",
+      "market": "CN",
+      "name": "招商蛇口",
+      "index": "csi300"
+    },
+    {
+      "code": "002001",
+      "market": "CN",
+      "name": "新和成",
+      "index": "csi300"
+    },
+    {
+      "code": "002027",
+      "market": "CN",
+      "name": "分众传媒",
+      "index": "csi300"
+    },
+    {
+      "code": "002028",
+      "market": "CN",
+      "name": "思源电气",
+      "index": "csi300"
+    },
+    {
+      "code": "002049",
+      "market": "CN",
+      "name": "紫光国微",
+      "index": "csi300"
+    },
+    {
+      "code": "002050",
+      "market": "CN",
+      "name": "三花智控",
+      "index": "csi300"
+    },
+    {
+      "code": "002074",
+      "market": "CN",
+      "name": "国轩高科",
+      "index": "csi300"
+    },
+    {
+      "code": "002142",
+      "market": "CN",
+      "name": "宁波银行",
+      "index": "csi300"
+    },
+    {
+      "code": "002179",
+      "market": "CN",
+      "name": "中航光电",
+      "index": "csi300"
+    },
+    {
+      "code": "002202",
+      "market": "CN",
+      "name": "金风科技",
+      "index": "csi300"
+    },
+    {
+      "code": "002230",
+      "market": "CN",
+      "name": "科大讯飞",
+      "index": "csi300"
+    },
+    {
+      "code": "002236",
+      "market": "CN",
+      "name": "大华股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002241",
+      "market": "CN",
+      "name": "歌尔股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002304",
+      "market": "CN",
+      "name": "洋河股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002311",
+      "market": "CN",
+      "name": "海大集团",
+      "index": "csi300"
+    },
+    {
+      "code": "002352",
+      "market": "CN",
+      "name": "顺丰控股",
+      "index": "csi300"
+    },
+    {
+      "code": "002353",
+      "market": "CN",
+      "name": "杰瑞股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002371",
+      "market": "CN",
+      "name": "北方华创",
+      "index": "csi300"
+    },
+    {
+      "code": "002384",
+      "market": "CN",
+      "name": "东山精密",
+      "index": "csi300"
+    },
+    {
+      "code": "002415",
+      "market": "CN",
+      "name": "海康威视",
+      "index": "csi300"
+    },
+    {
+      "code": "002422",
+      "market": "CN",
+      "name": "科伦药业",
+      "index": "csi300"
+    },
+    {
+      "code": "002460",
+      "market": "CN",
+      "name": "赣锋锂业",
+      "index": "csi300"
+    },
+    {
+      "code": "002463",
+      "market": "CN",
+      "name": "沪电股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002466",
+      "market": "CN",
+      "name": "天齐锂业",
+      "index": "csi300"
+    },
+    {
+      "code": "002475",
+      "market": "CN",
+      "name": "立讯精密",
+      "index": "csi300"
+    },
+    {
+      "code": "002493",
+      "market": "CN",
+      "name": "荣盛石化",
+      "index": "csi300"
+    },
+    {
+      "code": "002532",
+      "market": "CN",
+      "name": "天山铝业",
+      "index": "csi300"
+    },
+    {
+      "code": "002558",
+      "market": "CN",
+      "name": "巨人网络",
+      "index": "csi300"
+    },
+    {
+      "code": "002594",
+      "market": "CN",
+      "name": "比亚迪",
+      "index": "csi300"
+    },
+    {
+      "code": "002600",
+      "market": "CN",
+      "name": "领益智造",
+      "index": "csi300"
+    },
+    {
+      "code": "002602",
+      "market": "CN",
+      "name": "世纪华通",
+      "index": "csi300"
+    },
+    {
+      "code": "002625",
+      "market": "CN",
+      "name": "光启技术",
+      "index": "csi300"
+    },
+    {
+      "code": "002648",
+      "market": "CN",
+      "name": "卫星化学",
+      "index": "csi300"
+    },
+    {
+      "code": "002709",
+      "market": "CN",
+      "name": "天赐材料",
+      "index": "csi300"
+    },
+    {
+      "code": "002714",
+      "market": "CN",
+      "name": "牧原股份",
+      "index": "csi300"
+    },
+    {
+      "code": "002736",
+      "market": "CN",
+      "name": "国信证券",
+      "index": "csi300"
+    },
+    {
+      "code": "002837",
+      "market": "CN",
+      "name": "英维克",
+      "index": "csi300"
+    },
+    {
+      "code": "002916",
+      "market": "CN",
+      "name": "深南电路",
+      "index": "csi300"
+    },
+    {
+      "code": "002920",
+      "market": "CN",
+      "name": "德赛西威",
+      "index": "csi300"
+    },
+    {
+      "code": "002938",
+      "market": "CN",
+      "name": "鹏鼎控股",
+      "index": "csi300"
+    },
+    {
+      "code": "003816",
+      "market": "CN",
+      "name": "中国广核",
+      "index": "csi300"
+    },
+    {
+      "code": "300014",
+      "market": "CN",
+      "name": "亿纬锂能",
+      "index": "csi300"
+    },
+    {
+      "code": "300015",
+      "market": "CN",
+      "name": "爱尔眼科",
+      "index": "csi300"
+    },
+    {
+      "code": "300033",
+      "market": "CN",
+      "name": "同花顺",
+      "index": "csi300"
+    },
+    {
+      "code": "300059",
+      "market": "CN",
+      "name": "东方财富",
+      "index": "csi300"
+    },
+    {
+      "code": "300122",
+      "market": "CN",
+      "name": "智飞生物",
+      "index": "csi300"
+    },
+    {
+      "code": "300124",
+      "market": "CN",
+      "name": "汇川技术",
+      "index": "csi300"
+    },
+    {
+      "code": "300251",
+      "market": "CN",
+      "name": "光线传媒",
+      "index": "csi300"
+    },
+    {
+      "code": "300274",
+      "market": "CN",
+      "name": "阳光电源",
+      "index": "csi300"
+    },
+    {
+      "code": "300308",
+      "market": "CN",
+      "name": "中际旭创",
+      "index": "csi300"
+    },
+    {
+      "code": "300316",
+      "market": "CN",
+      "name": "晶盛机电",
+      "index": "csi300"
+    },
+    {
+      "code": "300394",
+      "market": "CN",
+      "name": "天孚通信",
+      "index": "csi300"
+    },
+    {
+      "code": "300408",
+      "market": "CN",
+      "name": "三环集团",
+      "index": "csi300"
+    },
+    {
+      "code": "300413",
+      "market": "CN",
+      "name": "芒果超媒",
+      "index": "csi300"
+    },
+    {
+      "code": "300418",
+      "market": "CN",
+      "name": "昆仑万维",
+      "index": "csi300"
+    },
+    {
+      "code": "300433",
+      "market": "CN",
+      "name": "蓝思科技",
+      "index": "csi300"
+    },
+    {
+      "code": "300442",
+      "market": "CN",
+      "name": "润泽科技",
+      "index": "csi300"
+    },
+    {
+      "code": "300450",
+      "market": "CN",
+      "name": "先导智能",
+      "index": "csi300"
+    },
+    {
+      "code": "300476",
+      "market": "CN",
+      "name": "胜宏科技",
+      "index": "csi300"
+    },
+    {
+      "code": "300498",
+      "market": "CN",
+      "name": "温氏股份",
+      "index": "csi300"
+    },
+    {
+      "code": "300502",
+      "market": "CN",
+      "name": "新易盛",
+      "index": "csi300"
+    },
+    {
+      "code": "300628",
+      "market": "CN",
+      "name": "亿联网络",
+      "index": "csi300"
+    },
+    {
+      "code": "300661",
+      "market": "CN",
+      "name": "圣邦股份",
+      "index": "csi300"
+    },
+    {
+      "code": "300750",
+      "market": "CN",
+      "name": "宁德时代",
+      "index": "csi300"
+    },
+    {
+      "code": "300760",
+      "market": "CN",
+      "name": "迈瑞医疗",
+      "index": "csi300"
+    },
+    {
+      "code": "300803",
+      "market": "CN",
+      "name": "指南针",
+      "index": "csi300"
+    },
+    {
+      "code": "300832",
+      "market": "CN",
+      "name": "新产业",
+      "index": "csi300"
+    },
+    {
+      "code": "300866",
+      "market": "CN",
+      "name": "安克创新",
+      "index": "csi300"
+    },
+    {
+      "code": "300896",
+      "market": "CN",
+      "name": "爱美客",
+      "index": "csi300"
+    },
+    {
+      "code": "300999",
+      "market": "CN",
+      "name": "金龙鱼",
+      "index": "csi300"
+    },
+    {
+      "code": "301165",
+      "market": "CN",
+      "name": "锐捷网络",
+      "index": "csi300"
+    },
+    {
+      "code": "301236",
+      "market": "CN",
+      "name": "软通动力",
+      "index": "csi300"
+    },
+    {
+      "code": "301269",
+      "market": "CN",
+      "name": "华大九天",
+      "index": "csi300"
+    },
+    {
+      "code": "301308",
+      "market": "CN",
+      "name": "江波龙",
+      "index": "csi300"
+    },
+    {
+      "code": "302132",
+      "market": "CN",
+      "name": "中航成飞",
+      "index": "csi300"
+    },
+    {
+      "code": "600000",
+      "market": "CN",
+      "name": "浦发银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600009",
+      "market": "CN",
+      "name": "上海机场",
+      "index": "csi300"
+    },
+    {
+      "code": "600010",
+      "market": "CN",
+      "name": "包钢股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600011",
+      "market": "CN",
+      "name": "华能国际",
+      "index": "csi300"
+    },
+    {
+      "code": "600015",
+      "market": "CN",
+      "name": "华夏银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600016",
+      "market": "CN",
+      "name": "民生银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600018",
+      "market": "CN",
+      "name": "上港集团",
+      "index": "csi300"
+    },
+    {
+      "code": "600019",
+      "market": "CN",
+      "name": "宝钢股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600023",
+      "market": "CN",
+      "name": "浙能电力",
+      "index": "csi300"
+    },
+    {
+      "code": "600025",
+      "market": "CN",
+      "name": "华能水电",
+      "index": "csi300"
+    },
+    {
+      "code": "600026",
+      "market": "CN",
+      "name": "中远海能",
+      "index": "csi300"
+    },
+    {
+      "code": "600027",
+      "market": "CN",
+      "name": "华电国际",
+      "index": "csi300"
+    },
+    {
+      "code": "600028",
+      "market": "CN",
+      "name": "中国石化",
+      "index": "csi300"
+    },
+    {
+      "code": "600029",
+      "market": "CN",
+      "name": "南方航空",
+      "index": "csi300"
+    },
+    {
+      "code": "600030",
+      "market": "CN",
+      "name": "中信证券",
+      "index": "csi300"
+    },
+    {
+      "code": "600031",
+      "market": "CN",
+      "name": "三一重工",
+      "index": "csi300"
+    },
+    {
+      "code": "600036",
+      "market": "CN",
+      "name": "招商银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600039",
+      "market": "CN",
+      "name": "四川路桥",
+      "index": "csi300"
+    },
+    {
+      "code": "600048",
+      "market": "CN",
+      "name": "保利发展",
+      "index": "csi300"
+    },
+    {
+      "code": "600050",
+      "market": "CN",
+      "name": "中国联通",
+      "index": "csi300"
+    },
+    {
+      "code": "600061",
+      "market": "CN",
+      "name": "国投资本",
+      "index": "csi300"
+    },
+    {
+      "code": "600066",
+      "market": "CN",
+      "name": "宇通客车",
+      "index": "csi300"
+    },
+    {
+      "code": "600085",
+      "market": "CN",
+      "name": "同仁堂",
+      "index": "csi300"
+    },
+    {
+      "code": "600089",
+      "market": "CN",
+      "name": "特变电工",
+      "index": "csi300"
+    },
+    {
+      "code": "600104",
+      "market": "CN",
+      "name": "上汽集团",
+      "index": "csi300"
+    },
+    {
+      "code": "600111",
+      "market": "CN",
+      "name": "北方稀土",
+      "index": "csi300"
+    },
+    {
+      "code": "600115",
+      "market": "CN",
+      "name": "中国东航",
+      "index": "csi300"
+    },
+    {
+      "code": "600118",
+      "market": "CN",
+      "name": "中国卫星",
+      "index": "csi300"
+    },
+    {
+      "code": "600150",
+      "market": "CN",
+      "name": "中国船舶",
+      "index": "csi300"
+    },
+    {
+      "code": "600160",
+      "market": "CN",
+      "name": "巨化股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600176",
+      "market": "CN",
+      "name": "中国巨石",
+      "index": "csi300"
+    },
+    {
+      "code": "600183",
+      "market": "CN",
+      "name": "生益科技",
+      "index": "csi300"
+    },
+    {
+      "code": "600188",
+      "market": "CN",
+      "name": "兖矿能源",
+      "index": "csi300"
+    },
+    {
+      "code": "600196",
+      "market": "CN",
+      "name": "复星医药",
+      "index": "csi300"
+    },
+    {
+      "code": "600219",
+      "market": "CN",
+      "name": "南山铝业",
+      "index": "csi300"
+    },
+    {
+      "code": "600221",
+      "market": "CN",
+      "name": "海航控股",
+      "index": "csi300"
+    },
+    {
+      "code": "600233",
+      "market": "CN",
+      "name": "圆通速递",
+      "index": "csi300"
+    },
+    {
+      "code": "600276",
+      "market": "CN",
+      "name": "恒瑞医药",
+      "index": "csi300"
+    },
+    {
+      "code": "600309",
+      "market": "CN",
+      "name": "万华化学",
+      "index": "csi300"
+    },
+    {
+      "code": "600346",
+      "market": "CN",
+      "name": "恒力石化",
+      "index": "csi300"
+    },
+    {
+      "code": "600362",
+      "market": "CN",
+      "name": "江西铜业",
+      "index": "csi300"
+    },
+    {
+      "code": "600372",
+      "market": "CN",
+      "name": "中航机载",
+      "index": "csi300"
+    },
+    {
+      "code": "600406",
+      "market": "CN",
+      "name": "国电南瑞",
+      "index": "csi300"
+    },
+    {
+      "code": "600415",
+      "market": "CN",
+      "name": "小商品城",
+      "index": "csi300"
+    },
+    {
+      "code": "600426",
+      "market": "CN",
+      "name": "华鲁恒升",
+      "index": "csi300"
+    },
+    {
+      "code": "600436",
+      "market": "CN",
+      "name": "片仔癀",
+      "index": "csi300"
+    },
+    {
+      "code": "600438",
+      "market": "CN",
+      "name": "通威股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600460",
+      "market": "CN",
+      "name": "士兰微",
+      "index": "csi300"
+    },
+    {
+      "code": "600482",
+      "market": "CN",
+      "name": "中国动力",
+      "index": "csi300"
+    },
+    {
+      "code": "600489",
+      "market": "CN",
+      "name": "中金黄金",
+      "index": "csi300"
+    },
+    {
+      "code": "600515",
+      "market": "CN",
+      "name": "海南机场",
+      "index": "csi300"
+    },
+    {
+      "code": "600519",
+      "market": "CN",
+      "name": "贵州茅台",
+      "index": "csi300"
+    },
+    {
+      "code": "600522",
+      "market": "CN",
+      "name": "中天科技",
+      "index": "csi300"
+    },
+    {
+      "code": "600547",
+      "market": "CN",
+      "name": "山东黄金",
+      "index": "csi300"
+    },
+    {
+      "code": "600549",
+      "market": "CN",
+      "name": "厦门钨业",
+      "index": "csi300"
+    },
+    {
+      "code": "600570",
+      "market": "CN",
+      "name": "恒生电子",
+      "index": "csi300"
+    },
+    {
+      "code": "600584",
+      "market": "CN",
+      "name": "长电科技",
+      "index": "csi300"
+    },
+    {
+      "code": "600585",
+      "market": "CN",
+      "name": "海螺水泥",
+      "index": "csi300"
+    },
+    {
+      "code": "600588",
+      "market": "CN",
+      "name": "用友网络",
+      "index": "csi300"
+    },
+    {
+      "code": "600600",
+      "market": "CN",
+      "name": "青岛啤酒",
+      "index": "csi300"
+    },
+    {
+      "code": "600660",
+      "market": "CN",
+      "name": "福耀玻璃",
+      "index": "csi300"
+    },
+    {
+      "code": "600674",
+      "market": "CN",
+      "name": "川投能源",
+      "index": "csi300"
+    },
+    {
+      "code": "600690",
+      "market": "CN",
+      "name": "海尔智家",
+      "index": "csi300"
+    },
+    {
+      "code": "600741",
+      "market": "CN",
+      "name": "华域汽车",
+      "index": "csi300"
+    },
+    {
+      "code": "600760",
+      "market": "CN",
+      "name": "中航沈飞",
+      "index": "csi300"
+    },
+    {
+      "code": "600795",
+      "market": "CN",
+      "name": "国电电力",
+      "index": "csi300"
+    },
+    {
+      "code": "600803",
+      "market": "CN",
+      "name": "新奥股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600809",
+      "market": "CN",
+      "name": "山西汾酒",
+      "index": "csi300"
+    },
+    {
+      "code": "600845",
+      "market": "CN",
+      "name": "宝信软件",
+      "index": "csi300"
+    },
+    {
+      "code": "600875",
+      "market": "CN",
+      "name": "东方电气",
+      "index": "csi300"
+    },
+    {
+      "code": "600886",
+      "market": "CN",
+      "name": "国投电力",
+      "index": "csi300"
+    },
+    {
+      "code": "600887",
+      "market": "CN",
+      "name": "伊利股份",
+      "index": "csi300"
+    },
+    {
+      "code": "600893",
+      "market": "CN",
+      "name": "航发动力",
+      "index": "csi300"
+    },
+    {
+      "code": "600900",
+      "market": "CN",
+      "name": "长江电力",
+      "index": "csi300"
+    },
+    {
+      "code": "600905",
+      "market": "CN",
+      "name": "三峡能源",
+      "index": "csi300"
+    },
+    {
+      "code": "600918",
+      "market": "CN",
+      "name": "中泰证券",
+      "index": "csi300"
+    },
+    {
+      "code": "600919",
+      "market": "CN",
+      "name": "江苏银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600926",
+      "market": "CN",
+      "name": "杭州银行",
+      "index": "csi300"
+    },
+    {
+      "code": "600930",
+      "market": "CN",
+      "name": "华电新能",
+      "index": "csi300"
+    },
+    {
+      "code": "600938",
+      "market": "CN",
+      "name": "中国海油",
+      "index": "csi300"
+    },
+    {
+      "code": "600941",
+      "market": "CN",
+      "name": "中国移动",
+      "index": "csi300"
+    },
+    {
+      "code": "600958",
+      "market": "CN",
+      "name": "东方证券",
+      "index": "csi300"
+    },
+    {
+      "code": "600989",
+      "market": "CN",
+      "name": "宝丰能源",
+      "index": "csi300"
+    },
+    {
+      "code": "600999",
+      "market": "CN",
+      "name": "招商证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601006",
+      "market": "CN",
+      "name": "大秦铁路",
+      "index": "csi300"
+    },
+    {
+      "code": "601009",
+      "market": "CN",
+      "name": "南京银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601012",
+      "market": "CN",
+      "name": "隆基绿能",
+      "index": "csi300"
+    },
+    {
+      "code": "601018",
+      "market": "CN",
+      "name": "宁波港",
+      "index": "csi300"
+    },
+    {
+      "code": "601021",
+      "market": "CN",
+      "name": "春秋航空",
+      "index": "csi300"
+    },
+    {
+      "code": "601058",
+      "market": "CN",
+      "name": "赛轮轮胎",
+      "index": "csi300"
+    },
+    {
+      "code": "601059",
+      "market": "CN",
+      "name": "信达证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601066",
+      "market": "CN",
+      "name": "中信建投",
+      "index": "csi300"
+    },
+    {
+      "code": "601077",
+      "market": "CN",
+      "name": "渝农商行",
+      "index": "csi300"
+    },
+    {
+      "code": "601088",
+      "market": "CN",
+      "name": "中国神华",
+      "index": "csi300"
+    },
+    {
+      "code": "601100",
+      "market": "CN",
+      "name": "恒立液压",
+      "index": "csi300"
+    },
+    {
+      "code": "601111",
+      "market": "CN",
+      "name": "中国国航",
+      "index": "csi300"
+    },
+    {
+      "code": "601117",
+      "market": "CN",
+      "name": "中国化学",
+      "index": "csi300"
+    },
+    {
+      "code": "601127",
+      "market": "CN",
+      "name": "赛力斯",
+      "index": "csi300"
+    },
+    {
+      "code": "601136",
+      "market": "CN",
+      "name": "首创证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601138",
+      "market": "CN",
+      "name": "工业富联",
+      "index": "csi300"
+    },
+    {
+      "code": "601166",
+      "market": "CN",
+      "name": "兴业银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601169",
+      "market": "CN",
+      "name": "北京银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601186",
+      "market": "CN",
+      "name": "中国铁建",
+      "index": "csi300"
+    },
+    {
+      "code": "601211",
+      "market": "CN",
+      "name": "国泰海通",
+      "index": "csi300"
+    },
+    {
+      "code": "601225",
+      "market": "CN",
+      "name": "陕西煤业",
+      "index": "csi300"
+    },
+    {
+      "code": "601229",
+      "market": "CN",
+      "name": "上海银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601238",
+      "market": "CN",
+      "name": "广汽集团",
+      "index": "csi300"
+    },
+    {
+      "code": "601288",
+      "market": "CN",
+      "name": "农业银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601318",
+      "market": "CN",
+      "name": "中国平安",
+      "index": "csi300"
+    },
+    {
+      "code": "601319",
+      "market": "CN",
+      "name": "中国人保",
+      "index": "csi300"
+    },
+    {
+      "code": "601328",
+      "market": "CN",
+      "name": "交通银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601336",
+      "market": "CN",
+      "name": "新华保险",
+      "index": "csi300"
+    },
+    {
+      "code": "601360",
+      "market": "CN",
+      "name": "三六零",
+      "index": "csi300"
+    },
+    {
+      "code": "601377",
+      "market": "CN",
+      "name": "兴业证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601390",
+      "market": "CN",
+      "name": "中国中铁",
+      "index": "csi300"
+    },
+    {
+      "code": "601398",
+      "market": "CN",
+      "name": "工商银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601456",
+      "market": "CN",
+      "name": "国联民生",
+      "index": "csi300"
+    },
+    {
+      "code": "601600",
+      "market": "CN",
+      "name": "中国铝业",
+      "index": "csi300"
+    },
+    {
+      "code": "601601",
+      "market": "CN",
+      "name": "中国太保",
+      "index": "csi300"
+    },
+    {
+      "code": "601607",
+      "market": "CN",
+      "name": "上海医药",
+      "index": "csi300"
+    },
+    {
+      "code": "601618",
+      "market": "CN",
+      "name": "中国中冶",
+      "index": "csi300"
+    },
+    {
+      "code": "601628",
+      "market": "CN",
+      "name": "中国人寿",
+      "index": "csi300"
+    },
+    {
+      "code": "601633",
+      "market": "CN",
+      "name": "长城汽车",
+      "index": "csi300"
+    },
+    {
+      "code": "601658",
+      "market": "CN",
+      "name": "邮储银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601668",
+      "market": "CN",
+      "name": "中国建筑",
+      "index": "csi300"
+    },
+    {
+      "code": "601669",
+      "market": "CN",
+      "name": "中国电建",
+      "index": "csi300"
+    },
+    {
+      "code": "601688",
+      "market": "CN",
+      "name": "华泰证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601689",
+      "market": "CN",
+      "name": "拓普集团",
+      "index": "csi300"
+    },
+    {
+      "code": "601698",
+      "market": "CN",
+      "name": "中国卫通",
+      "index": "csi300"
+    },
+    {
+      "code": "601727",
+      "market": "CN",
+      "name": "上海电气",
+      "index": "csi300"
+    },
+    {
+      "code": "601728",
+      "market": "CN",
+      "name": "中国电信",
+      "index": "csi300"
+    },
+    {
+      "code": "601766",
+      "market": "CN",
+      "name": "中国中车",
+      "index": "csi300"
+    },
+    {
+      "code": "601788",
+      "market": "CN",
+      "name": "光大证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601800",
+      "market": "CN",
+      "name": "中国交建",
+      "index": "csi300"
+    },
+    {
+      "code": "601816",
+      "market": "CN",
+      "name": "京沪高铁",
+      "index": "csi300"
+    },
+    {
+      "code": "601818",
+      "market": "CN",
+      "name": "光大银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601825",
+      "market": "CN",
+      "name": "沪农商行",
+      "index": "csi300"
+    },
+    {
+      "code": "601838",
+      "market": "CN",
+      "name": "成都银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601857",
+      "market": "CN",
+      "name": "中国石油",
+      "index": "csi300"
+    },
+    {
+      "code": "601868",
+      "market": "CN",
+      "name": "中国能建",
+      "index": "csi300"
+    },
+    {
+      "code": "601872",
+      "market": "CN",
+      "name": "招商轮船",
+      "index": "csi300"
+    },
+    {
+      "code": "601877",
+      "market": "CN",
+      "name": "正泰电器",
+      "index": "csi300"
+    },
+    {
+      "code": "601878",
+      "market": "CN",
+      "name": "浙商证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601881",
+      "market": "CN",
+      "name": "中国银河",
+      "index": "csi300"
+    },
+    {
+      "code": "601888",
+      "market": "CN",
+      "name": "中国中免",
+      "index": "csi300"
+    },
+    {
+      "code": "601898",
+      "market": "CN",
+      "name": "中煤能源",
+      "index": "csi300"
+    },
+    {
+      "code": "601899",
+      "market": "CN",
+      "name": "紫金矿业",
+      "index": "csi300"
+    },
+    {
+      "code": "601901",
+      "market": "CN",
+      "name": "方正证券",
+      "index": "csi300"
+    },
+    {
+      "code": "601916",
+      "market": "CN",
+      "name": "浙商银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601919",
+      "market": "CN",
+      "name": "中远海控",
+      "index": "csi300"
+    },
+    {
+      "code": "601939",
+      "market": "CN",
+      "name": "建设银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601985",
+      "market": "CN",
+      "name": "中国核电",
+      "index": "csi300"
+    },
+    {
+      "code": "601988",
+      "market": "CN",
+      "name": "中国银行",
+      "index": "csi300"
+    },
+    {
+      "code": "601995",
+      "market": "CN",
+      "name": "中金公司",
+      "index": "csi300"
+    },
+    {
+      "code": "601998",
+      "market": "CN",
+      "name": "中信银行",
+      "index": "csi300"
+    },
+    {
+      "code": "603019",
+      "market": "CN",
+      "name": "中科曙光",
+      "index": "csi300"
+    },
+    {
+      "code": "603259",
+      "market": "CN",
+      "name": "药明康德",
+      "index": "csi300"
+    },
+    {
+      "code": "603260",
+      "market": "CN",
+      "name": "合盛硅业",
+      "index": "csi300"
+    },
+    {
+      "code": "603288",
+      "market": "CN",
+      "name": "海天味业",
+      "index": "csi300"
+    },
+    {
+      "code": "603296",
+      "market": "CN",
+      "name": "华勤技术",
+      "index": "csi300"
+    },
+    {
+      "code": "603369",
+      "market": "CN",
+      "name": "今世缘",
+      "index": "csi300"
+    },
+    {
+      "code": "603392",
+      "market": "CN",
+      "name": "万泰生物",
+      "index": "csi300"
+    },
+    {
+      "code": "603501",
+      "market": "CN",
+      "name": "豪威集团",
+      "index": "csi300"
+    },
+    {
+      "code": "603799",
+      "market": "CN",
+      "name": "华友钴业",
+      "index": "csi300"
+    },
+    {
+      "code": "603893",
+      "market": "CN",
+      "name": "瑞芯微",
+      "index": "csi300"
+    },
+    {
+      "code": "603986",
+      "market": "CN",
+      "name": "兆易创新",
+      "index": "csi300"
+    },
+    {
+      "code": "603993",
+      "market": "CN",
+      "name": "洛阳钼业",
+      "index": "csi300"
+    },
+    {
+      "code": "605117",
+      "market": "CN",
+      "name": "德业股份",
+      "index": "csi300"
+    },
+    {
+      "code": "605499",
+      "market": "CN",
+      "name": "东鹏饮料",
+      "index": "csi300"
+    },
+    {
+      "code": "688008",
+      "market": "CN",
+      "name": "澜起科技",
+      "index": "csi300"
+    },
+    {
+      "code": "688009",
+      "market": "CN",
+      "name": "中国通号",
+      "index": "csi300"
+    },
+    {
+      "code": "688012",
+      "market": "CN",
+      "name": "中微公司",
+      "index": "csi300"
+    },
+    {
+      "code": "688036",
+      "market": "CN",
+      "name": "传音控股",
+      "index": "csi300"
+    },
+    {
+      "code": "688041",
+      "market": "CN",
+      "name": "海光信息",
+      "index": "csi300"
+    },
+    {
+      "code": "688047",
+      "market": "CN",
+      "name": "龙芯中科",
+      "index": "csi300"
+    },
+    {
+      "code": "688072",
+      "market": "CN",
+      "name": "拓荆科技",
+      "index": "csi300"
+    },
+    {
+      "code": "688082",
+      "market": "CN",
+      "name": "盛美上海",
+      "index": "csi300"
+    },
+    {
+      "code": "688111",
+      "market": "CN",
+      "name": "金山办公",
+      "index": "csi300"
+    },
+    {
+      "code": "688126",
+      "market": "CN",
+      "name": "沪硅产业",
+      "index": "csi300"
+    },
+    {
+      "code": "688183",
+      "market": "CN",
+      "name": "生益电子",
+      "index": "csi300"
+    },
+    {
+      "code": "688223",
+      "market": "CN",
+      "name": "晶科能源",
+      "index": "csi300"
+    },
+    {
+      "code": "688256",
+      "market": "CN",
+      "name": "寒武纪",
+      "index": "csi300"
+    },
+    {
+      "code": "688271",
+      "market": "CN",
+      "name": "联影医疗",
+      "index": "csi300"
+    },
+    {
+      "code": "688303",
+      "market": "CN",
+      "name": "大全能源",
+      "index": "csi300"
+    },
+    {
+      "code": "688396",
+      "market": "CN",
+      "name": "华润微",
+      "index": "csi300"
+    },
+    {
+      "code": "688472",
+      "market": "CN",
+      "name": "阿特斯",
+      "index": "csi300"
+    },
+    {
+      "code": "688506",
+      "market": "CN",
+      "name": "百利天恒",
+      "index": "csi300"
+    },
+    {
+      "code": "688521",
+      "market": "CN",
+      "name": "芯原股份",
+      "index": "csi300"
+    },
+    {
+      "code": "688981",
+      "market": "CN",
+      "name": "中芯国际",
+      "index": "csi300"
+    },
+    {
+      "code": "ADBE",
+      "market": "US",
+      "name": "Adobe",
+      "index": "ndx100"
+    },
+    {
+      "code": "ADP",
+      "market": "US",
+      "name": "ADP",
+      "index": "ndx100"
+    },
+    {
+      "code": "AMD",
+      "market": "US",
+      "name": "AMD",
+      "index": "ndx100"
+    },
+    {
+      "code": "ABNB",
+      "market": "US",
+      "name": "Airbnb",
+      "index": "ndx100"
+    },
+    {
+      "code": "ALNY",
+      "market": "US",
+      "name": "Alnylam",
+      "index": "ndx100"
+    },
+    {
+      "code": "GOOGL",
+      "market": "US",
+      "name": "AlphabetA",
+      "index": "ndx100"
+    },
+    {
+      "code": "GOOG",
+      "market": "US",
+      "name": "AlphabetC",
+      "index": "ndx100"
+    },
+    {
+      "code": "AMZN",
+      "market": "US",
+      "name": "Amazon",
+      "index": "ndx100"
+    },
+    {
+      "code": "AEP",
+      "market": "US",
+      "name": "AmericanElectricPower",
+      "index": "ndx100"
+    },
+    {
+      "code": "AMGN",
+      "market": "US",
+      "name": "Amgen",
+      "index": "ndx100"
+    },
+    {
+      "code": "ADI",
+      "market": "US",
+      "name": "AnalogDevices",
+      "index": "ndx100"
+    },
+    {
+      "code": "AAPL",
+      "market": "US",
+      "name": "Apple",
+      "index": "ndx100"
+    },
+    {
+      "code": "AMAT",
+      "market": "US",
+      "name": "AppliedMaterials",
+      "index": "ndx100"
+    },
+    {
+      "code": "APP",
+      "market": "US",
+      "name": "AppLovin",
+      "index": "ndx100"
+    },
+    {
+      "code": "ARM",
+      "market": "US",
+      "name": "ArmHoldings",
+      "index": "ndx100"
+    },
+    {
+      "code": "ASML",
+      "market": "US",
+      "name": "ASML",
+      "index": "ndx100"
+    },
+    {
+      "code": "TEAM",
+      "market": "US",
+      "name": "Atlassian",
+      "index": "ndx100"
+    },
+    {
+      "code": "ADSK",
+      "market": "US",
+      "name": "Autodesk",
+      "index": "ndx100"
+    },
+    {
+      "code": "AXON",
+      "market": "US",
+      "name": "AxonEnterprise",
+      "index": "ndx100"
+    },
+    {
+      "code": "BKR",
+      "market": "US",
+      "name": "BakerHughes",
+      "index": "ndx100"
+    },
+    {
+      "code": "BKNG",
+      "market": "US",
+      "name": "BookingHoldings",
+      "index": "ndx100"
+    },
+    {
+      "code": "AVGO",
+      "market": "US",
+      "name": "Broadcom",
+      "index": "ndx100"
+    },
+    {
+      "code": "CDNS",
+      "market": "US",
+      "name": "CadenceDesignSystems",
+      "index": "ndx100"
+    },
+    {
+      "code": "CHTR",
+      "market": "US",
+      "name": "CharterCommunications",
+      "index": "ndx100"
+    },
+    {
+      "code": "CTAS",
+      "market": "US",
+      "name": "Cintas",
+      "index": "ndx100"
+    },
+    {
+      "code": "CSCO",
+      "market": "US",
+      "name": "Cisco",
+      "index": "ndx100"
+    },
+    {
+      "code": "CCEP",
+      "market": "US",
+      "name": "Coca-ColaEuropacific",
+      "index": "ndx100"
+    },
+    {
+      "code": "CTSH",
+      "market": "US",
+      "name": "Cognizant",
+      "index": "ndx100"
+    },
+    {
+      "code": "CMCSA",
+      "market": "US",
+      "name": "Comcast",
+      "index": "ndx100"
+    },
+    {
+      "code": "CEG",
+      "market": "US",
+      "name": "ConstellationEnergy",
+      "index": "ndx100"
+    },
+    {
+      "code": "CPRT",
+      "market": "US",
+      "name": "Copart",
+      "index": "ndx100"
+    },
+    {
+      "code": "CSGP",
+      "market": "US",
+      "name": "CoStarGroup",
+      "index": "ndx100"
+    },
+    {
+      "code": "COST",
+      "market": "US",
+      "name": "Costco",
+      "index": "ndx100"
+    },
+    {
+      "code": "CRWD",
+      "market": "US",
+      "name": "CrowdStrike",
+      "index": "ndx100"
+    },
+    {
+      "code": "CSX",
+      "market": "US",
+      "name": "CSX",
+      "index": "ndx100"
+    },
+    {
+      "code": "DDOG",
+      "market": "US",
+      "name": "Datadog",
+      "index": "ndx100"
+    },
+    {
+      "code": "DXCM",
+      "market": "US",
+      "name": "Dexcom",
+      "index": "ndx100"
+    },
+    {
+      "code": "FANG",
+      "market": "US",
+      "name": "DiamondbackEnergy",
+      "index": "ndx100"
+    },
+    {
+      "code": "DASH",
+      "market": "US",
+      "name": "DoorDash",
+      "index": "ndx100"
+    },
+    {
+      "code": "EA",
+      "market": "US",
+      "name": "ElectronicArts",
+      "index": "ndx100"
+    },
+    {
+      "code": "EXC",
+      "market": "US",
+      "name": "Exelon",
+      "index": "ndx100"
+    },
+    {
+      "code": "FAST",
+      "market": "US",
+      "name": "Fastenal",
+      "index": "ndx100"
+    },
+    {
+      "code": "FER",
+      "market": "US",
+      "name": "Ferrovial",
+      "index": "ndx100"
+    },
+    {
+      "code": "FTNT",
+      "market": "US",
+      "name": "Fortinet",
+      "index": "ndx100"
+    },
+    {
+      "code": "GEHC",
+      "market": "US",
+      "name": "GEHealthCare",
+      "index": "ndx100"
+    },
+    {
+      "code": "GILD",
+      "market": "US",
+      "name": "GileadSciences",
+      "index": "ndx100"
+    },
+    {
+      "code": "HON",
+      "market": "US",
+      "name": "Honeywell",
+      "index": "ndx100"
+    },
+    {
+      "code": "IDXX",
+      "market": "US",
+      "name": "IDEXXLaboratories",
+      "index": "ndx100"
+    },
+    {
+      "code": "INSM",
+      "market": "US",
+      "name": "Insmed",
+      "index": "ndx100"
+    },
+    {
+      "code": "INTC",
+      "market": "US",
+      "name": "Intel",
+      "index": "ndx100"
+    },
+    {
+      "code": "INTU",
+      "market": "US",
+      "name": "Intuit",
+      "index": "ndx100"
+    },
+    {
+      "code": "ISRG",
+      "market": "US",
+      "name": "IntuitiveSurgical",
+      "index": "ndx100"
+    },
+    {
+      "code": "KDP",
+      "market": "US",
+      "name": "KeurigDrPepper",
+      "index": "ndx100"
+    },
+    {
+      "code": "KLAC",
+      "market": "US",
+      "name": "KLA",
+      "index": "ndx100"
+    },
+    {
+      "code": "KHC",
+      "market": "US",
+      "name": "KraftHeinz",
+      "index": "ndx100"
+    },
+    {
+      "code": "LRCX",
+      "market": "US",
+      "name": "LamResearch",
+      "index": "ndx100"
+    },
+    {
+      "code": "LIN",
+      "market": "US",
+      "name": "Linde",
+      "index": "ndx100"
+    },
+    {
+      "code": "MAR",
+      "market": "US",
+      "name": "MarriottInternational",
+      "index": "ndx100"
+    },
+    {
+      "code": "MRVL",
+      "market": "US",
+      "name": "MarvellTechnology",
+      "index": "ndx100"
+    },
+    {
+      "code": "MELI",
+      "market": "US",
+      "name": "MercadoLibre",
+      "index": "ndx100"
+    },
+    {
+      "code": "META",
+      "market": "US",
+      "name": "MetaPlatforms",
+      "index": "ndx100"
+    },
+    {
+      "code": "MCHP",
+      "market": "US",
+      "name": "MicrochipTechnology",
+      "index": "ndx100"
+    },
+    {
+      "code": "MU",
+      "market": "US",
+      "name": "MicronTechnology",
+      "index": "ndx100"
+    },
+    {
+      "code": "MSFT",
+      "market": "US",
+      "name": "Microsoft",
+      "index": "ndx100"
+    },
+    {
+      "code": "MSTR",
+      "market": "US",
+      "name": "MicroStrategy(Strategy)",
+      "index": "ndx100"
+    },
+    {
+      "code": "MDLZ",
+      "market": "US",
+      "name": "MondelezInternational",
+      "index": "ndx100"
+    },
+    {
+      "code": "MPWR",
+      "market": "US",
+      "name": "MonolithicPowerSystems",
+      "index": "ndx100"
+    },
+    {
+      "code": "MNST",
+      "market": "US",
+      "name": "MonsterBeverage",
+      "index": "ndx100"
+    },
+    {
+      "code": "NFLX",
+      "market": "US",
+      "name": "Netflix",
+      "index": "ndx100"
+    },
+    {
+      "code": "NVDA",
+      "market": "US",
+      "name": "Nvidia",
+      "index": "ndx100"
+    },
+    {
+      "code": "NXPI",
+      "market": "US",
+      "name": "NXPSemiconductors",
+      "index": "ndx100"
+    },
+    {
+      "code": "ODFL",
+      "market": "US",
+      "name": "OldDominionFreightLine",
+      "index": "ndx100"
+    },
+    {
+      "code": "ORLY",
+      "market": "US",
+      "name": "O'ReillyAutomotive",
+      "index": "ndx100"
+    },
+    {
+      "code": "PCAR",
+      "market": "US",
+      "name": "PACCAR",
+      "index": "ndx100"
+    },
+    {
+      "code": "PLTR",
+      "market": "US",
+      "name": "PalantirTechnologies",
+      "index": "ndx100"
+    },
+    {
+      "code": "PANW",
+      "market": "US",
+      "name": "PaloAltoNetworks",
+      "index": "ndx100"
+    },
+    {
+      "code": "PAYX",
+      "market": "US",
+      "name": "Paychex",
+      "index": "ndx100"
+    },
+    {
+      "code": "PYPL",
+      "market": "US",
+      "name": "PayPal",
+      "index": "ndx100"
+    },
+    {
+      "code": "PDD",
+      "market": "US",
+      "name": "PDDHoldings",
+      "index": "ndx100"
+    },
+    {
+      "code": "PEP",
+      "market": "US",
+      "name": "PepsiCo",
+      "index": "ndx100"
+    },
+    {
+      "code": "QCOM",
+      "market": "US",
+      "name": "Qualcomm",
+      "index": "ndx100"
+    },
+    {
+      "code": "REGN",
+      "market": "US",
+      "name": "RegeneronPharmaceuticals",
+      "index": "ndx100"
+    },
+    {
+      "code": "ROP",
+      "market": "US",
+      "name": "RoperTechnologies",
+      "index": "ndx100"
+    },
+    {
+      "code": "ROST",
+      "market": "US",
+      "name": "RossStores",
+      "index": "ndx100"
+    },
+    {
+      "code": "STX",
+      "market": "US",
+      "name": "SeagateTechnology",
+      "index": "ndx100"
+    },
+    {
+      "code": "SHOP",
+      "market": "US",
+      "name": "Shopify",
+      "index": "ndx100"
+    },
+    {
+      "code": "SBUX",
+      "market": "US",
+      "name": "Starbucks",
+      "index": "ndx100"
+    },
+    {
+      "code": "SNPS",
+      "market": "US",
+      "name": "Synopsys",
+      "index": "ndx100"
+    },
+    {
+      "code": "TTWO",
+      "market": "US",
+      "name": "Take-TwoInteractive",
+      "index": "ndx100"
+    },
+    {
+      "code": "TSLA",
+      "market": "US",
+      "name": "Tesla",
+      "index": "ndx100"
+    },
+    {
+      "code": "TXN",
+      "market": "US",
+      "name": "TexasInstruments",
+      "index": "ndx100"
+    },
+    {
+      "code": "TRI",
+      "market": "US",
+      "name": "ThomsonReuters",
+      "index": "ndx100"
+    },
+    {
+      "code": "TMUS",
+      "market": "US",
+      "name": "T-MobileUS",
+      "index": "ndx100"
+    },
+    {
+      "code": "VRSK",
+      "market": "US",
+      "name": "VeriskAnalytics",
+      "index": "ndx100"
+    },
+    {
+      "code": "VRTX",
+      "market": "US",
+      "name": "VertexPharmaceuticals",
+      "index": "ndx100"
+    },
+    {
+      "code": "WMT",
+      "market": "US",
+      "name": "Walmart",
+      "index": "ndx100"
+    },
+    {
+      "code": "WBD",
+      "market": "US",
+      "name": "WarnerBros.Discovery",
+      "index": "ndx100"
+    },
+    {
+      "code": "WDC",
+      "market": "US",
+      "name": "WesternDigital",
+      "index": "ndx100"
+    },
+    {
+      "code": "WDAY",
+      "market": "US",
+      "name": "Workday",
+      "index": "ndx100"
+    },
+    {
+      "code": "XEL",
+      "market": "US",
+      "name": "XcelEnergy",
+      "index": "ndx100"
+    },
+    {
+      "code": "ZS",
+      "market": "US",
+      "name": "Zscaler",
+      "index": "ndx100"
+    },
+    {
+      "code": "QQQ",
+      "market": "US",
+      "name": "InvescoQQQTrust",
+      "index": "extra"
+    },
+    {
+      "code": "NET",
+      "market": "US",
+      "name": "Cloudflare",
+      "index": "extra"
+    }
+  ]
+}
