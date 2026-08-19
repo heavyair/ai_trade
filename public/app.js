@@ -1655,16 +1655,24 @@ function renderAdminRerunFrame() {
   } catch (error) {
     console.error("重跑图表渲染失败：", error);
   }
-  // Rebuilding a table with hundreds/thousands of rows every ~33ms tick is wasted work
-  // once the trade count hasn't actually changed since the last frame — skip it.
-  if (adminRerunTradeList && state.trades.length !== adminRerunState.lastRenderedTradeCount) {
-    try {
-      adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(state.trades);
-      adminRerunState.lastRenderedTradeCount = state.trades.length;
-    } catch (error) {
-      console.error("重跑交易明细渲染失败：", error);
-      // Surface the failure instead of silently leaving the panel blank — otherwise a
-      // thrown error here reads to the user as "trades never show" with no clue why.
+  // Everything below — including the "did the trade count change" check itself — is
+  // inside one try block on purpose: any throw anywhere in here (not just inside the
+  // innerHTML assignment) must still land in the catch, or the panel stays exactly as
+  // it was before this call (blank, since it starts empty on dialog open) with no
+  // visible sign anything went wrong.
+  try {
+    const trades = Array.isArray(state.trades) ? state.trades : [];
+    // Rebuilding a table with hundreds/thousands of rows every ~33ms tick is wasted work
+    // once the trade count hasn't actually changed since the last frame — skip it.
+    if (adminRerunTradeList && trades.length !== adminRerunState.lastRenderedTradeCount) {
+      adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(trades);
+      adminRerunState.lastRenderedTradeCount = trades.length;
+    }
+  } catch (error) {
+    console.error("重跑交易明细渲染失败：", error);
+    // Surface the failure instead of silently leaving the panel blank — otherwise a
+    // thrown error here reads to the user as "trades never show" with no clue why.
+    if (adminRerunTradeList) {
       adminRerunTradeList.innerHTML = `<div class="ranking-empty">交易明细渲染出错：${escapeHtml(error && error.message || String(error))}</div>`;
     }
   }
