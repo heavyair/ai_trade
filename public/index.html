@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260819-scan-sort-filter">
+    <link rel="stylesheet" href="/styles.css?v=20260819-scan-rerun-save">
   </head>
   <body>
     <main class="shell">
@@ -166,6 +166,29 @@
             <div class="section-label">按模型拆分的测试完成率</div>
             <div id="adminScanStatusModelList" class="admin-ranking-list"></div>
           </div>
+        </form>
+      </dialog>
+
+      <dialog id="adminRerunDialog" class="param-dialog">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="adminRerunTitle">重新运行</h2>
+              <p id="adminRerunSubtitle">正在准备...</p>
+            </div>
+            <button id="closeAdminRerunButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div class="admin-rerun-controls">
+            <button type="button" id="adminRerunPlayButton" class="ghost-button">播放</button>
+            <button type="button" id="adminRerunPauseButton" class="ghost-button" disabled>暂停</button>
+            <button type="button" id="adminRerunSkipButton" class="ghost-button">跳到最后</button>
+            <button type="button" id="adminRerunRestartButton" class="ghost-button">重新播放</button>
+            <span id="adminRerunProgressLabel" class="field-hint"></span>
+          </div>
+          <div id="adminRerunChart" class="admin-rerun-chart"></div>
+          <div id="adminRerunMetrics" class="optimization-report"></div>
+          <div class="section-label">下单明细</div>
+          <div id="adminRerunTradeList" class="admin-ranking-list"></div>
         </form>
       </dialog>
 
@@ -1022,6 +1045,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260819-scan-sort-filter"></script>
+    <script src="/app.js?v=20260819-scan-rerun-save"></script>
   </body>
 </html>

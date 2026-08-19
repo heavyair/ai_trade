@@ -119,6 +119,18 @@ const adminScanClearFilterButton = document.querySelector("#adminScanClearFilter
 const adminScanFilterSummary = document.querySelector("#adminScanFilterSummary");
 const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary");
 const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
+const adminRerunDialog = document.querySelector("#adminRerunDialog");
+const adminRerunTitle = document.querySelector("#adminRerunTitle");
+const adminRerunSubtitle = document.querySelector("#adminRerunSubtitle");
+const closeAdminRerunButton = document.querySelector("#closeAdminRerunButton");
+const adminRerunPlayButton = document.querySelector("#adminRerunPlayButton");
+const adminRerunPauseButton = document.querySelector("#adminRerunPauseButton");
+const adminRerunSkipButton = document.querySelector("#adminRerunSkipButton");
+const adminRerunRestartButton = document.querySelector("#adminRerunRestartButton");
+const adminRerunProgressLabel = document.querySelector("#adminRerunProgressLabel");
+const adminRerunChart = document.querySelector("#adminRerunChart");
+const adminRerunMetrics = document.querySelector("#adminRerunMetrics");
+const adminRerunTradeList = document.querySelector("#adminRerunTradeList");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -1442,7 +1454,11 @@ function renderAdminScanList() {
         <td>${record.bestTrades || 0}</td>
         <td>${record.testedCandidates || 0}</td>
         <td>${escapeHtml(formatAdminDate(record.scannedAt))}</td>
-        <td><button type="button" class="admin-view-params-button" data-scan-id="${escapeHtml(record.id)}">查看参数</button></td>
+        <td class="admin-scan-actions">
+          <button type="button" class="admin-view-params-button" data-scan-id="${escapeHtml(record.id)}">查看参数</button>
+          <button type="button" class="admin-scan-save-button" data-scan-id="${escapeHtml(record.id)}">另存为模型</button>
+          <button type="button" class="admin-scan-rerun-button" data-scan-id="${escapeHtml(record.id)}">重新运行</button>
+        </td>
       </tr>
     `;
   }).join("");
@@ -1497,12 +1513,270 @@ function openAdminScanParamViewer(scanId) {
   });
 }
 
+async function saveAdminScanRecordAsPreset(scanId) {
+  const record = adminScanCache.find((item) => item.id === scanId);
+  if (!record) return;
+  const defaultLabel = `${record.symbolName || record.symbol} ${record.presetLabel} 后台优化`.slice(0, 60);
+  const label = window.prompt("输入新模型名称：", defaultLabel);
+  if (label === null) return;
+  const trimmed = label.trim().slice(0, 80);
+  if (!trimmed) {
+    setStatus("模型名称不能为空。", true);
+    return;
+  }
+  if (!validateVisiblePresetLabel(trimmed)) return;
+  const preset = createPresetFromConfig(trimmed, record.bestConfig || {}, {
+    targetSymbol: record.symbol,
+    creator: "auto",
+    createdAt: todayText(),
+    updatedAt: todayText(),
+    originalText: `后台批量优化扫描：${record.symbolName || record.symbol}（${record.symbol}），基于模型「${record.presetLabel}」重新优化参数。`,
+  });
+  const presetName = await saveGeneratedPreset(preset);
+  if (presetName) {
+    setStatus(`已另存为模型：${strategyPresets[presetName].label}。`);
+  }
+}
+
+let adminRerunState = null;
+
+function stopAdminRerunPlayback() {
+  if (adminRerunState && adminRerunState.timerId) {
+    window.clearInterval(adminRerunState.timerId);
+    adminRerunState.timerId = null;
+  }
+  if (adminRerunState) adminRerunState.playing = false;
+  if (adminRerunPlayButton) adminRerunPlayButton.disabled = false;
+  if (adminRerunPauseButton) adminRerunPauseButton.disabled = true;
+}
+
+function buildAdminRerunChartSvg(rows, upToIndex, trades) {
+  const width = 900;
+  const height = 340;
+  const pad = { top: 20, right: 20, bottom: 26, left: 56 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const highs = rows.map((row) => row.high);
+  const lows = rows.map((row) => row.low);
+  const max = Math.max(...highs);
+  const min = Math.min(...lows);
+  const spread = max - min || max * 0.02 || 1;
+  const yMax = max + spread * 0.06;
+  const yMin = Math.max(0, min - spread * 0.06);
+  const scaleY = (value) => pad.top + ((yMax - value) / (yMax - yMin)) * innerHeight;
+
+  const visibleRows = rows.slice(0, upToIndex + 1);
+  const linePath = visibleRows
+    .map((row, index) => {
+      const command = index === 0 ? "M" : "L";
+      return `${command}${pointX(index, rows.length, pad.left, innerWidth).toFixed(2)},${scaleY(row.close).toFixed(2)}`;
+    })
+    .join(" ");
+
+  const priceTicks = Array.from({ length: 4 }, (_, index) => yMin + ((yMax - yMin) / 3) * index);
+  const priceTickNodes = priceTicks.map((value) => `
+    <line class="rerun-axis" x1="${pad.left}" y1="${scaleY(value).toFixed(2)}" x2="${width - pad.right}" y2="${scaleY(value).toFixed(2)}"></line>
+    <text class="rerun-axis-text" x="4" y="${(scaleY(value) + 3).toFixed(2)}">${formatPrice(value)}</text>
+  `).join("");
+
+  const visibleTrades = (trades || []).filter((trade) => Number.isInteger(trade.rowIndex) && trade.rowIndex <= upToIndex);
+  const markerNodes = visibleTrades.map((trade) => {
+    const x = pointX(trade.rowIndex, rows.length, pad.left, innerWidth);
+    const y = scaleY(trade.price);
+    const isBuy = trade.side === "buy";
+    return `<circle class="${isBuy ? "rerun-buy-marker" : "rerun-sell-marker"}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="4"></circle>`;
+  }).join("");
+
+  const currentRow = rows[upToIndex];
+  const dateLabel = currentRow
+    ? `<text class="rerun-axis-text" x="${width - pad.right - 90}" y="${pad.top + 12}">${escapeHtml(currentRow.date)}</text>`
+    : "";
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      ${priceTickNodes}
+      <path class="rerun-price-line" d="${linePath}"></path>
+      ${markerNodes}
+      ${dateLabel}
+    </svg>
+  `;
+}
+
+function renderAdminRerunTradeListHtml(trades) {
+  if (!trades || trades.length === 0) {
+    return '<div class="ranking-empty">还没有产生交易。</div>';
+  }
+  const rows = trades.slice().reverse().map((trade) => `
+    <tr class="${trade.side}">
+      <td>${escapeHtml(trade.date)}</td>
+      <td>${trade.side === "buy" ? "买入" : "卖出"}</td>
+      <td>${formatPrice(trade.price)}</td>
+      <td>${formatShares(trade.shares)}</td>
+      <td>${formatPercent(trade.positionRatio)}</td>
+      <td>${formatMoney(trade.accountEquity || 0)}</td>
+      <td>${escapeHtml(trade.reason || "--")}</td>
+    </tr>
+  `).join("");
+  return `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>方向</th>
+          <th>价格</th>
+          <th>数量</th>
+          <th>仓位</th>
+          <th>总资产</th>
+          <th>原因</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderAdminRerunFrame() {
+  if (!adminRerunState) return;
+  const { rows, states, index } = adminRerunState;
+  const state = states[index];
+
+  if (adminRerunChart) adminRerunChart.innerHTML = buildAdminRerunChartSvg(rows, index, state.trades);
+  if (adminRerunTradeList) adminRerunTradeList.innerHTML = renderAdminRerunTradeListHtml(state.trades);
+  if (adminRerunMetrics) {
+    adminRerunMetrics.innerHTML = `
+      <article><span>当前日期</span><strong>${escapeHtml(rows[index].date)}</strong></article>
+      <article><span>收益率</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong></article>
+      <article><span>最大回撤</span><strong>${formatPercent(state.maxDrawdown)}</strong></article>
+      <article><span>持仓比例</span><strong>${formatPercent(state.positionRatio)}</strong></article>
+      <article><span>总资产</span><strong>${formatMoney(state.equity)}</strong></article>
+      <article><span>交易次数</span><strong>${state.trades.length}</strong></article>
+    `;
+  }
+  if (adminRerunProgressLabel) {
+    adminRerunProgressLabel.textContent = `${index + 1} / ${rows.length} 个交易日`;
+  }
+}
+
+function advanceAdminRerunPlayback() {
+  if (!adminRerunState) return;
+  const { rows } = adminRerunState;
+  const step = Math.max(1, Math.ceil(rows.length / 180));
+  adminRerunState.index = Math.min(rows.length - 1, adminRerunState.index + step);
+  renderAdminRerunFrame();
+  if (adminRerunState.index >= rows.length - 1) {
+    stopAdminRerunPlayback();
+  }
+}
+
+function startAdminRerunPlayback() {
+  if (!adminRerunState) return;
+  stopAdminRerunPlayback();
+  if (adminRerunState.index >= adminRerunState.rows.length - 1) {
+    adminRerunState.index = 0;
+  }
+  adminRerunState.playing = true;
+  adminRerunState.timerId = window.setInterval(advanceAdminRerunPlayback, 33);
+  if (adminRerunPlayButton) adminRerunPlayButton.disabled = true;
+  if (adminRerunPauseButton) adminRerunPauseButton.disabled = false;
+}
+
+function skipAdminRerunToEnd() {
+  if (!adminRerunState) return;
+  stopAdminRerunPlayback();
+  adminRerunState.index = adminRerunState.rows.length - 1;
+  renderAdminRerunFrame();
+}
+
+function restartAdminRerunPlayback() {
+  if (!adminRerunState) return;
+  stopAdminRerunPlayback();
+  adminRerunState.index = 0;
+  renderAdminRerunFrame();
+  startAdminRerunPlayback();
+}
+
+async function openAdminRerun(scanId) {
+  const record = adminScanCache.find((item) => item.id === scanId);
+  if (!record || !adminRerunDialog) return;
+
+  stopAdminRerunPlayback();
+  adminRerunState = null;
+  if (adminRerunTitle) adminRerunTitle.textContent = `重新运行：${record.symbolName || record.symbol}（${record.presetLabel}）`;
+  if (adminRerunSubtitle) adminRerunSubtitle.textContent = "正在加载历史数据...";
+  if (adminRerunChart) adminRerunChart.innerHTML = "";
+  if (adminRerunTradeList) adminRerunTradeList.innerHTML = "";
+  if (adminRerunMetrics) adminRerunMetrics.innerHTML = "";
+  if (adminRerunProgressLabel) adminRerunProgressLabel.textContent = "";
+  showDialog(adminRerunDialog);
+
+  try {
+    const end = todayText();
+    const start = formatDate(shiftYears(new Date(), -5));
+    const params = new URLSearchParams({ code: record.symbol, start, end });
+    const response = await fetch(`/api/klines?${params.toString()}`);
+    const result = await readJsonResponse(response, "历史行情读取失败。");
+    const rows = (result.rows || []).filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close)
+      && row.close > 0 && Number.isFinite(row.high) && Number.isFinite(row.low));
+    if (rows.length < 2) {
+      throw new Error("历史数据不足，无法回测。");
+    }
+
+    const config = { initialCash: 2000000, tradeFee: 5, ...(record.bestConfig || {}) };
+    const savedCode = codeInput.value;
+    codeInput.value = record.symbol;
+    let states;
+    try {
+      states = buildBacktestStates(rows, config);
+    } finally {
+      codeInput.value = savedCode;
+    }
+
+    adminRerunState = { rows, states, index: 0, playing: false, timerId: null };
+    if (adminRerunSubtitle) {
+      adminRerunSubtitle.textContent = `${rows.length} 个交易日 · ${start} 至 ${end} · 初始资金 ¥2,000,000 · 数据源 ${result.source || ""}`;
+    }
+    renderAdminRerunFrame();
+    startAdminRerunPlayback();
+  } catch (error) {
+    if (adminRerunSubtitle) adminRerunSubtitle.textContent = `加载失败：${error.message || "未知错误"}`;
+  }
+}
+
+if (closeAdminRerunButton) {
+  closeAdminRerunButton.addEventListener("click", () => {
+    stopAdminRerunPlayback();
+    closeDialog(adminRerunDialog);
+  });
+}
+if (adminRerunPlayButton) {
+  adminRerunPlayButton.addEventListener("click", () => startAdminRerunPlayback());
+}
+if (adminRerunPauseButton) {
+  adminRerunPauseButton.addEventListener("click", () => stopAdminRerunPlayback());
+}
+if (adminRerunSkipButton) {
+  adminRerunSkipButton.addEventListener("click", () => skipAdminRerunToEnd());
+}
+if (adminRerunRestartButton) {
+  adminRerunRestartButton.addEventListener("click", () => restartAdminRerunPlayback());
+}
+
 if (adminScanList) {
   adminScanList.addEventListener("click", (event) => {
     const target = event.target;
     const viewButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
     if (viewButton) {
       openAdminScanParamViewer(viewButton.dataset.scanId);
+      return;
+    }
+    const saveButton = target && target.closest ? target.closest(".admin-scan-save-button") : null;
+    if (saveButton) {
+      saveAdminScanRecordAsPreset(saveButton.dataset.scanId);
+      return;
+    }
+    const rerunButton = target && target.closest ? target.closest(".admin-scan-rerun-button") : null;
+    if (rerunButton) {
+      openAdminRerun(rerunButton.dataset.scanId);
       return;
     }
     const pageButton = target && target.closest ? target.closest(".admin-scan-page-button") : null;
