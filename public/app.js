@@ -6182,13 +6182,13 @@ async function saveGeneratedPreset(preset) {
   return presetName;
 }
 
-const DEFAULT_OPTIMIZATION_POINT_COUNT = 11;
+const DEFAULT_OPTIMIZATION_POINT_COUNT = 5;
 const MAX_OPTIMIZATION_POINT_COUNT = 200;
 const MAX_OPTIMIZATION_COMBINATIONS = 10000;
 
 function computeDefaultParamRange(value, isInteger, isPercent) {
   if (isPercent) {
-    return { min: 0.1, max: 100, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
+    return { min: 1, max: 100, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
   }
   const current = Number(value) || 0;
   const min = 1;
