@@ -2124,6 +2124,39 @@ async function handleAdminPresetsApi(req, res) {
         return;
       }
 
+      if (payload.originalModelId !== undefined) {
+        const originalModelId = String(payload.originalModelId || "0").trim() || "0";
+        if (originalModelId === id) {
+          sendJson(res, 400, { error: "原始模型不能指向自己。" });
+          return;
+        }
+        if (originalModelId !== "0") {
+          const root = await dbQuery("SELECT id, original_model_id FROM strategy_presets WHERE id = $1", [originalModelId]);
+          if (root.rows.length === 0) {
+            sendJson(res, 404, { error: "指定的原始模型不存在。" });
+            return;
+          }
+          if (String(root.rows[0].original_model_id || "0") !== "0") {
+            sendJson(res, 400, { error: "原始模型必须是一个原始手工模型（不能指向另一个衍生模型）。" });
+            return;
+          }
+        }
+        const updated = await dbQuery(`
+          UPDATE strategy_presets
+          SET original_model_id = $1,
+              meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{originalModelId}', to_jsonb($1::text)),
+              updated_at = NOW()
+          WHERE id = $2
+          RETURNING id, original_model_id
+        `, [originalModelId, id]);
+        if (updated.rows.length === 0) {
+          sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+          return;
+        }
+        sendJson(res, 200, { updated: updated.rows[0] });
+        return;
+      }
+
       const owner = String(payload.owner || "").trim();
       if (!owner) {
         sendJson(res, 400, { error: "缺少 owner。" });

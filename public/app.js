@@ -1237,6 +1237,18 @@ function renderAdminPresetList(presets = []) {
       ? "原始手工模型"
       : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
     const isRepresentative = Boolean(preset.isRepresentative);
+    const rootOptionIds = presets
+      .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
+      .map((item) => item.id);
+    const originalModelOptions = [...new Set(["0", originalModelId, ...rootOptionIds])]
+      .map((id) => {
+        const label = id === "0" ? "无（原始手工模型）" : (() => {
+          const match = presets.find((item) => item.id === id);
+          return match ? (match.label || match.name) : id;
+        })();
+        return `<option value="${escapeHtml(id)}"${id === originalModelId ? " selected" : ""}>${escapeHtml(label)}</option>`;
+      })
+      .join("");
     return `
       <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
         <div>
@@ -1251,9 +1263,14 @@ function renderAdminPresetList(presets = []) {
             Owner
             <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
           </label>
+          <label>
+            原始模型
+            <select class="admin-original-select" data-preset-id="${escapeHtml(preset.id)}">${originalModelOptions}</select>
+          </label>
           <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
           <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
           <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
+          <button class="admin-save-original-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存原始模型</button>
           <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
           <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
         </div>
@@ -2139,6 +2156,23 @@ async function renameAdminPreset(id, currentLabel) {
     await loadAdminPresets();
   } catch (error) {
     setStatus(`重命名失败：${error.message}`, true);
+  }
+}
+
+async function updateAdminPresetOriginalModelId(id, originalModelId) {
+  if (!id) return;
+  try {
+    const response = await fetch("/api/admin/presets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, originalModelId }),
+    });
+    await readJsonResponse(response, "修改原始模型失败。");
+    setStatus(originalModelId === "0" ? "已设为原始手工模型。" : "已更新原始模型引用。");
+    await initializeServerCustomPresets();
+    await loadAdminPresets();
+  } catch (error) {
+    setStatus(`修改原始模型失败：${error.message}`, true);
   }
 }
 
@@ -9578,6 +9612,13 @@ if (adminPresetList) {
     const renameButton = event.target && event.target.closest ? event.target.closest(".admin-rename-preset-button") : null;
     if (renameButton) {
       renameAdminPreset(renameButton.dataset.presetId, renameButton.dataset.presetLabel);
+      return;
+    }
+    const originalButton = event.target && event.target.closest ? event.target.closest(".admin-save-original-button") : null;
+    if (originalButton) {
+      const card = originalButton.closest("[data-admin-preset-id]");
+      const select = card ? card.querySelector(".admin-original-select") : null;
+      updateAdminPresetOriginalModelId(originalButton.dataset.presetId, select ? select.value : "0");
       return;
     }
     const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;
