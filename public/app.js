@@ -8758,7 +8758,7 @@ function drawModelOrderPriceChart(result) {
   if (!modelOrderPriceChart) return;
   const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
   const rows = usableStates.map((state) => state.row);
-  const trades = withTradeModelLabel(result.finalState.trades || [], result.label);
+  const trades = result && result.finalState ? withTradeModelLabel(result.finalState.trades || [], result.label) : [];
   drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades);
 }
 
