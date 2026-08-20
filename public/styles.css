@@ -1676,6 +1676,11 @@ button:disabled {
   background: #fff;
 }
 
+.admin-preset-card--hidden {
+  opacity: 0.6;
+  background: #f5f5f5;
+}
+
 .admin-preset-card strong,
 .admin-preset-card span,
 .admin-preset-card small,

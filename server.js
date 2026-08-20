@@ -2045,6 +2045,7 @@ function mapAdminPresetRow(row) {
     config: row.config && typeof row.config === "object" ? row.config : {},
     meta,
     originalModelId: row.original_model_id || meta.originalModelId || "0",
+    hiddenAt: row.hidden_at ? new Date(row.hidden_at).toISOString() : "",
   };
 }
 

@@ -1226,10 +1226,12 @@ function renderAdminPresetCard(preset, presets) {
     .join("");
   const originalModelId = String(preset.originalModelId || "0");
   const isOrigin = originalModelId === "0";
+  const isHidden = Boolean(preset.hiddenAt);
   const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
-  const lineageText = isOrigin
-    ? "原始手工模型 · 纳入后台批量扫描"
-    : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
+  const lineageText = (isOrigin
+    ? "原始手工模型"
+    : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`)
+    + (isOrigin ? (isHidden ? " · 已隐藏，不参与后台批量扫描" : " · 纳入后台批量扫描") : (isHidden ? " · 已隐藏" : ""));
   const rootOptionIds = presets
     .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
     .map((item) => item.id);
@@ -1243,12 +1245,12 @@ function renderAdminPresetCard(preset, presets) {
     })
     .join("");
   return `
-    <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
+    <article class="admin-preset-card${isHidden ? " admin-preset-card--hidden" : ""}" data-admin-preset-id="${escapeHtml(preset.id)}">
       <div>
         <strong>${escapeHtml(preset.label || preset.name)}</strong>
         <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
         <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
-        <small class="${isOrigin ? "up" : ""}">${lineageText}</small>
+        <small class="${isHidden ? "down" : (isOrigin ? "up" : "")}">${lineageText}</small>
         <p>${escapeHtml(textPreview)}</p>
       </div>
       <div class="admin-preset-actions">
