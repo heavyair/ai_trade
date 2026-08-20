@@ -1266,6 +1266,7 @@ function renderAdminPresetCard(preset, presets) {
         <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
         <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
         <button class="admin-save-original-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存原始模型</button>
+        <button class="admin-toggle-hidden-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-hidden="${isHidden ? "1" : "0"}">${isHidden ? "取消隐藏" : "隐藏"}</button>
         <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
       </div>
     </article>
@@ -2179,6 +2180,23 @@ async function updateAdminPresetOriginalModelId(id, originalModelId) {
     await loadAdminPresets({ silent: true });
   } catch (error) {
     setStatus(`修改原始模型失败：${error.message}`, true);
+  }
+}
+
+async function toggleAdminPresetHidden(id, currentlyHidden) {
+  if (!id) return;
+  try {
+    const response = await fetch("/api/admin/presets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, hidden: !currentlyHidden }),
+    });
+    await readJsonResponse(response, "操作失败。");
+    setStatus(currentlyHidden ? "已取消隐藏。" : "已隐藏该模型。");
+    await initializeServerCustomPresets();
+    await loadAdminPresets({ silent: true });
+  } catch (error) {
+    setStatus(`操作失败：${error.message}`, true);
   }
 }
 
@@ -9620,6 +9638,11 @@ if (adminPresetList) {
       const card = originalButton.closest("[data-admin-preset-id]");
       const select = card ? card.querySelector(".admin-original-select") : null;
       updateAdminPresetOriginalModelId(originalButton.dataset.presetId, select ? select.value : "0");
+      return;
+    }
+    const hiddenToggleButton = event.target && event.target.closest ? event.target.closest(".admin-toggle-hidden-button") : null;
+    if (hiddenToggleButton) {
+      toggleAdminPresetHidden(hiddenToggleButton.dataset.presetId, hiddenToggleButton.dataset.hidden === "1");
       return;
     }
     const button = event.target && event.target.closest ? event.target.closest(".admin-delete-preset-button") : null;

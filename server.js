@@ -2154,6 +2154,22 @@ async function handleAdminPresetsApi(req, res) {
         return;
       }
 
+      if (payload.hidden !== undefined) {
+        const hidden = Boolean(payload.hidden);
+        const updated = await dbQuery(`
+          UPDATE strategy_presets
+          SET hidden_at = ${hidden ? "NOW()" : "NULL"}, updated_at = NOW()
+          WHERE id = $1
+          RETURNING id, hidden_at
+        `, [id]);
+        if (updated.rows.length === 0) {
+          sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+          return;
+        }
+        sendJson(res, 200, { updated: updated.rows[0], hidden });
+        return;
+      }
+
       const owner = String(payload.owner || "").trim();
       if (!owner) {
         sendJson(res, 400, { error: "缺少 owner。" });
