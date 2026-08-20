@@ -1228,9 +1228,8 @@ function renderAdminPresetCard(preset, presets) {
   const isOrigin = originalModelId === "0";
   const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
   const lineageText = isOrigin
-    ? "原始手工模型"
+    ? "原始手工模型 · 纳入后台批量扫描"
     : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
-  const isRepresentative = Boolean(preset.isRepresentative);
   const rootOptionIds = presets
     .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
     .map((item) => item.id);
@@ -1249,7 +1248,7 @@ function renderAdminPresetCard(preset, presets) {
         <strong>${escapeHtml(preset.label || preset.name)}</strong>
         <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
         <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
-        <small class="${isOrigin ? "up" : ""}">${lineageText}${isRepresentative ? " · <b>扫描代表模型</b>" : ""}</small>
+        <small class="${isOrigin ? "up" : ""}">${lineageText}</small>
         <p>${escapeHtml(textPreview)}</p>
       </div>
       <div class="admin-preset-actions">
@@ -1265,7 +1264,6 @@ function renderAdminPresetCard(preset, presets) {
         <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
         <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
         <button class="admin-save-original-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存原始模型</button>
-        <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
         <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
       </div>
     </article>
@@ -1344,21 +1342,6 @@ async function loadAdminPresets({ silent = false } = {}) {
     renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
   } catch (error) {
     adminPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
-  }
-}
-
-async function toggleAdminScanRepresentative(modelId, currentlyRepresentative) {
-  try {
-    const response = await fetch("/api/admin/optimization-scan/representatives", {
-      method: currentlyRepresentative ? "DELETE" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelId }),
-    });
-    await readJsonResponse(response, "操作失败。");
-    setStatus(currentlyRepresentative ? "已从扫描代表集合移除。" : "已加入扫描代表集合。");
-    await loadAdminPresets({ silent: true });
-  } catch (error) {
-    setStatus(`操作失败：${error.message}`, true);
   }
 }
 
@@ -9623,11 +9606,6 @@ if (adminPresetList) {
       const card = ownerButton.closest("[data-admin-preset-id]");
       const select = card ? card.querySelector(".admin-owner-select") : null;
       updateAdminPresetOwner(ownerButton.dataset.presetId, select ? select.value : "");
-      return;
-    }
-    const toggleButton = event.target && event.target.closest ? event.target.closest(".admin-toggle-representative-button") : null;
-    if (toggleButton) {
-      toggleAdminScanRepresentative(toggleButton.dataset.presetId, toggleButton.dataset.representative === "1");
       return;
     }
     const renameButton = event.target && event.target.closest ? event.target.closest(".admin-rename-preset-button") : null;

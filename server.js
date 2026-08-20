@@ -295,11 +295,10 @@ async function initializeDatabase() {
       reference JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
-    -- Explicit, admin-curated set of which presets the batch optimization scan actually
-    -- tests. Replaces an earlier heuristic ("most recently updated wins" per strategy
-    -- type / block-rules structural signature) that could silently misjudge two
-    -- genuinely different hand-crafted strategies as "the same model, different params"
-    -- and drop one from scanning with no visibility into why.
+    -- No longer read by application code: batch-scan model selection now uses
+    -- strategy_presets.original_model_id = '0' directly (a preset is scanned iff it's
+    -- itself a root). Left in place only so this migration stays idempotent for
+    -- deployments that already created it; safe to drop in a future cleanup.
     CREATE TABLE IF NOT EXISTS optimization_scan_representatives (
       model_id TEXT PRIMARY KEY REFERENCES strategy_presets(id) ON DELETE CASCADE,
       added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -2046,7 +2045,6 @@ function mapAdminPresetRow(row) {
     config: row.config && typeof row.config === "object" ? row.config : {},
     meta,
     originalModelId: row.original_model_id || meta.originalModelId || "0",
-    isRepresentative: Boolean(row.is_representative),
   };
 }
 
@@ -2078,11 +2076,9 @@ async function handleAdminPresetsApi(req, res) {
 
     if (req.method === "GET") {
       const result = await dbQuery(`
-        SELECT strategy_presets.*, users.email AS owner_email,
-               (r.model_id IS NOT NULL) AS is_representative
+        SELECT strategy_presets.*, users.email AS owner_email
         FROM strategy_presets
         LEFT JOIN users ON users.id = strategy_presets.owner_user_id
-        LEFT JOIN optimization_scan_representatives r ON r.model_id = strategy_presets.id
         ORDER BY strategy_presets.updated_at DESC
         LIMIT 2000
       `);
@@ -2363,35 +2359,6 @@ function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
   });
 }
 
-async function handleAdminScanRepresentativesApi(req, res) {
-  try {
-    await requireAdminUser(req);
-    if (req.method !== "POST" && req.method !== "DELETE") {
-      sendJson(res, 405, { error: "Method not allowed" });
-      return;
-    }
-    const body = await readRequestBody(req);
-    const payload = body ? JSON.parse(body) : {};
-    const modelId = String(payload.modelId || "").trim();
-    if (!modelId) {
-      sendJson(res, 400, { error: "缺少 modelId。" });
-      return;
-    }
-    if (req.method === "POST") {
-      await dbQuery(
-        "INSERT INTO optimization_scan_representatives (model_id) VALUES ($1) ON CONFLICT DO NOTHING",
-        [modelId]
-      );
-      sendJson(res, 200, { added: modelId });
-    } else {
-      await dbQuery("DELETE FROM optimization_scan_representatives WHERE model_id = $1", [modelId]);
-      sendJson(res, 200, { removed: modelId });
-    }
-  } catch (error) {
-    sendJson(res, error.statusCode || 400, { error: error.message || "操作失败。" });
-  }
-}
-
 async function handleAdminOptimizationScanRunApi(req, res) {
   try {
     const admin = await requireAdminUser(req);
@@ -2463,14 +2430,13 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       return;
     }
 
-    // Source of truth for "which models does the scan/checkbox list cover" is the
-    // explicit optimization_scan_representatives table (admin-curated), not a heuristic
-    // guess — see that table's comment in initializeDatabase for why.
+    // Source of truth for "which models does the scan/checkbox list cover" is
+    // original_model_id = '0' — a model is scanned iff it's itself a root
+    // (hand-crafted or admin-designated root), not a derived parameter variant.
     const presetsResult = await dbQuery(`
       SELECT sp.id, sp.label, sp.strategy_type
-      FROM optimization_scan_representatives r
-      JOIN strategy_presets sp ON sp.id = r.model_id
-      WHERE sp.hidden_at IS NULL
+      FROM strategy_presets sp
+      WHERE sp.original_model_id = '0' AND sp.hidden_at IS NULL
     `);
     const presets = presetsResult.rows.map((row) => ({ id: row.id, label: row.label, strategyType: row.strategy_type }));
     const totalModels = presets.length;
@@ -3581,11 +3547,6 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
     handleAdminOptimizationScanRunApi(req, res);
-    return;
-  }
-
-  if (requestUrl.pathname === "/api/admin/optimization-scan/representatives") {
-    handleAdminScanRepresentativesApi(req, res);
     return;
   }
 

@@ -75,16 +75,14 @@ async function ensureResultsTable() {
   `);
 }
 
-// Source of truth for "which presets does the batch scan test" is the explicit,
-// admin-curated optimization_scan_representatives table — not a heuristic guess. See
-// that table's comment in server.js's schema init for why the earlier "most recently
-// updated wins" heuristic was replaced.
+// Source of truth for "which presets does the batch scan test" is
+// original_model_id = '0' — a preset is scanned iff it's itself a root
+// (hand-crafted or admin-designated root), not a derived parameter variant.
 async function loadActivePresets() {
   const result = await pool.query(`
     SELECT sp.id, sp.name, sp.label, sp.strategy_type, sp.config, sp.meta, sp.updated_at
-    FROM optimization_scan_representatives r
-    JOIN strategy_presets sp ON sp.id = r.model_id
-    WHERE sp.hidden_at IS NULL
+    FROM strategy_presets sp
+    WHERE sp.original_model_id = '0' AND sp.hidden_at IS NULL
     ORDER BY sp.strategy_type, sp.name
   `);
   return result.rows.map((row) => ({
