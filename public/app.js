@@ -1217,66 +1217,85 @@ function formatAdminDate(value) {
   return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toISOString().slice(0, 10);
 }
 
+function renderAdminPresetCard(preset, presets) {
+  const textPreview = String(preset.modelText || preset.originalText || "没有文字版本").slice(0, 160);
+  const ownerValue = String(preset.ownerValue || preset.ownerEmail || "public");
+  const options = [...new Set([ownerValue, "public", ...adminOwnerOptions])]
+    .filter(Boolean)
+    .map((owner) => `<option value="${escapeHtml(owner)}"${owner === ownerValue ? " selected" : ""}>${escapeHtml(owner)}</option>`)
+    .join("");
+  const originalModelId = String(preset.originalModelId || "0");
+  const isOrigin = originalModelId === "0";
+  const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
+  const lineageText = isOrigin
+    ? "原始手工模型"
+    : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
+  const isRepresentative = Boolean(preset.isRepresentative);
+  const rootOptionIds = presets
+    .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
+    .map((item) => item.id);
+  const originalModelOptions = [...new Set(["0", originalModelId, ...rootOptionIds])]
+    .map((id) => {
+      const label = id === "0" ? "无（原始手工模型）" : (() => {
+        const match = presets.find((item) => item.id === id);
+        return match ? (match.label || match.name) : id;
+      })();
+      return `<option value="${escapeHtml(id)}"${id === originalModelId ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  return `
+    <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
+      <div>
+        <strong>${escapeHtml(preset.label || preset.name)}</strong>
+        <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
+        <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
+        <small class="${isOrigin ? "up" : ""}">${lineageText}${isRepresentative ? " · <b>扫描代表模型</b>" : ""}</small>
+        <p>${escapeHtml(textPreview)}</p>
+      </div>
+      <div class="admin-preset-actions">
+        <label>
+          Owner
+          <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
+        </label>
+        <label>
+          原始模型
+          <select class="admin-original-select" data-preset-id="${escapeHtml(preset.id)}">${originalModelOptions}</select>
+        </label>
+        <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
+        <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
+        <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
+        <button class="admin-save-original-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存原始模型</button>
+        <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
+        <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderAdminPresetGroup(title, list, presets) {
+  const body = list.length
+    ? list.map((preset) => renderAdminPresetCard(preset, presets)).join("")
+    : '<div class="ranking-empty">暂无。</div>';
+  return `
+    <div class="admin-preset-group">
+      <h4 class="admin-preset-group-title">${escapeHtml(title)}（${list.length}）</h4>
+      ${body}
+    </div>
+  `;
+}
+
 function renderAdminPresetList(presets = []) {
   if (!adminPresetList) return;
+  const previousScrollTop = adminPresetList.scrollTop;
   if (!presets.length) {
     adminPresetList.innerHTML = '<div class="ranking-empty">服务器端还没有保存模型。</div>';
     return;
   }
-  adminPresetList.innerHTML = presets.map((preset) => {
-    const textPreview = String(preset.modelText || preset.originalText || "没有文字版本").slice(0, 160);
-    const ownerValue = String(preset.ownerValue || preset.ownerEmail || "public");
-    const options = [...new Set([ownerValue, "public", ...adminOwnerOptions])]
-      .filter(Boolean)
-      .map((owner) => `<option value="${escapeHtml(owner)}"${owner === ownerValue ? " selected" : ""}>${escapeHtml(owner)}</option>`)
-      .join("");
-    const originalModelId = String(preset.originalModelId || "0");
-    const isOrigin = originalModelId === "0";
-    const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
-    const lineageText = isOrigin
-      ? "原始手工模型"
-      : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`;
-    const isRepresentative = Boolean(preset.isRepresentative);
-    const rootOptionIds = presets
-      .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
-      .map((item) => item.id);
-    const originalModelOptions = [...new Set(["0", originalModelId, ...rootOptionIds])]
-      .map((id) => {
-        const label = id === "0" ? "无（原始手工模型）" : (() => {
-          const match = presets.find((item) => item.id === id);
-          return match ? (match.label || match.name) : id;
-        })();
-        return `<option value="${escapeHtml(id)}"${id === originalModelId ? " selected" : ""}>${escapeHtml(label)}</option>`;
-      })
-      .join("");
-    return `
-      <article class="admin-preset-card" data-admin-preset-id="${escapeHtml(preset.id)}">
-        <div>
-          <strong>${escapeHtml(preset.label || preset.name)}</strong>
-          <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
-          <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
-          <small class="${isOrigin ? "up" : ""}">${lineageText}${isRepresentative ? " · <b>扫描代表模型</b>" : ""}</small>
-          <p>${escapeHtml(textPreview)}</p>
-        </div>
-        <div class="admin-preset-actions">
-          <label>
-            Owner
-            <select class="admin-owner-select" data-preset-id="${escapeHtml(preset.id)}">${options}</select>
-          </label>
-          <label>
-            原始模型
-            <select class="admin-original-select" data-preset-id="${escapeHtml(preset.id)}">${originalModelOptions}</select>
-          </label>
-          <button class="admin-view-params-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">查看参数</button>
-          <button class="admin-rename-preset-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">重命名</button>
-          <button class="admin-save-owner-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存 owner</button>
-          <button class="admin-save-original-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}">保存原始模型</button>
-          <button class="admin-toggle-representative-button ghost-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-representative="${isRepresentative ? "1" : "0"}">${isRepresentative ? "移出扫描代表集合" : "加入扫描代表集合"}</button>
-          <button class="admin-delete-preset-button" type="button" data-preset-id="${escapeHtml(preset.id)}" data-preset-label="${escapeHtml(preset.label || preset.name)}">删除</button>
-        </div>
-      </article>
-    `;
-  }).join("");
+  const roots = presets.filter((preset) => String(preset.originalModelId || "0") === "0");
+  const derived = presets.filter((preset) => String(preset.originalModelId || "0") !== "0");
+  adminPresetList.innerHTML = renderAdminPresetGroup("原始模型", roots, presets)
+    + renderAdminPresetGroup("衍生模型", derived, presets);
+  adminPresetList.scrollTop = previousScrollTop;
 }
 
 function openAdminPresetParamViewer(presetId) {
@@ -1312,9 +1331,11 @@ if (adminPresetList) {
   });
 }
 
-async function loadAdminPresets() {
+async function loadAdminPresets({ silent = false } = {}) {
   if (!adminPresetList) return;
-  adminPresetList.innerHTML = '<div class="ranking-empty">正在读取服务器模型...</div>';
+  if (!silent) {
+    adminPresetList.innerHTML = '<div class="ranking-empty">正在读取服务器模型...</div>';
+  }
   try {
     const response = await fetch("/api/admin/presets", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取 admin 模型列表失败。");
@@ -1335,7 +1356,7 @@ async function toggleAdminScanRepresentative(modelId, currentlyRepresentative) {
     });
     await readJsonResponse(response, "操作失败。");
     setStatus(currentlyRepresentative ? "已从扫描代表集合移除。" : "已加入扫描代表集合。");
-    await loadAdminPresets();
+    await loadAdminPresets({ silent: true });
   } catch (error) {
     setStatus(`操作失败：${error.message}`, true);
   }
@@ -2128,7 +2149,7 @@ async function updateAdminPresetOwner(id, owner) {
     await readJsonResponse(response, "修改 owner 失败。");
     setStatus(`已把模型 owner 修改为 ${owner}。`);
     await initializeServerCustomPresets();
-    await loadAdminPresets();
+    await loadAdminPresets({ silent: true });
   } catch (error) {
     setStatus(`修改 owner 失败：${error.message}`, true);
   }
@@ -2153,7 +2174,7 @@ async function renameAdminPreset(id, currentLabel) {
     await readJsonResponse(response, "重命名失败。");
     setStatus(`已重命名为：${trimmed}。`);
     await initializeServerCustomPresets();
-    await loadAdminPresets();
+    await loadAdminPresets({ silent: true });
   } catch (error) {
     setStatus(`重命名失败：${error.message}`, true);
   }
@@ -2170,7 +2191,7 @@ async function updateAdminPresetOriginalModelId(id, originalModelId) {
     await readJsonResponse(response, "修改原始模型失败。");
     setStatus(originalModelId === "0" ? "已设为原始手工模型。" : "已更新原始模型引用。");
     await initializeServerCustomPresets();
-    await loadAdminPresets();
+    await loadAdminPresets({ silent: true });
   } catch (error) {
     setStatus(`修改原始模型失败：${error.message}`, true);
   }
@@ -2194,7 +2215,7 @@ async function deleteAdminPreset(id, label) {
       delete strategyPresets[deletedName];
     }
     await initializeServerCustomPresets();
-    await loadAdminPresets();
+    await loadAdminPresets({ silent: true });
     setStatus(`已删除模型：${label || deletedName || id}。`);
   } catch (error) {
     setStatus(`删除模型失败：${error.message}`, true);
