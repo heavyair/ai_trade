@@ -1712,6 +1712,17 @@ function renderAdminRerunFrame() {
   try {
     if (adminRerunChartSvg) {
       drawModelOrderPriceChartInto(adminRerunChartSvg, rows, allTrades, { zoom: adminRerunChartZoom, upToIndex: index });
+      // The chart is drawn at a fixed width well beyond most viewports (drawModelOrderPriceChartInto
+      // floors it at 720px times zoom) so it scrolls horizontally inside .trade-price-wrap. Without
+      // this, the animating "current day" point drawn during playback scrolls out of the visible
+      // window almost immediately on a narrow (mobile) screen, making the chart look frozen/blank
+      // even though it's still drawing — keep the current index centered every frame instead.
+      const wrap = adminRerunChartSvg.parentElement;
+      if (wrap) {
+        const count = Math.max(1, rows.length - 1);
+        const ratio = index / count;
+        wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) * ratio - wrap.clientWidth * 0.35);
+      }
     }
   } catch (error) {
     console.error("重跑图表渲染失败：", error);
