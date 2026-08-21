@@ -20,6 +20,7 @@ const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
+const { ensureFreshData } = require("./ensure-fresh-data.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -183,6 +184,10 @@ async function main() {
 
         let rows = rowsCache.get(`${symbolEntry.code}:${symbolEntry.dbMarket}`);
         if (rows === undefined) {
+          const freshness = await ensureFreshData(pool, symbolEntry.code, symbolEntry.dbMarket);
+          if (freshness.refreshed) {
+            console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before validating`);
+          }
           rows = await loadRows(symbolEntry.code, symbolEntry.dbMarket);
           rowsCache.set(`${symbolEntry.code}:${symbolEntry.dbMarket}`, rows);
         }
