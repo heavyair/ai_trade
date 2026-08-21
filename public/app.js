@@ -2111,9 +2111,46 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   }
 }
 
+let adminValidationCache = [];
+let adminValidationLastPayload = null;
+let adminValidationSortKey = "passRate";
+let adminValidationSortDirection = "desc";
+
+const ADMIN_VALIDATION_COLUMNS = [
+  { key: "presetLabel", label: "模型" },
+  { key: "originSymbol", label: "训练股票" },
+  { key: "testedCount", label: "测试股票数" },
+  { key: "passingCount", label: "达标股票数" },
+  { key: "passRate", label: "通过率" },
+  { key: "worstReturnRate", label: "最差收益率" },
+  { key: "allPassed", label: "全部通过" },
+];
+
+function getAdminValidationSortValue(candidate, key) {
+  if (key === "presetLabel") return candidate.presetLabel || "";
+  if (key === "originSymbol") return candidate.originSymbol || "";
+  if (key === "allPassed") return candidate.allPassed ? 1 : 0;
+  return Number(candidate[key]) || 0;
+}
+
+function sortAdminValidationCandidates(candidates) {
+  const key = adminValidationSortKey;
+  const dir = adminValidationSortDirection === "asc" ? 1 : -1;
+  return [...candidates].sort((a, b) => {
+    const va = getAdminValidationSortValue(a, key);
+    const vb = getAdminValidationSortValue(b, key);
+    if (typeof va === "string" || typeof vb === "string") {
+      return dir * String(va).localeCompare(String(vb), "zh-CN");
+    }
+    return dir * (va - vb);
+  });
+}
+
 function renderAdminValidationList(payload) {
   if (!adminValidationList) return;
-  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  adminValidationLastPayload = payload;
+  adminValidationCache = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const candidates = sortAdminValidationCandidates(adminValidationCache);
   if (!candidates.length) {
     adminValidationList.innerHTML = '<div class="ranking-empty">还没有全市场验证结果，点击上方"运行全市场验证"开始。</div>';
   } else {
@@ -2126,19 +2163,23 @@ function renderAdminValidationList(payload) {
         <td>${formatPercent(c.passRate * 100)}</td>
         <td>${formatPercent(c.worstReturnRate)}</td>
         <td class="${c.allPassed ? "up" : ""}">${c.allPassed ? "是" : "否"}</td>
+        <td class="admin-scan-actions">
+          <button type="button" class="admin-validation-view-params-button" data-source-scan-result-id="${escapeHtml(c.sourceScanResultId)}">查看参数</button>
+          <button type="button" class="admin-validation-save-button" data-source-scan-result-id="${escapeHtml(c.sourceScanResultId)}">保存为个人模型</button>
+        </td>
       </tr>
     `).join("");
+    const headerCells = ADMIN_VALIDATION_COLUMNS.map((column) => {
+      const active = adminValidationSortKey === column.key;
+      const arrow = active ? (adminValidationSortDirection === "asc" ? " ▲" : " ▼") : "";
+      return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-admin-validation-sort-key="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
+    }).join("");
     adminValidationList.innerHTML = `
       <table class="admin-ranking-table">
         <thead>
           <tr>
-            <th>模型</th>
-            <th>训练股票</th>
-            <th>测试股票数</th>
-            <th>达标股票数</th>
-            <th>通过率</th>
-            <th>最差收益率</th>
-            <th>全部通过</th>
+            ${headerCells}
+            <th></th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -2231,6 +2272,49 @@ async function triggerAdminValidationRun() {
   }
 }
 
+function openAdminValidationParamViewer(sourceScanResultId) {
+  const candidate = adminValidationCache.find((item) => item.sourceScanResultId === sourceScanResultId);
+  if (!candidate) return;
+  const config = candidate.bestConfig && typeof candidate.bestConfig === "object" ? candidate.bestConfig : {};
+  const viewPreset = {
+    ...config,
+    label: `${candidate.presetLabel} · ${candidate.originSymbolName || candidate.originSymbol}`,
+    strategyType: candidate.strategyType || config.strategyType || "wave",
+  };
+  openPresetParamEditor(sourceScanResultId, {
+    preset: viewPreset,
+    readonly: true,
+    title: `查看全市场验证参数：${candidate.originSymbolName || candidate.originSymbol}（${candidate.presetLabel}）`,
+    subtitle: `测试 ${candidate.testedCount} 支股票，通过 ${candidate.passingCount} 支（${formatPercent(candidate.passRate * 100)}），最差收益率 ${formatPercent(candidate.worstReturnRate)} · 只读`,
+  });
+}
+
+async function saveAdminValidationCandidateAsPreset(sourceScanResultId) {
+  const candidate = adminValidationCache.find((item) => item.sourceScanResultId === sourceScanResultId);
+  if (!candidate) return;
+  const defaultLabel = `${candidate.originSymbolName || candidate.originSymbol} ${candidate.presetLabel} 全市场验证`.slice(0, 60);
+  const label = window.prompt("输入新模型名称：", defaultLabel);
+  if (label === null) return;
+  const trimmed = label.trim().slice(0, 80);
+  if (!trimmed) {
+    setStatus("模型名称不能为空。", true);
+    return;
+  }
+  if (!validateVisiblePresetLabel(trimmed)) return;
+  const preset = createPresetFromConfig(trimmed, candidate.bestConfig || {}, {
+    targetSymbol: candidate.originSymbol,
+    creator: "auto",
+    createdAt: todayText(),
+    updatedAt: todayText(),
+    originalText: `全市场验证：基于模型「${candidate.presetLabel}」在 ${candidate.originSymbolName || candidate.originSymbol} 上优化出的参数，测试 ${candidate.testedCount} 支股票，通过 ${candidate.passingCount} 支（${formatPercent(candidate.passRate * 100)}），最差收益率 ${formatPercent(candidate.worstReturnRate)}。`,
+    originalModelId: candidate.presetId,
+  });
+  const presetName = await saveGeneratedPreset(preset);
+  if (presetName) {
+    setStatus(`已另存为模型：${strategyPresets[presetName].label}。`);
+  }
+}
+
 function setAdminTab(tab) {
   const showRankings = tab === "rankings";
   const showScan = tab === "scan";
@@ -2277,6 +2361,32 @@ if (adminValidationRunButton) {
 if (adminValidationApplyThresholdButton) {
   adminValidationApplyThresholdButton.addEventListener("click", () => {
     loadAdminValidation();
+  });
+}
+if (adminValidationList) {
+  adminValidationList.addEventListener("click", (event) => {
+    const target = event.target;
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header[data-admin-validation-sort-key]") : null;
+    if (sortHeader) {
+      const key = sortHeader.dataset.adminValidationSortKey;
+      if (adminValidationSortKey === key) {
+        adminValidationSortDirection = adminValidationSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        adminValidationSortKey = key;
+        adminValidationSortDirection = "desc";
+      }
+      if (adminValidationLastPayload) renderAdminValidationList(adminValidationLastPayload);
+      return;
+    }
+    const viewButton = target && target.closest ? target.closest(".admin-validation-view-params-button") : null;
+    if (viewButton) {
+      openAdminValidationParamViewer(viewButton.dataset.sourceScanResultId);
+      return;
+    }
+    const saveButton = target && target.closest ? target.closest(".admin-validation-save-button") : null;
+    if (saveButton) {
+      saveAdminValidationCandidateAsPreset(saveButton.dataset.sourceScanResultId);
+    }
   });
 }
 if (adminScanRunSelectedButton) {

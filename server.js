@@ -2579,15 +2579,18 @@ async function handleUniverseValidationApi(req, res) {
 
     const result = await dbQuery(`
       SELECT
-        source_scan_result_id, preset_id, preset_label, origin_symbol, origin_market,
+        uv.source_scan_result_id, uv.preset_id, uv.preset_label, uv.origin_symbol, uv.origin_market,
+        osr.best_config, osr.symbol_name AS origin_symbol_name, osr.strategy_type,
         COUNT(*) AS tested_count,
-        COUNT(*) FILTER (WHERE return_rate >= $1) AS passing_count,
-        MIN(return_rate) AS worst_return_rate,
-        BOOL_AND(return_rate >= $1) AS all_passed,
-        MAX(validated_at) AS validated_at
-      FROM universe_validation_results
-      GROUP BY source_scan_result_id, preset_id, preset_label, origin_symbol, origin_market
-      ORDER BY (COUNT(*) FILTER (WHERE return_rate >= $1))::float / NULLIF(COUNT(*), 0) DESC, worst_return_rate DESC
+        COUNT(*) FILTER (WHERE uv.return_rate >= $1) AS passing_count,
+        MIN(uv.return_rate) AS worst_return_rate,
+        BOOL_AND(uv.return_rate >= $1) AS all_passed,
+        MAX(uv.validated_at) AS validated_at
+      FROM universe_validation_results uv
+      JOIN optimization_scan_results osr ON osr.id = uv.source_scan_result_id
+      GROUP BY uv.source_scan_result_id, uv.preset_id, uv.preset_label, uv.origin_symbol, uv.origin_market,
+               osr.best_config, osr.symbol_name, osr.strategy_type
+      ORDER BY (COUNT(*) FILTER (WHERE uv.return_rate >= $1))::float / NULLIF(COUNT(*), 0) DESC, worst_return_rate DESC
     `, [effectiveThreshold]);
 
     const candidates = result.rows.map((row) => {
@@ -2599,6 +2602,9 @@ async function handleUniverseValidationApi(req, res) {
         presetLabel: row.preset_label,
         originSymbol: row.origin_symbol,
         originMarket: row.origin_market,
+        originSymbolName: row.origin_symbol_name || "",
+        strategyType: row.strategy_type || "wave",
+        bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
         testedCount,
         passingCount,
         passRate: testedCount > 0 ? passingCount / testedCount : 0,
