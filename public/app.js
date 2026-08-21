@@ -141,6 +141,7 @@ const adminRerunTradeList = document.querySelector("#adminRerunTradeList");
 const adminRerunTradeDetailPanel = document.querySelector("#adminRerunTradeDetailPanel");
 const adminRerunTradeDetailTitle = document.querySelector("#adminRerunTradeDetailTitle");
 const adminRerunTradeDetailChart = document.querySelector("#adminRerunTradeDetailChart");
+const adminRerunTradeDetailSummary = document.querySelector("#adminRerunTradeDetailSummary");
 const optimizationDialog = document.querySelector("#optimizationDialog");
 const optimizationTitle = document.querySelector("#optimizationTitle");
 const optimizationSubtitle = document.querySelector("#optimizationSubtitle");
@@ -1624,17 +1625,25 @@ function renderAdminRerunTradeListHtml(trades) {
   // Reversed (most recent first) to match renderTradeLog's convention; data-trade-index
   // indexes into this same reversed order so the click handler can look the row back up.
   const reversed = trades.slice().reverse();
-  const rows = reversed.map((trade, index) => `
+  const rows = reversed.map((trade, index) => {
+    const reference = trade.reference
+      ? `${trade.reference.label} ${trade.reference.date} ${formatPrice(trade.reference.price)}`
+      : "--";
+    return `
     <tr class="${trade.side}" data-trade-index="${index}">
       <td>${escapeHtml(trade.date)}</td>
       <td>${trade.side === "buy" ? "买入" : "卖出"}</td>
       <td>${formatPrice(trade.price)}</td>
       <td>${formatShares(trade.shares)}</td>
       <td>${formatPercent(trade.positionRatio)}</td>
+      <td>${formatMoney(Number.isFinite(trade.accountCash) ? trade.accountCash : 0)}</td>
       <td>${formatMoney(trade.accountEquity || 0)}</td>
+      <td>${formatMoney(trade.fee || 0)}</td>
+      <td>${escapeHtml(reference)}</td>
       <td>${escapeHtml(trade.reason || "--")}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
   return `
     <table class="admin-ranking-table">
       <thead>
@@ -1644,7 +1653,10 @@ function renderAdminRerunTradeListHtml(trades) {
           <th>价格</th>
           <th>数量</th>
           <th>仓位</th>
+          <th>现金</th>
           <th>总资产</th>
+          <th>费用</th>
+          <th>参考点</th>
           <th>原因</th>
         </tr>
       </thead>
@@ -1658,6 +1670,23 @@ function openAdminRerunTradeDetail(trade) {
   if (adminRerunTradeDetailPanel) adminRerunTradeDetailPanel.classList.remove("hidden");
   if (adminRerunTradeDetailTitle) {
     adminRerunTradeDetailTitle.textContent = `${trade.date} ${trade.label} ${formatPrice(trade.price)} · ${trade.reason || ""}`;
+  }
+  if (adminRerunTradeDetailSummary) {
+    const reference = trade.reference
+      ? `${trade.reference.label}：${trade.reference.date}，价格 ${formatPrice(trade.reference.price)}`
+      : "无参考点";
+    adminRerunTradeDetailSummary.innerHTML = `
+      <dl>
+        <div><dt>成交价</dt><dd>${formatPrice(trade.price)}</dd></div>
+        <div><dt>数量</dt><dd>${formatShares(trade.shares)}</dd></div>
+        <div><dt>仓位</dt><dd>${formatPercent(trade.positionRatio)}</dd></div>
+        <div><dt>现金</dt><dd>${formatMoney(Number.isFinite(trade.accountCash) ? trade.accountCash : 0)}</dd></div>
+        <div><dt>总资产</dt><dd>${formatMoney(Number.isFinite(trade.accountEquity) ? trade.accountEquity : 0)}</dd></div>
+        <div><dt>费用</dt><dd>${formatMoney(trade.fee || 0)}</dd></div>
+      </dl>
+      <p>${escapeHtml(trade.reason || "--")}</p>
+      <span>${escapeHtml(reference)}</span>
+    `;
   }
   if (!adminRerunTradeDetailChart) return;
   const visibleStates = adminRerunState.states.slice(0, adminRerunState.index + 1);

@@ -2077,21 +2077,25 @@ button:disabled {
 }
 
 .trade-detail-panel span,
-.trade-detail-panel p {
+.trade-detail-panel p,
+#adminRerunTradeDetailSummary span,
+#adminRerunTradeDetailSummary p {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
 }
 
-.trade-detail-panel dl {
+.trade-detail-panel dl,
+#adminRerunTradeDetailSummary dl {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 12px 0 0;
 }
 
-.trade-detail-panel dl div {
+.trade-detail-panel dl div,
+#adminRerunTradeDetailSummary dl div {
   min-width: 0;
   padding: 8px;
   border: 1px solid #dce8ec;
@@ -2099,13 +2103,15 @@ button:disabled {
   background: #fff;
 }
 
-.trade-detail-panel dt {
+.trade-detail-panel dt,
+#adminRerunTradeDetailSummary dt {
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
 }
 
-.trade-detail-panel dd {
+.trade-detail-panel dd,
+#adminRerunTradeDetailSummary dd {
   margin: 5px 0 0;
   font-size: 13px;
   font-weight: 700;
@@ -2946,7 +2952,8 @@ tbody tr:last-child td {
     width: 100%;
   }
 
-  .trade-detail-panel dl {
+  .trade-detail-panel dl,
+  #adminRerunTradeDetailSummary dl {
     grid-template-columns: 1fr 1fr;
   }
 
