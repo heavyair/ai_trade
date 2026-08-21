@@ -106,10 +106,19 @@ const adminPresetsTabButton = document.querySelector("#adminPresetsTabButton");
 const adminRankingsTabButton = document.querySelector("#adminRankingsTabButton");
 const adminScanTabButton = document.querySelector("#adminScanTabButton");
 const adminScanStatusTabButton = document.querySelector("#adminScanStatusTabButton");
+const adminValidationTabButton = document.querySelector("#adminValidationTabButton");
 const adminPresetsPanel = document.querySelector("#adminPresetsPanel");
 const adminRankingsPanel = document.querySelector("#adminRankingsPanel");
 const adminScanPanel = document.querySelector("#adminScanPanel");
 const adminScanStatusPanel = document.querySelector("#adminScanStatusPanel");
+const adminValidationPanel = document.querySelector("#adminValidationPanel");
+const adminValidationBuyHoldMaxInput = document.querySelector("#adminValidationBuyHoldMax");
+const adminValidationBestReturnMinInput = document.querySelector("#adminValidationBestReturnMin");
+const adminValidationRunButton = document.querySelector("#adminValidationRunButton");
+const adminValidationRunStatus = document.querySelector("#adminValidationRunStatus");
+const adminValidationThresholdInput = document.querySelector("#adminValidationThreshold");
+const adminValidationApplyThresholdButton = document.querySelector("#adminValidationApplyThresholdButton");
+const adminValidationList = document.querySelector("#adminValidationList");
 const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
 const adminScanFilterBuyHoldMaxInput = document.querySelector("#adminScanFilterBuyHoldMax");
@@ -2102,22 +2111,146 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   }
 }
 
+function renderAdminValidationList(payload) {
+  if (!adminValidationList) return;
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  if (!candidates.length) {
+    adminValidationList.innerHTML = '<div class="ranking-empty">还没有全市场验证结果，点击上方"运行全市场验证"开始。</div>';
+  } else {
+    const rows = candidates.map((c) => `
+      <tr>
+        <td>${escapeHtml(c.presetLabel)}</td>
+        <td>${escapeHtml(c.originSymbol)}</td>
+        <td>${c.testedCount}</td>
+        <td>${c.passingCount}</td>
+        <td>${formatPercent(c.passRate * 100)}</td>
+        <td>${formatPercent(c.worstReturnRate)}</td>
+        <td class="${c.allPassed ? "up" : ""}">${c.allPassed ? "是" : "否"}</td>
+      </tr>
+    `).join("");
+    adminValidationList.innerHTML = `
+      <table class="admin-ranking-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>训练股票</th>
+            <th>测试股票数</th>
+            <th>达标股票数</th>
+            <th>通过率</th>
+            <th>最差收益率</th>
+            <th>全部通过</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  const running = Boolean(payload.validationRunning);
+  if (adminValidationRunButton) adminValidationRunButton.disabled = running;
+
+  const last = payload.lastScanResult;
+  const validationLast = last && last.jobType === "validation" ? last : null;
+  const crashed = Boolean(validationLast && validationLast.exitCode !== 0);
+  if (adminValidationRunStatus) {
+    const runningIsValidation = running && payload.scanInfo && payload.scanInfo.jobType === "validation";
+    if (runningIsValidation) {
+      adminValidationRunStatus.textContent = `验证进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
+    } else if (running) {
+      adminValidationRunStatus.textContent = "后台优化扫描正在运行，请等它结束后再启动全市场验证。";
+    } else if (crashed) {
+      adminValidationRunStatus.textContent = `上次验证异常退出（退出码 ${validationLast.exitCode}，${escapeHtml(formatAdminDate(validationLast.endedAt))}）。`;
+    } else if (validationLast) {
+      adminValidationRunStatus.textContent = `上次验证已完成（${escapeHtml(formatAdminDate(validationLast.endedAt))}）。`;
+    } else {
+      adminValidationRunStatus.textContent = "";
+    }
+  }
+  if (running) {
+    scheduleAdminValidationPoll();
+  } else {
+    stopAdminValidationPoll();
+  }
+}
+
+let adminValidationPollTimer = null;
+
+function scheduleAdminValidationPoll() {
+  if (adminValidationPollTimer) return;
+  adminValidationPollTimer = window.setInterval(() => {
+    if (!adminValidationPanel || adminValidationPanel.classList.contains("hidden")) {
+      stopAdminValidationPoll();
+      return;
+    }
+    loadAdminValidation();
+  }, 5000);
+}
+
+function stopAdminValidationPoll() {
+  if (adminValidationPollTimer) {
+    window.clearInterval(adminValidationPollTimer);
+    adminValidationPollTimer = null;
+  }
+}
+
+async function loadAdminValidation() {
+  if (!adminValidationList) return;
+  const threshold = Number(adminValidationThresholdInput && adminValidationThresholdInput.value);
+  const effectiveThreshold = Number.isFinite(threshold) ? threshold : 100;
+  if (!adminValidationList.innerHTML.trim()) {
+    adminValidationList.innerHTML = '<div class="ranking-empty">正在读取全市场验证结果...</div>';
+  }
+  try {
+    const response = await fetch(`/api/admin/universe-validation?threshold=${encodeURIComponent(effectiveThreshold)}`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取全市场验证结果失败。");
+    renderAdminValidationList(payload);
+  } catch (error) {
+    adminValidationList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function triggerAdminValidationRun() {
+  const buyHoldMax = Number(adminValidationBuyHoldMaxInput && adminValidationBuyHoldMaxInput.value);
+  const bestReturnMin = Number(adminValidationBestReturnMinInput && adminValidationBestReturnMinInput.value);
+  if (adminValidationRunStatus) adminValidationRunStatus.textContent = "正在启动验证...";
+  try {
+    const response = await fetch("/api/admin/universe-validation/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        buyHoldMax: Number.isFinite(buyHoldMax) ? buyHoldMax : 50,
+        bestReturnMin: Number.isFinite(bestReturnMin) ? bestReturnMin : 100,
+      }),
+    });
+    await readJsonResponse(response, "启动验证失败。");
+    setStatus("已启动全市场验证。");
+    await loadAdminValidation();
+  } catch (error) {
+    if (adminValidationRunStatus) adminValidationRunStatus.textContent = "";
+    setStatus(`启动验证失败：${error.message}`, true);
+  }
+}
+
 function setAdminTab(tab) {
   const showRankings = tab === "rankings";
   const showScan = tab === "scan";
   const showScanStatus = tab === "scanStatus";
-  const showPresets = !showRankings && !showScan && !showScanStatus;
+  const showValidation = tab === "validation";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
   if (adminScanStatusTabButton) adminScanStatusTabButton.classList.toggle("active", showScanStatus);
+  if (adminValidationTabButton) adminValidationTabButton.classList.toggle("active", showValidation);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
   if (adminScanStatusPanel) adminScanStatusPanel.classList.toggle("hidden", !showScanStatus);
+  if (adminValidationPanel) adminValidationPanel.classList.toggle("hidden", !showValidation);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
+  if (showValidation) loadAdminValidation();
 }
 
 if (adminPresetsTabButton) {
@@ -2131,6 +2264,20 @@ if (adminScanTabButton) {
 }
 if (adminScanStatusTabButton) {
   adminScanStatusTabButton.addEventListener("click", () => setAdminTab("scanStatus"));
+}
+if (adminValidationTabButton) {
+  adminValidationTabButton.addEventListener("click", () => setAdminTab("validation"));
+}
+if (adminValidationRunButton) {
+  adminValidationRunButton.addEventListener("click", () => {
+    if (!window.confirm("确定要运行全市场验证吗？这会对通过初筛的候选逐一跑全市场股票，可能耗时较久。")) return;
+    triggerAdminValidationRun();
+  });
+}
+if (adminValidationApplyThresholdButton) {
+  adminValidationApplyThresholdButton.addEventListener("click", () => {
+    loadAdminValidation();
+  });
 }
 if (adminScanRunSelectedButton) {
   adminScanRunSelectedButton.addEventListener("click", () => {

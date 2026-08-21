@@ -2337,42 +2337,66 @@ let activeScanInfo = null;
 // "resume" request can replay the exact same session (same sessionStartedAt/presetIds).
 let lastScanResult = null;
 
+// Only one background batch job (optimization scan OR universe validation) is allowed to
+// run at a time — both are long-running, CPU/DB-heavy, and share the same host, so letting
+// them run concurrently would just make both slower without any benefit.
 function isScanRunning() {
   return Boolean(activeScanProcess && activeScanInfo);
 }
 
-function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
-  const scriptPath = path.join(__dirname, "scripts", "universe", "run-optimization-scan.js");
-  const logPath = path.join(__dirname, "scripts", "universe", "scan.log");
+function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt, triggeredBy, extra = {} }) {
+  const logPath = path.join(__dirname, "scripts", "universe", `${jobType}.log`);
   const logFd = fs.openSync(logPath, "a");
-  const scanArgs = [
-    scriptPath, "--rescan", "--candidates=300", "--minRows=250",
-    `--sessionSince=${sessionStartedAt}`,
-  ];
-  if (presetIds.length > 0) scanArgs.push(`--presetIds=${presetIds.join(",")}`);
+  const fullArgs = [scriptPath, ...scriptArgs];
 
-  fs.writeSync(logFd, `\n\n=== admin-triggered scan started, session=${sessionStartedAt} by ${triggeredBy} presetIds=${presetIds.join(",") || "(all active)"} ===\n`);
+  fs.writeSync(logFd, `\n\n=== admin-triggered ${jobType} started, session=${sessionStartedAt} by ${triggeredBy} ===\n`);
 
-  const child = spawn(process.execPath, scanArgs, {
+  const child = spawn(process.execPath, fullArgs, {
     cwd: __dirname,
     env: process.env,
     stdio: ["ignore", logFd, logFd],
   });
   activeScanProcess = child;
-  activeScanInfo = { startedAt: sessionStartedAt, sessionStartedAt, presetIds, triggeredBy, pid: child.pid };
+  activeScanInfo = { jobType, startedAt: sessionStartedAt, sessionStartedAt, triggeredBy, pid: child.pid, ...extra };
 
   child.on("exit", (code) => {
-    fs.writeSync(logFd, `\n=== admin-triggered scan exited with code ${code} ===\n`);
+    fs.writeSync(logFd, `\n=== admin-triggered ${jobType} exited with code ${code} ===\n`);
     fs.closeSync(logFd);
-    lastScanResult = { sessionStartedAt, presetIds, triggeredBy, exitCode: code, endedAt: new Date().toISOString() };
+    lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: code, endedAt: new Date().toISOString(), ...extra };
     activeScanProcess = null;
     activeScanInfo = null;
   });
   child.on("error", (error) => {
-    console.error("optimization scan child process error:", error);
-    lastScanResult = { sessionStartedAt, presetIds, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message };
+    console.error(`${jobType} child process error:`, error);
+    lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message, ...extra };
     activeScanProcess = null;
     activeScanInfo = null;
+  });
+}
+
+function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
+  const scriptArgs = ["--rescan", "--candidates=300", "--minRows=250", `--sessionSince=${sessionStartedAt}`];
+  if (presetIds.length > 0) scriptArgs.push(`--presetIds=${presetIds.join(",")}`);
+  launchBackgroundJob({
+    jobType: "scan",
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-optimization-scan.js"),
+    scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    extra: { presetIds },
+  });
+}
+
+function launchUniverseValidationProcess({ buyHoldMax, bestReturnMin, rescan, sessionStartedAt, triggeredBy }) {
+  const scriptArgs = [`--buyHoldMax=${buyHoldMax}`, `--bestReturnMin=${bestReturnMin}`, `--minRows=250`, `--sessionSince=${sessionStartedAt}`];
+  if (rescan) scriptArgs.push("--rescan");
+  launchBackgroundJob({
+    jobType: "validation",
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-universe-validation.js"),
+    scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    extra: { buyHoldMax, bestReturnMin },
   });
 }
 
@@ -2521,6 +2545,105 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+// Aggregates universe_validation_results per candidate (preset_id + origin symbol/market)
+// with the profit threshold applied at query time, so the admin can freely change "what
+// counts as profitable" without ever re-running the (expensive) validation batch job.
+async function handleUniverseValidationApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const hasTable = await dbQuery(`
+      SELECT 1 FROM information_schema.tables WHERE table_name = 'universe_validation_results'
+    `);
+    if (hasTable.rows.length === 0) {
+      sendJson(res, 200, {
+        adminEmail: ADMIN_EMAIL,
+        candidates: [],
+        validationRunning: isScanRunning(),
+        scanInfo: activeScanInfo,
+        lastScanResult,
+      });
+      return;
+    }
+
+    const requestUrl = new URL(req.url, "http://localhost");
+    const threshold = Number(requestUrl.searchParams.get("threshold"));
+    const effectiveThreshold = Number.isFinite(threshold) ? threshold : 100;
+
+    const result = await dbQuery(`
+      SELECT
+        source_scan_result_id, preset_id, preset_label, origin_symbol, origin_market,
+        COUNT(*) AS tested_count,
+        COUNT(*) FILTER (WHERE return_rate >= $1) AS passing_count,
+        MIN(return_rate) AS worst_return_rate,
+        BOOL_AND(return_rate >= $1) AS all_passed,
+        MAX(validated_at) AS validated_at
+      FROM universe_validation_results
+      GROUP BY source_scan_result_id, preset_id, preset_label, origin_symbol, origin_market
+      ORDER BY (COUNT(*) FILTER (WHERE return_rate >= $1))::float / NULLIF(COUNT(*), 0) DESC, worst_return_rate DESC
+    `, [effectiveThreshold]);
+
+    const candidates = result.rows.map((row) => {
+      const testedCount = Number(row.tested_count) || 0;
+      const passingCount = Number(row.passing_count) || 0;
+      return {
+        sourceScanResultId: row.source_scan_result_id,
+        presetId: row.preset_id,
+        presetLabel: row.preset_label,
+        originSymbol: row.origin_symbol,
+        originMarket: row.origin_market,
+        testedCount,
+        passingCount,
+        passRate: testedCount > 0 ? passingCount / testedCount : 0,
+        worstReturnRate: Number(row.worst_return_rate) || 0,
+        allPassed: Boolean(row.all_passed),
+        validatedAt: row.validated_at ? new Date(row.validated_at).toISOString() : "",
+      };
+    });
+
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      threshold: effectiveThreshold,
+      candidates,
+      validationRunning: isScanRunning(),
+      scanInfo: activeScanInfo,
+      lastScanResult,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+async function handleUniverseValidationRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "已有后台任务在运行中，请等它完成后再启动新的。", info: activeScanInfo });
+      return;
+    }
+
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const buyHoldMax = Number.isFinite(Number(payload.buyHoldMax)) ? Number(payload.buyHoldMax) : 50;
+    const bestReturnMin = Number.isFinite(Number(payload.bestReturnMin)) ? Number(payload.bestReturnMin) : 100;
+    const rescan = Boolean(payload.rescan);
+    const sessionStartedAt = new Date().toISOString();
+
+    launchUniverseValidationProcess({ buyHoldMax, bestReturnMin, rescan, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, buyHoldMax, bestReturnMin, rescan, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动验证失败。" });
   }
 }
 
@@ -3564,6 +3687,16 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
     handleAdminOptimizationScanRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/universe-validation") {
+    handleUniverseValidationApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/universe-validation/run") {
+    handleUniverseValidationRunApi(req, res);
     return;
   }
 

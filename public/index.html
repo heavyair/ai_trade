@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260821-dedupe-wave-thresholds">
+    <link rel="stylesheet" href="/styles.css?v=20260821-universe-validation">
   </head>
   <body>
     <main class="shell">
@@ -137,6 +137,7 @@
             <button id="adminRankingsTabButton" type="button">历史测试记录</button>
             <button id="adminScanTabButton" type="button">后台模型排行</button>
             <button id="adminScanStatusTabButton" type="button">后台计算状态</button>
+            <button id="adminValidationTabButton" type="button">全市场验证</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -171,6 +172,26 @@
               <button type="button" id="adminScanResumeButton" class="ghost-button hidden">继续上次中断的扫描</button>
               <span id="adminScanRunStatus" class="field-hint"></span>
             </div>
+          </div>
+          <div id="adminValidationPanel" class="hidden">
+            <p class="field-hint">把每一条通过初筛的（模型,股票）最优参数原样拿去跑全市场其余股票，验证是否真的跨股票通用（而不是只在训练用的那支股票上过拟合）。</p>
+            <div id="adminValidationTriggerRow" class="admin-scan-filter-row">
+              <label>全仓买入持有收益率上限(%)（候选筛选）
+                <input id="adminValidationBuyHoldMax" type="number" step="1" placeholder="不限" value="50">
+              </label>
+              <label>优化后收益率下限(%)（候选筛选）
+                <input id="adminValidationBestReturnMin" type="number" step="1" placeholder="不限" value="100">
+              </label>
+              <button type="button" id="adminValidationRunButton" class="ghost-button">运行全市场验证</button>
+              <span id="adminValidationRunStatus" class="field-hint"></span>
+            </div>
+            <div id="adminValidationThresholdRow" class="admin-scan-filter-row">
+              <label>盈利阈值(%)（结果聚合，改了立即生效，无需重新验证）
+                <input id="adminValidationThreshold" type="number" step="1" value="100">
+              </label>
+              <button type="button" id="adminValidationApplyThresholdButton" class="ghost-button">应用阈值</button>
+            </div>
+            <div id="adminValidationList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1063,6 +1084,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260821-dedupe-wave-thresholds"></script>
+    <script src="/app.js?v=20260821-universe-validation"></script>
   </body>
 </html>
