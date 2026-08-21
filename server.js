@@ -2528,6 +2528,31 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
 
     const totalPairs = totalModels * eligibleStocks;
 
+    // completedPairs/perModel above are computed from the CURRENT row count in
+    // optimization_scan_results, which is meaningless as a progress signal during a
+    // --rescan of models that were already fully scanned before: a rescan UPDATES
+    // existing rows in place rather than inserting new ones, so the row count (and
+    // therefore the completion-rate cards) never visibly moves even while real work is
+    // happening. When a scan is actively running, additionally compute how many of
+    // THIS session's pairs have actually been (re)done since it started, scoped to the
+    // specific models this session covers.
+    let sessionProgress = null;
+    if (isScanRunning() && activeScanInfo && activeScanInfo.jobType === "scan" && activeScanInfo.sessionStartedAt) {
+      const sessionPresetIds = Array.isArray(activeScanInfo.presetIds) && activeScanInfo.presetIds.length > 0
+        ? activeScanInfo.presetIds
+        : presets.map((preset) => preset.id);
+      const sessionResult = await dbQuery(`
+        SELECT COUNT(*) AS session_completed
+        FROM optimization_scan_results
+        WHERE scanned_at >= $1 AND preset_id = ANY($2::text[])
+      `, [activeScanInfo.sessionStartedAt, sessionPresetIds]);
+      sessionProgress = {
+        completedPairs: Number(sessionResult.rows[0].session_completed) || 0,
+        totalPairs: sessionPresetIds.length * eligibleStocks,
+        modelCount: sessionPresetIds.length,
+      };
+    }
+
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       totalModels,
@@ -2542,6 +2567,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       scanRunning: isScanRunning(),
       scanInfo: activeScanInfo,
       lastScanResult,
+      sessionProgress,
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });

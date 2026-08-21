@@ -1970,7 +1970,20 @@ if (adminScanClearFilterButton) {
 function renderAdminScanStatus(status) {
   if (!adminScanStatusSummary || !adminScanStatusModelList) return;
   const completionRate = status.totalPairs > 0 ? status.completedPairs / status.totalPairs : 0;
+  // completedPairs/completionRate above come from the raw row count in
+  // optimization_scan_results, which barely moves during a --rescan of models that were
+  // already fully scanned before (a rescan updates existing rows in place). When the
+  // server reports session-specific progress (only present while a scan job is actually
+  // running), show that instead so a rescan's progress is actually visible.
+  const sessionCard = status.sessionProgress ? `
+    <article>
+      <span>本次扫描进度</span>
+      <strong>${formatPercent(status.sessionProgress.totalPairs > 0 ? (status.sessionProgress.completedPairs / status.sessionProgress.totalPairs) * 100 : 0)}</strong>
+      <p>本次启动的扫描已完成 ${status.sessionProgress.completedPairs} / ${status.sessionProgress.totalPairs} 组（${status.sessionProgress.modelCount} 个模型 × ${status.eligibleStocks} 只股票）。</p>
+    </article>
+  ` : "";
   adminScanStatusSummary.innerHTML = `
+    ${sessionCard}
     <article>
       <span>模型数</span>
       <strong>${status.totalModels}</strong>
