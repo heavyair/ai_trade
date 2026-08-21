@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260821-scan-session-progress">
+    <link rel="stylesheet" href="/styles.css?v=20260821-param-stats-session-persist">
   </head>
   <body>
     <main class="shell">
@@ -192,7 +192,26 @@
               <button type="button" id="adminValidationApplyThresholdButton" class="ghost-button">应用阈值</button>
             </div>
             <div id="adminValidationList" class="admin-ranking-list"></div>
+            <div id="adminParamPatternRow" class="admin-scan-filter-row">
+              <label>查看某个模型的参数规律
+                <select id="adminParamPatternModelSelect"></select>
+              </label>
+              <button type="button" id="adminParamPatternViewButton" class="ghost-button">查看参数规律</button>
+            </div>
           </div>
+        </form>
+      </dialog>
+
+      <dialog id="adminParamPatternDialog" class="param-dialog">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="adminParamPatternTitle">参数规律</h2>
+              <p id="adminParamPatternSubtitle">按变异系数从小到大排列，越靠前说明不同股票独立调出来的值越一致。</p>
+            </div>
+            <button id="closeAdminParamPatternButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div id="adminParamPatternList" class="admin-ranking-list"></div>
         </form>
       </dialog>
 
@@ -1084,6 +1103,6 @@
       </section>
       </div>
     </main>
-    <script src="/app.js?v=20260821-scan-session-progress"></script>
+    <script src="/app.js?v=20260821-param-stats-session-persist"></script>
   </body>
 </html>

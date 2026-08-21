@@ -12,6 +12,7 @@ const DATA_DIR = path.join(__dirname, "data");
 const PRESETS_FILE = process.env.PRESETS_FILE || path.join(DATA_DIR, "custom-presets.json");
 const RANKINGS_FILE = process.env.RANKINGS_FILE || path.join(DATA_DIR, "ranking-records.json");
 const USERS_FILE = process.env.USERS_FILE || path.join(DATA_DIR, "users.json");
+const SCAN_SESSION_STATE_FILE = process.env.SCAN_SESSION_STATE_FILE || path.join(DATA_DIR, "scan-session-state.json");
 const AKSHARE_PYTHON = process.env.AKSHARE_PYTHON || "python3";
 const AKSHARE_TIMEOUT_MS = Math.max(3000, Number(process.env.AKSHARE_TIMEOUT_MS || 18000));
 const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
@@ -2330,12 +2331,54 @@ function loadOptimizationUniverse() {
 // Tracks the currently-running admin-triggered scan child process, if any. Deliberately
 // NOT detached: if this server process is killed/redeployed, the scan child dies with it
 // rather than continuing to write results against a possibly-stale codebase.
+// activeScanProcess/activeScanInfo are deliberately in-memory only: they describe a child
+// process this exact server instance owns, which is meaningless to persist (a redeploy's
+// new instance has no such process, full stop). lastScanResult is different — its whole
+// purpose is letting the admin "resume" a session across time, and a redeploy is exactly
+// the situation where that matters most (it SIGKILLs the running child without ever
+// reaching the child.on("exit") handler below), so it's mirrored to disk on every
+// start/exit and restored at boot — see restoreScanSessionState().
+function readScanSessionState() {
+  try {
+    if (!fs.existsSync(SCAN_SESSION_STATE_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(SCAN_SESSION_STATE_FILE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeScanSessionState(state) {
+  try {
+    ensureDataDir(SCAN_SESSION_STATE_FILE);
+    fs.writeFileSync(SCAN_SESSION_STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (error) {
+    console.error("failed to persist scan session state:", error.message);
+  }
+}
+
+// Called once at startup. If the persisted state says a job was still "running", this
+// server never saw it finish — either the previous instance was killed by a redeploy
+// mid-job, or it crashed outright. Either way, from the admin's perspective that's an
+// interrupted session that "继续上次中断的扫描" should be able to pick back up.
+function restoreScanSessionState() {
+  const persisted = readScanSessionState();
+  if (!persisted) return;
+  if (persisted.status === "running") {
+    lastScanResult = { ...persisted.result, exitCode: -1, endedAt: new Date().toISOString(), interrupted: true };
+    writeScanSessionState({ status: "crashed", result: lastScanResult });
+  } else if (persisted.result) {
+    lastScanResult = persisted.result;
+  }
+}
+
 let activeScanProcess = null;
 let activeScanInfo = null;
 // Set once the previous run's child process exits, so the admin UI can tell "last run
 // crashed" (exitCode !== 0) from "last run finished normally" (exitCode === 0), and so a
 // "resume" request can replay the exact same session (same sessionStartedAt/presetIds).
 let lastScanResult = null;
+restoreScanSessionState();
 
 // Only one background batch job (optimization scan OR universe validation) is allowed to
 // run at a time — both are long-running, CPU/DB-heavy, and share the same host, so letting
@@ -2358,17 +2401,20 @@ function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt
   });
   activeScanProcess = child;
   activeScanInfo = { jobType, startedAt: sessionStartedAt, sessionStartedAt, triggeredBy, pid: child.pid, ...extra };
+  writeScanSessionState({ status: "running", result: { jobType, sessionStartedAt, triggeredBy, ...extra } });
 
   child.on("exit", (code) => {
     fs.writeSync(logFd, `\n=== admin-triggered ${jobType} exited with code ${code} ===\n`);
     fs.closeSync(logFd);
     lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: code, endedAt: new Date().toISOString(), ...extra };
+    writeScanSessionState({ status: code === 0 ? "completed" : "crashed", result: lastScanResult });
     activeScanProcess = null;
     activeScanInfo = null;
   });
   child.on("error", (error) => {
     console.error(`${jobType} child process error:`, error);
     lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message, ...extra };
+    writeScanSessionState({ status: "crashed", result: lastScanResult });
     activeScanProcess = null;
     activeScanInfo = null;
   });
@@ -2676,6 +2722,107 @@ async function handleUniverseValidationRunApi(req, res) {
     sendJson(res, 200, { started: true, buyHoldMax, bestReturnMin, rescan, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动验证失败。" });
+  }
+}
+
+// Recursively collects every numeric leaf in a (possibly nested, array-containing) config
+// object into flat "path" -> value entries, e.g. buyRules[0].drop, maRsiBandRule.fastMa.
+// Strategy-type-agnostic on purpose: works the same for wave's rule arrays, ma-rsi-band's
+// flat rule object, block-rules' nested condition/action shape, etc. — no per-type
+// awareness needed, since every candidate for a given preset_id already shares the same
+// structural shape (best_config is always cloned from that one preset's own rule count).
+const PARAM_STATS_EXCLUDED_FIELDS = new Set(["initialCash", "tradeFee"]);
+function flattenNumericLeaves(value, prefix, out) {
+  if (value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => flattenNumericLeaves(item, `${prefix}[${index}]`, out));
+    return;
+  }
+  if (typeof value === "object") {
+    Object.keys(value).forEach((key) => {
+      if (!prefix && PARAM_STATS_EXCLUDED_FIELDS.has(key)) return;
+      flattenNumericLeaves(value[key], prefix ? `${prefix}.${key}` : key, out);
+    });
+    return;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (!out[prefix]) out[prefix] = [];
+    out[prefix].push(value);
+  }
+}
+
+function computeParamStats(values) {
+  const n = values.length;
+  const mean = values.reduce((sum, v) => sum + v, 0) / n;
+  const sorted = [...values].sort((a, b) => a - b);
+  const median = n % 2 === 0 ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2 : sorted[(n - 1) / 2];
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / n;
+  const stddev = Math.sqrt(variance);
+  const cv = mean !== 0 ? Math.abs(stddev / mean) : null;
+  return {
+    sampleSize: n,
+    mean,
+    median,
+    min: sorted[0],
+    max: sorted[n - 1],
+    stddev,
+    cv,
+  };
+}
+
+// Statistically summarizes how consistent the optimized parameters are across every
+// validated candidate of one model (preset_id) — a tightly clustered parameter (low
+// coefficient of variation) across many independently-optimized stocks suggests a real
+// "sweet spot" for that model, not per-stock overfitting.
+async function handleUniverseValidationParamStatsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const requestUrl = new URL(req.url, "http://localhost");
+    const presetId = String(requestUrl.searchParams.get("presetId") || "").trim();
+    if (!presetId) {
+      sendJson(res, 400, { error: "缺少 presetId。" });
+      return;
+    }
+
+    const result = await dbQuery(`
+      SELECT DISTINCT osr.id, osr.symbol, osr.symbol_name, osr.best_config, osr.preset_label
+      FROM optimization_scan_results osr
+      WHERE osr.preset_id = $1
+        AND osr.id IN (SELECT DISTINCT source_scan_result_id FROM universe_validation_results)
+    `, [presetId]);
+
+    if (result.rows.length === 0) {
+      sendJson(res, 200, { adminEmail: ADMIN_EMAIL, presetId, presetLabel: "", sampleCount: 0, params: [] });
+      return;
+    }
+
+    const valuesByPath = {};
+    result.rows.forEach((row) => {
+      const config = row.best_config && typeof row.best_config === "object" ? row.best_config : {};
+      flattenNumericLeaves(config, "", valuesByPath);
+    });
+
+    const params = Object.keys(valuesByPath)
+      .map((path) => ({ path, ...computeParamStats(valuesByPath[path]) }))
+      .sort((a, b) => {
+        const cvA = a.cv === null ? Infinity : a.cv;
+        const cvB = b.cv === null ? Infinity : b.cv;
+        return cvA - cvB;
+      });
+
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      presetId,
+      presetLabel: result.rows[0].preset_label,
+      sampleCount: result.rows.length,
+      params,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "统计参数规律失败。" });
   }
 }
 
@@ -3729,6 +3876,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/universe-validation/run") {
     handleUniverseValidationRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/universe-validation/param-stats") {
+    handleUniverseValidationParamStatsApi(req, res);
     return;
   }
 

@@ -119,6 +119,12 @@ const adminValidationRunStatus = document.querySelector("#adminValidationRunStat
 const adminValidationThresholdInput = document.querySelector("#adminValidationThreshold");
 const adminValidationApplyThresholdButton = document.querySelector("#adminValidationApplyThresholdButton");
 const adminValidationList = document.querySelector("#adminValidationList");
+const adminParamPatternModelSelect = document.querySelector("#adminParamPatternModelSelect");
+const adminParamPatternViewButton = document.querySelector("#adminParamPatternViewButton");
+const adminParamPatternDialog = document.querySelector("#adminParamPatternDialog");
+const adminParamPatternTitle = document.querySelector("#adminParamPatternTitle");
+const closeAdminParamPatternButton = document.querySelector("#closeAdminParamPatternButton");
+const adminParamPatternList = document.querySelector("#adminParamPatternList");
 const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
 const adminScanFilterBuyHoldMaxInput = document.querySelector("#adminScanFilterBuyHoldMax");
@@ -2225,6 +2231,23 @@ function renderAdminValidationList(payload) {
   } else {
     stopAdminValidationPoll();
   }
+
+  if (adminParamPatternModelSelect) {
+    const previousValue = adminParamPatternModelSelect.value;
+    const uniquePresets = [];
+    const seenPresetIds = new Set();
+    adminValidationCache.forEach((c) => {
+      if (seenPresetIds.has(c.presetId)) return;
+      seenPresetIds.add(c.presetId);
+      uniquePresets.push({ id: c.presetId, label: c.presetLabel });
+    });
+    adminParamPatternModelSelect.innerHTML = uniquePresets
+      .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`)
+      .join("");
+    if (uniquePresets.some((p) => p.id === previousValue)) {
+      adminParamPatternModelSelect.value = previousValue;
+    }
+  }
 }
 
 let adminValidationPollTimer = null;
@@ -2328,6 +2351,65 @@ async function saveAdminValidationCandidateAsPreset(sourceScanResultId) {
   }
 }
 
+function formatParamStatNumber(value) {
+  if (!Number.isFinite(value)) return "--";
+  return Math.abs(value) >= 1000 ? value.toFixed(0) : (Math.round(value * 1000) / 1000).toString();
+}
+
+function renderAdminParamPatternList(payload) {
+  if (!adminParamPatternList) return;
+  const params = Array.isArray(payload.params) ? payload.params : [];
+  if (adminParamPatternTitle) {
+    adminParamPatternTitle.textContent = `参数规律：${payload.presetLabel || payload.presetId}（共 ${payload.sampleCount} 支已验证的训练股票）`;
+  }
+  if (!params.length) {
+    adminParamPatternList.innerHTML = '<div class="ranking-empty">这个模型还没有可统计的数值参数或验证数据。</div>';
+    return;
+  }
+  const rows = params.map((p) => `
+    <tr>
+      <td>${escapeHtml(p.path)}</td>
+      <td>${p.sampleSize}</td>
+      <td>${formatParamStatNumber(p.mean)}</td>
+      <td>${formatParamStatNumber(p.median)}</td>
+      <td>${formatParamStatNumber(p.min)}</td>
+      <td>${formatParamStatNumber(p.max)}</td>
+      <td>${formatParamStatNumber(p.stddev)}</td>
+      <td>${p.cv === null ? "N/A" : p.cv.toFixed(3)}</td>
+    </tr>
+  `).join("");
+  adminParamPatternList.innerHTML = `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>
+          <th>参数路径</th>
+          <th>样本数</th>
+          <th>均值</th>
+          <th>中位数</th>
+          <th>最小值</th>
+          <th>最大值</th>
+          <th>标准差</th>
+          <th>变异系数</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function openAdminParamPatternDialog(presetId) {
+  if (!presetId || !adminParamPatternDialog) return;
+  showDialog(adminParamPatternDialog);
+  adminParamPatternList.innerHTML = '<div class="ranking-empty">正在统计参数规律...</div>';
+  try {
+    const response = await fetch(`/api/admin/universe-validation/param-stats?presetId=${encodeURIComponent(presetId)}`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, "统计参数规律失败。");
+    renderAdminParamPatternList(payload);
+  } catch (error) {
+    adminParamPatternList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "统计失败。")}</div>`;
+  }
+}
+
 function setAdminTab(tab) {
   const showRankings = tab === "rankings";
   const showScan = tab === "scan";
@@ -2374,6 +2456,20 @@ if (adminValidationRunButton) {
 if (adminValidationApplyThresholdButton) {
   adminValidationApplyThresholdButton.addEventListener("click", () => {
     loadAdminValidation();
+  });
+}
+if (adminParamPatternViewButton) {
+  adminParamPatternViewButton.addEventListener("click", () => {
+    if (!adminParamPatternModelSelect || !adminParamPatternModelSelect.value) {
+      setStatus("还没有可查看的模型，请先运行全市场验证。", true);
+      return;
+    }
+    openAdminParamPatternDialog(adminParamPatternModelSelect.value);
+  });
+}
+if (closeAdminParamPatternButton && adminParamPatternDialog) {
+  closeAdminParamPatternButton.addEventListener("click", () => {
+    closeDialog(adminParamPatternDialog);
   });
 }
 if (adminValidationList) {
