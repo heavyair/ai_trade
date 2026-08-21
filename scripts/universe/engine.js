@@ -2246,6 +2246,16 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
 function enforceMonotonicRules(rules, thresholdKey, targetKey) {
   if (!Array.isArray(rules) || rules.length < 2) return rules;
   const thresholds = rules.map((rule) => rule[thresholdKey]).sort((a, b) => a - b);
+  // Two sibling rules independently sampled from the same descriptor range can land on
+  // the exact same threshold — since same-day ties always resolve to the rule with the
+  // larger threshold, the lower-target rule at that threshold could then never fire on
+  // its own, silently collapsing a tier. Nudge duplicates apart (keeping sort order) so
+  // every rule keeps a distinct trigger point.
+  for (let i = 1; i < thresholds.length; i += 1) {
+    if (thresholds[i] <= thresholds[i - 1]) {
+      thresholds[i] = Math.round((thresholds[i - 1] + 0.01) * 1000) / 1000;
+    }
+  }
   const targets = rules.map((rule) => rule[targetKey]).sort((a, b) => a - b);
   rules.forEach((rule, index) => {
     rule[thresholdKey] = thresholds[index];
