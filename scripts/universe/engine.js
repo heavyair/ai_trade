@@ -113,6 +113,10 @@ const defaultBuyBlockRules = [];
 
 const defaultSellBlockRules = [];
 
+const defaultScoreRules = [];
+
+const defaultPositionBands = [];
+
 
 function formatPrice(value) {
   return Number(value).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
@@ -156,6 +160,23 @@ function cloneRules(rules, defaults) {
 }
 
 
+function cloneScoreRules(rules, defaults) {
+  return (Array.isArray(rules) ? rules : defaults).map((rule) => ({
+    enabled: rule && rule.enabled !== false,
+    conditions: Array.isArray(rule && rule.conditions) ? rule.conditions.map((c) => ({ ...c })) : [],
+    points: Number(rule && rule.points) || 0,
+  }));
+}
+
+
+function clonePositionBands(bands, defaults) {
+  return (Array.isArray(bands) ? bands : defaults).map((band) => ({
+    minScore: Number(band && band.minScore) || 0,
+    targetPercent: Math.min(100, Math.max(0, Number(band && band.targetPercent) || 0)),
+  }));
+}
+
+
 function buildConfigFromPresetObject(preset, baseConfig) {
   return {
     ...baseConfig,
@@ -180,6 +201,8 @@ function buildConfigFromPresetObject(preset, baseConfig) {
     stagnationReversalRule: readStagnationReversalRule(preset.stagnationReversalRule || defaultStagnationReversalRule),
     buyBlockRules: cloneRuleBlocks(preset.buyBlockRules, defaultBuyBlockRules),
     sellBlockRules: cloneRuleBlocks(preset.sellBlockRules, defaultSellBlockRules),
+    scoreRules: cloneScoreRules(preset.scoreRules, defaultScoreRules),
+    positionBands: clonePositionBands(preset.positionBands, defaultPositionBands),
     buyRules: cloneRules(preset.buyRules, defaultBuyRules)
       .filter((rule) => rule.enabled !== false)
       .sort((a, b) => a.drop - b.drop),
@@ -443,6 +466,20 @@ function getMaSlopeSeries(rows, maDays, slopeWindowDays) {
     if (ma[index] == null || previousIndex < 0 || !ma[previousIndex]) return null;
     return ((ma[index] - ma[previousIndex]) / ma[previousIndex]) * 100;
   });
+}
+
+
+function getMaCompareSeries(rows, fastDays, slowDays) {
+  const fastMa = getMovingAverageSeries(rows, fastDays);
+  const slowMa = getMovingAverageSeries(rows, slowDays);
+  return rows.map((row, index) => (
+    fastMa[index] != null && slowMa[index] ? ((fastMa[index] - slowMa[index]) / slowMa[index]) * 100 : null
+  ));
+}
+
+
+function getCandleBodySeries(rows) {
+  return rows.map((row) => (row.open ? ((row.close - row.open) / row.open) * 100 : null));
 }
 
 
@@ -1694,6 +1731,8 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "daysSinceNewLow") series = getDaysSinceNewLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "upDayCount") series = getUpDayCountSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "downDayCount") series = getDownDayCountSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "maCompare") series = getMaCompareSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
+    else if (condition.indicator === "candleBody") series = getCandleBodySeries(rows);
     if (series) cache.set(key, series);
   };
   [...(buyBlockRules || []), ...(sellBlockRules || [])].forEach((block) => {
@@ -1799,6 +1838,8 @@ function getBlockIndicatorLabel(indicator) {
     daysSinceNewLow: "未创新低天数",
     upDayCount: "上涨天数",
     downDayCount: "下跌天数",
+    maCompare: "均线快慢线差%",
+    candleBody: "K线阳阴%",
     positionRatio: "当前仓位%",
     holdingDays: "持仓天数",
   };
@@ -1913,9 +1954,68 @@ function buildGenericBacktestStates(rows, config) {
 }
 
 
+function buildScoreRuleBacktestStates(rows, config) {
+  if (!rows || rows.length === 0) return [];
+
+  const scoreRules = Array.isArray(config.scoreRules) ? config.scoreRules : defaultScoreRules;
+  const positionBands = (Array.isArray(config.positionBands) ? config.positionBands : defaultPositionBands)
+    .filter((band) => band && Number.isFinite(Number(band.minScore)))
+    .slice()
+    .sort((a, b) => Number(b.minScore) - Number(a.minScore));
+  const cache = buildBlockRuleSeriesCache(rows, scoreRules, [], config.waveThreshold);
+
+  const account = { cash: config.initialCash, shares: 0, totalFees: 0 };
+  const trades = [];
+  const states = [];
+  const tradeSignals = [];
+  const positionRatioHistory = [];
+  const holdingDaysHistory = [];
+  let holdingDaysCounter = 0;
+  let peakEquity = config.initialCash;
+  let maxDrawdown = 0;
+
+  rows.forEach((row, index) => {
+    const currentRatio = getPositionRatio(account, row);
+    positionRatioHistory[index] = currentRatio;
+    holdingDaysCounter = account.shares > 0 ? holdingDaysCounter + 1 : 0;
+    holdingDaysHistory[index] = holdingDaysCounter;
+
+    let totalScore = 0;
+    const hitDescriptions = [];
+    scoreRules.forEach((rule, ruleIndex) => {
+      if (!rule || rule.enabled === false) return;
+      if (!evaluateBlockRuleConditions(rule, index, cache, positionRatioHistory, holdingDaysHistory)) return;
+      const points = Number(rule.points) || 0;
+      totalScore += points;
+      hitDescriptions.push(`规则${ruleIndex + 1}(+${points}分：${describeBlockConditions(rule.conditions)})`);
+    });
+
+    const matchedBand = positionBands.find((band) => totalScore >= Number(band.minScore));
+    const targetPercent = matchedBand ? Math.min(100, Math.max(0, Number(matchedBand.targetPercent) || 0)) : 0;
+    const reason = `总分${totalScore}：${hitDescriptions.join("、") || "无命中规则"} → 目标仓位${formatPercent(targetPercent)}`;
+    const reference = { type: "score-rules", label: "打分模型", date: row.date, price: row.close };
+    const trade = rebalanceToTarget(account, row, index, targetPercent, reference, reason, trades, config.tradeFee);
+    if (trade) tradeSignals.push({ date: row.date, price: row.close, rowIndex: index, version: tradeSignals.length + 1 });
+
+    const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
+    peakEquity = snapshot.peakEquity;
+    maxDrawdown = Math.max(maxDrawdown, snapshot.drawdown);
+    snapshot.maxDrawdown = maxDrawdown;
+    snapshot.waveHighs = tradeSignals.slice();
+    snapshot.indicatorLows = tradeSignals.slice();
+    states.push(snapshot);
+  });
+
+  return states;
+}
+
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "block-rules") {
     return buildGenericBacktestStates(rows, config);
+  }
+  if (config.strategyType === "score-rules") {
+    return buildScoreRuleBacktestStates(rows, config);
   }
   if (config.strategyType === "local-high-ladder") {
     return buildLocalLadderBacktestStates(rows, config);
@@ -2005,51 +2105,59 @@ function computeDefaultParamRange(value, isInteger, isPercent) {
 }
 
 
+const CONDITION_FIELD_LABELS = {
+  lookbackDays: "回看天数",
+  slopeWindowDays: "斜率窗口天数",
+  sustainedDays: "持续天数",
+  value: "阈值",
+};
+const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
+// These indicators are inherently day-counts, so their comparison threshold (the
+// "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
+// >= 0.667" is meaningless, since a day count can't be a fraction of a day.
+const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
+const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
+const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
+
+// Shared by discoverBlockRuleParameters and discoverScoreRuleParameters — walking a
+// condition list's numeric fields into optimization descriptors doesn't depend on what
+// the enclosing rule/block does with the conditions once they're true.
+function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
+  (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
+    const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value"].forEach((field) => {
+      const raw = condition[field];
+      if (raw === null || raw === undefined || raw === "") return;
+      const current = Number(raw);
+      if (!Number.isFinite(current)) return;
+      // risingStreak/fallingStreak repurpose "value" as a day count (see
+      // blockRuleComparators comment), never a threshold — always integer, never percent.
+      const isStreakDayCount = field === "value" && CONDITION_STREAK_COMPARATORS.has(condition.comparator);
+      const isInteger = CONDITION_INTEGER_FIELDS.has(field) || isStreakDayCount || (field === "value" && CONDITION_DAY_COUNT_INDICATORS.has(condition.indicator));
+      const isPercent = !isStreakDayCount && field === "value" && CONDITION_PERCENT_INDICATORS.has(condition.indicator);
+      const range = computeDefaultParamRange(current, isInteger, isPercent);
+      const fieldLabel = isStreakDayCount ? "连续天数" : CONDITION_FIELD_LABELS[field];
+      descriptors.push({
+        path: `${pathPrefix}.conditions[${conditionIndex}].${field}`,
+        label: `${condLabel}·${fieldLabel}`,
+        currentValue: current,
+        isInteger,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    });
+  });
+}
+
 function discoverBlockRuleParameters(preset) {
   const descriptors = [];
-  const fieldLabels = {
-    lookbackDays: "回看天数",
-    slopeWindowDays: "斜率窗口天数",
-    sustainedDays: "持续天数",
-    value: "阈值",
-  };
-  const integerFields = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
-  // These indicators are inherently day-counts, so their comparison threshold (the
-  // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
-  // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
-  const dayCountIndicators = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
-  const percentIndicators = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "positionRatio"]);
-  const streakComparators = new Set(["risingStreak", "fallingStreak"]);
   const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       const blockLabel = `${sideLabel}规则${blockIndex + 1}`;
-      (Array.isArray(block && block.conditions) ? block.conditions : []).forEach((condition, conditionIndex) => {
-        const condLabel = `${blockLabel}·条件${conditionIndex + 1}`;
-        ["lookbackDays", "slopeWindowDays", "sustainedDays", "value"].forEach((field) => {
-          const raw = condition[field];
-          if (raw === null || raw === undefined || raw === "") return;
-          const current = Number(raw);
-          if (!Number.isFinite(current)) return;
-          // risingStreak/fallingStreak repurpose "value" as a day count (see
-          // blockRuleComparators comment in app.js), never a threshold — always integer, never percent.
-          const isStreakDayCount = field === "value" && streakComparators.has(condition.comparator);
-          const isInteger = integerFields.has(field) || isStreakDayCount || (field === "value" && dayCountIndicators.has(condition.indicator));
-          const isPercent = !isStreakDayCount && field === "value" && percentIndicators.has(condition.indicator);
-          const range = computeDefaultParamRange(current, isInteger, isPercent);
-          const fieldLabel = isStreakDayCount ? "连续天数" : fieldLabels[field];
-          descriptors.push({
-            path: `${sideKey}[${blockIndex}].conditions[${conditionIndex}].${field}`,
-            label: `${condLabel}·${fieldLabel}`,
-            currentValue: current,
-            isInteger,
-            locked: false,
-            min: range.min,
-            max: range.max,
-            pointCount: range.pointCount,
-          });
-        });
-      });
+      pushConditionParamDescriptors(descriptors, block && block.conditions, blockLabel, `${sideKey}[${blockIndex}]`);
       if (block && block.action && block.action.type !== "exitAll") {
         const raw = block.action.value;
         if (raw !== null && raw !== undefined && raw !== "") {
@@ -2075,6 +2183,60 @@ function discoverBlockRuleParameters(preset) {
   };
   walkBlocks(preset && preset.buyBlockRules, "买入", "buyBlockRules");
   walkBlocks(preset && preset.sellBlockRules, "卖出", "sellBlockRules");
+  return descriptors;
+}
+
+function discoverScoreRuleParameters(preset) {
+  const descriptors = [];
+  (Array.isArray(preset && preset.scoreRules) ? preset.scoreRules : []).forEach((rule, ruleIndex) => {
+    const ruleLabel = `打分规则${ruleIndex + 1}`;
+    pushConditionParamDescriptors(descriptors, rule && rule.conditions, ruleLabel, `scoreRules[${ruleIndex}]`);
+    const points = Number(rule && rule.points);
+    if (Number.isFinite(points)) {
+      const range = computeDefaultParamRange(points, true, false);
+      descriptors.push({
+        path: `scoreRules[${ruleIndex}].points`,
+        label: `${ruleLabel}·分值`,
+        currentValue: points,
+        isInteger: true,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    }
+  });
+  (Array.isArray(preset && preset.positionBands) ? preset.positionBands : []).forEach((band, bandIndex) => {
+    const bandLabel = `仓位档位${bandIndex + 1}`;
+    const minScore = Number(band && band.minScore);
+    if (Number.isFinite(minScore)) {
+      const range = computeDefaultParamRange(minScore, true, false);
+      descriptors.push({
+        path: `positionBands[${bandIndex}].minScore`,
+        label: `${bandLabel}·所需总分`,
+        currentValue: minScore,
+        isInteger: true,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    }
+    const targetPercent = Number(band && band.targetPercent);
+    if (Number.isFinite(targetPercent)) {
+      const range = computeDefaultParamRange(targetPercent, false, true);
+      descriptors.push({
+        path: `positionBands[${bandIndex}].targetPercent`,
+        label: `${bandLabel}·目标仓位%`,
+        currentValue: targetPercent,
+        isInteger: false,
+        locked: false,
+        min: range.min,
+        max: range.max,
+        pointCount: range.pointCount,
+      });
+    }
+  });
   return descriptors;
 }
 
@@ -2211,6 +2373,7 @@ function discoverOptimizationParameters(preset) {
   if (!preset) return [];
   const strategyType = preset.strategyType || "wave";
   if (strategyType === "block-rules") return discoverBlockRuleParameters(preset);
+  if (strategyType === "score-rules") return discoverScoreRuleParameters(preset);
   if (strategyType === "wave") return discoverWaveParameters(preset);
   const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
   if (!typeConfig) return discoverWaveParameters(preset);
@@ -2242,6 +2405,15 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
       setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
     });
     return { ...base, buyBlockRules, sellBlockRules };
+  }
+  if (strategyType === "score-rules") {
+    const scoreRules = cloneScoreRules(sourcePreset.scoreRules, defaultScoreRules);
+    const positionBands = clonePositionBands(sourcePreset.positionBands, defaultPositionBands);
+    const root = { scoreRules, positionBands };
+    descriptors.forEach((descriptor, index) => {
+      setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
+    });
+    return { ...base, scoreRules, positionBands };
   }
   const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
   if (typeConfig) {
@@ -2378,6 +2550,8 @@ module.exports = {
   defaultStagnationReversalRule,
   defaultBuyBlockRules,
   defaultSellBlockRules,
+  defaultScoreRules,
+  defaultPositionBands,
   OPTIMIZATION_TYPE_CONFIG,
   DEFAULT_OPTIMIZATION_POINT_COUNT,
   MAX_OPTIMIZATION_POINT_COUNT,

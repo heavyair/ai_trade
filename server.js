@@ -27,7 +27,7 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "AI Trade <noreply@lesminis.ca>";
 const APP_PUBLIC_URL = String(process.env.APP_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_EMAIL = "victor.gm.liu@gmail.com";
 const PUBLIC_OWNER_LABEL = "public";
-const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal", "block-rules"];
+const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "order-grid", "pe-volume", "stagnation-reversal", "block-rules", "score-rules"];
 const EMAIL_VERIFICATION_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.EMAIL_VERIFICATION_TTL_MS || 24 * 60 * 60 * 1000));
 const EMAIL_RESEND_COOLDOWN_MS = Math.max(10 * 1000, Number(process.env.EMAIL_RESEND_COOLDOWN_MS || 60 * 1000));
 const dbPool = new Pool({
@@ -527,7 +527,7 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
 
 const BLOCK_RULE_INDICATORS = [
   "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maLevel", "maSlope", "rsi", "atrPercent",
-  "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
+  "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount", "maCompare", "candleBody",
   "positionRatio", "holdingDays",
 ];
 // risingStreak/fallingStreak check whether the indicator's own value moved the same
@@ -601,6 +601,29 @@ function normalizeGeneratedModel(value) {
       action,
     };
   };
+  const cleanScoreRule = (rule) => {
+    if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
+    const conditions = Array.isArray(rule.conditions)
+      ? rule.conditions.map(cleanCondition).filter(Boolean).slice(0, 6)
+      : [];
+    if (conditions.length === 0) return null;
+    const points = asNumber(rule.points, null);
+    if (points === null) return null;
+    return {
+      enabled: rule.enabled !== false,
+      conditions,
+      points: Math.round(clamp(points, -1000, 1000, 0)),
+    };
+  };
+  const cleanPositionBand = (band) => {
+    if (!band || typeof band !== "object" || Array.isArray(band)) return null;
+    const minScore = asNumber(band.minScore, null);
+    if (minScore === null) return null;
+    return {
+      minScore: Math.round(clamp(minScore, -1000, 1000, 0)),
+      targetPercent: clamp(band.targetPercent, 0, 100, 0),
+    };
+  };
   const cleanRule = (rule, kind) => {
     if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
     if (kind === "buy") {
@@ -649,6 +672,12 @@ function normalizeGeneratedModel(value) {
     sellBlockRules: Array.isArray(model.sellBlockRules)
       ? model.sellBlockRules.map(cleanBlockRule).filter(Boolean).slice(0, 8)
       : [],
+    scoreRules: Array.isArray(model.scoreRules)
+      ? model.scoreRules.map(cleanScoreRule).filter(Boolean).slice(0, 20)
+      : [],
+    positionBands: Array.isArray(model.positionBands)
+      ? model.positionBands.map(cleanPositionBand).filter(Boolean).slice(0, 10)
+      : [],
   };
 }
 
@@ -681,6 +710,25 @@ const blockRuleSchema = {
     enabled: { type: "boolean" },
     conditions: { type: "array", items: blockRuleConditionSchema },
     action: blockRuleActionSchema,
+  },
+};
+
+const scoreRuleSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    conditions: { type: "array", items: blockRuleConditionSchema },
+    points: { type: "number" },
+  },
+};
+
+const positionBandSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    minScore: { type: "number" },
+    targetPercent: { type: "number" },
   },
 };
 
@@ -737,6 +785,8 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
       },
       buyBlockRules: { type: "array", items: blockRuleSchema },
       sellBlockRules: { type: "array", items: blockRuleSchema },
+      scoreRules: { type: "array", items: scoreRuleSchema },
+      positionBands: { type: "array", items: positionBandSchema },
     },
     required: ["label", "strategyType", "confidence", "reason"],
   };
@@ -749,9 +799,10 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     "- ma-rsi-band：均线、RSI、ATR 目标仓位。",
     "- pe-volume：PE 和成交量指标。",
     "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
-    "- block-rules：用户的描述包含多个用“并且/同时”连接的条件，或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，必须选这个类型，不要硬套其它模板。",
+    "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
+    "- score-rules：用户的描述是“打分制”——多条独立条件各自命中就加若干分（不要求互斥，同一天可以同时命中多条、分数累加），再按当天总分落在哪个区间决定目标仓位百分比（例如“A得10分，B得10分…总分满20分半仓，满30分全仓”）。出现“得X分”“加X分”“总分”“打分”这类字眼、或者列举一串各自独立打分的条件时，必须选这个类型，不要硬套 block-rules 的且/或结构（block-rules 的 action 是触发一次性动作，没法表达“多个条件独立累加分数”）。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
-    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。",
+    "block-rules 和 score-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、maCompare(两条均线互相比较：用 lookbackDays 当快线周期、slopeWindowDays 当慢线周期，算 (快线-慢线)/慢线*100——判断“N日均线大于/高于M日均线”这类两条均线互相比较的说法时用这个，comparator 用 > 0)、candleBody((收盘价-开盘价)/开盘价*100——判断“收阳线/收阴线”时用这个，comparator 用 >0 表示收阳线、<0 表示收阴线，lookbackDays 必须设为 null，这个指标不需要回看窗口)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。",
     "condition.comparator 除了 >、>=、<、<=、== 之外，还有 risingStreak 和 fallingStreak 两个特殊值：用来表达“某个指标自己连续 N 天每天都在涨/跌”（比如“10日均线连续3天每天都在涨”“RSI连续5天下降”），这跟 maSlope 只看首尾两个点净变化不一样——risingStreak/fallingStreak 会检查这 N 天里逐日都是同一个方向。用户描述里出现“连续N天都在涨/跌”“连续上行/下行”这类明确要求逐日同向的表述时，必须用 risingStreak/fallingStreak，不要用 maSlope+sustainedDays 或 maSlope+slopeWindowDays 去凑。用这两个值时，condition.value 表示天数 N（正整数），不是阈值，sustainedDays 留空即可。",
     "block-rules 示例——“距离波浪模型最近高点跌超20%且8天没创新高就买1000股；10日均线连续3天每天都在跌就清仓”对应（注意距离“最近高点”用的是 drawdownFromWaveHigh，不是 drawdownFromHigh；“连续3天每天都在跌”用的是 fallingStreak，不是 maSlope）：",
     JSON.stringify({
@@ -771,6 +822,26 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
         ],
         action: { type: "exitAll", value: null },
       }],
+    }),
+    "score-rules 用 scoreRules/positionBands 两个数组表达：scoreRules 里每个元素是一条独立打分规则，conditions 是且（AND）关系（一条规则可以只有一个条件），命中就加 points 分；多条规则各自独立判断，不互斥，同一天可以同时命中多条、分数累加得到当天总分。positionBands 每个元素是 { minScore, targetPercent }，从高到低找第一个总分达到 minScore 的档位，把仓位调到对应 targetPercent；总分连最低档都够不到时目标仓位是 0%（清仓），所以 positionBands 一定要包含用户描述里提到的每一个分数门槛。“均线上行”若用户没说连续几天，按“今天比昨天高”理解，即 risingStreak 天数=1。",
+    "score-rules 示例——“5天不创新低得10分，5日均线上行得10分，10日均线上行得10分，5日均线大于10日均线得10分，20日均线上行得10分，创15天新低收阳线得10分。得20分半仓买入，30分全仓买入”对应：",
+    JSON.stringify({
+      strategyType: "score-rules",
+      scoreRules: [
+        { enabled: true, conditions: [{ indicator: "daysSinceNewLow", lookbackDays: 20, slopeWindowDays: null, comparator: ">=", value: 5, sustainedDays: null }], points: 10 },
+        { enabled: true, conditions: [{ indicator: "maLevel", lookbackDays: 5, slopeWindowDays: null, comparator: "risingStreak", value: 1, sustainedDays: null }], points: 10 },
+        { enabled: true, conditions: [{ indicator: "maLevel", lookbackDays: 10, slopeWindowDays: null, comparator: "risingStreak", value: 1, sustainedDays: null }], points: 10 },
+        { enabled: true, conditions: [{ indicator: "maCompare", lookbackDays: 5, slopeWindowDays: 10, comparator: ">", value: 0, sustainedDays: null }], points: 10 },
+        { enabled: true, conditions: [{ indicator: "maLevel", lookbackDays: 20, slopeWindowDays: null, comparator: "risingStreak", value: 1, sustainedDays: null }], points: 10 },
+        { enabled: true, conditions: [
+            { indicator: "daysSinceNewLow", lookbackDays: 15, slopeWindowDays: null, comparator: "==", value: 0, sustainedDays: null },
+            { indicator: "candleBody", lookbackDays: null, slopeWindowDays: null, comparator: ">", value: 0, sustainedDays: null },
+          ], points: 10 },
+      ],
+      positionBands: [
+        { minScore: 30, targetPercent: 100 },
+        { minScore: 20, targetPercent: 50 },
+      ],
     }),
     "不要生成 JavaScript。不要发明 App 不支持的策略类型。",
     "百分比用数字，例如 20 表示 20%。天数用交易日数量。",
