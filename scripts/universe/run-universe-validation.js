@@ -1,9 +1,13 @@
 // Universe-wide robustness validation: takes every (preset, origin symbol) row from
 // optimization_scan_results that clears the same buy-hold-ceiling / best-return-floor bar
 // the admin "后台模型排行" filter already uses, and re-runs that row's best_config AS-IS
-// (no further parameter search) against every OTHER symbol in universe/symbols.json, to see
-// whether a config that looked great on the one stock it was optimized for actually
-// generalizes — or was just overfit to that stock's specific history.
+// (no further parameter search) against every OTHER symbol IN THE SAME MARKET (A股 configs
+// only get tested against other A股 stocks, US configs only against other US stocks — the
+// two markets differ enough in price/volume scale, lot-size rules, and volatility regime
+// that cross-market results wouldn't say anything about overfitting, just about market
+// mismatch) in universe/symbols.json, to see whether a config that looked great on the one
+// stock it was optimized for actually generalizes — or was just overfit to that stock's
+// specific history.
 //
 // Raw per-(candidate, target symbol) results are stored so the admin UI can freely change
 // the "what counts as profitable" threshold at read time (a SQL aggregation) without ever
@@ -166,10 +170,16 @@ async function main() {
   let dataSkipped = 0;
   const totalPairs = candidates.length * symbols.length;
 
+  // "0"/"1" are Shenzhen/Shanghai A股 — both count as the same market group; "US" is its
+  // own group. Only compare within the same group (see file-header comment for why).
+  const marketGroup = (dbMarket) => (dbMarket === "US" ? "US" : "CN");
+
   for (const candidate of candidates) {
     engine.setActiveLotSizeSymbol(candidate.originSymbol);
+    const originGroup = marketGroup(candidate.originMarket);
 
     for (const symbolEntry of symbols) {
+      if (marketGroup(symbolEntry.dbMarket) !== originGroup) continue;
       // Excluded: testing a config against the very stock it was optimized for would
       // trivially inflate its pass rate with a non-generalizing data point.
       if (symbolEntry.code === candidate.originSymbol && symbolEntry.dbMarket === candidate.originMarket) continue;
