@@ -1685,6 +1685,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, waveThreshold || 5);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
     else if (condition.indicator === "rsi") series = getRsiSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "atrPercent") series = getAtrPercentSeries(rows, condition.lookbackDays);
@@ -1722,7 +1723,35 @@ function compareBlockValue(value, comparator, target) {
 }
 
 
+function getBlockConditionSeries(condition, cache, positionRatioHistory, holdingDaysHistory) {
+  if (condition.indicator === "positionRatio") return positionRatioHistory;
+  if (condition.indicator === "holdingDays") return holdingDaysHistory;
+  const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+  return cache.get(key) || null;
+}
+
+// True iff the indicator's own series moved the same direction every day for the last
+// `days` day-over-day comparisons ending at `index` — i.e. a genuine consecutive streak,
+// not just "higher/lower than N days ago" (which a few zig-zag days in between could still
+// satisfy without ever being a real streak).
+function isMonotonicStreak(series, index, days, direction) {
+  if (!series || !Number.isFinite(days) || days < 1 || index < days) return false;
+  for (let offset = 0; offset < days; offset += 1) {
+    const curr = series[index - offset];
+    const prev = series[index - offset - 1];
+    if (curr === null || curr === undefined || prev === null || prev === undefined) return false;
+    if (direction > 0 ? !(curr > prev) : !(curr < prev)) return false;
+  }
+  return true;
+}
+
 function evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
+  if (condition.comparator === "risingStreak" || condition.comparator === "fallingStreak") {
+    const days = Math.max(1, Math.round(Number(condition.value) || 1));
+    const direction = condition.comparator === "risingStreak" ? 1 : -1;
+    const series = getBlockConditionSeries(condition, cache, positionRatioHistory, holdingDaysHistory);
+    return isMonotonicStreak(series, index, days, direction);
+  }
   const sustainedDays = Math.max(1, Math.round(Number(condition.sustainedDays) || 1));
   for (let offset = 0; offset < sustainedDays; offset += 1) {
     const dayIndex = index - offset;
@@ -1761,6 +1790,7 @@ function getBlockIndicatorLabel(indicator) {
     drawdownFromWaveHigh: "距波浪确认高点回撤%",
     riseFromLow: "距低点反弹%",
     maValue: "均线偏离%",
+    maLevel: "均线数值",
     maSlope: "均线斜率%",
     rsi: "RSI",
     atrPercent: "ATR%",
@@ -1782,6 +1812,11 @@ function describeBlockCondition(condition) {
   const slopeWindow = condition.indicator === "maSlope" && condition.slopeWindowDays && condition.slopeWindowDays > 1
     ? `(较${condition.slopeWindowDays}日前)`
     : "";
+  if (condition.comparator === "risingStreak" || condition.comparator === "fallingStreak") {
+    const streakDays = Math.max(1, Math.round(Number(condition.value) || 1));
+    const direction = condition.comparator === "risingStreak" ? "连续上升" : "连续下降";
+    return `${days}${label}${slopeWindow}${direction}${streakDays}天`;
+  }
   const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
   return `${sustain}${days}${label}${slopeWindow}${condition.comparator}${condition.value}`;
 }
@@ -1984,6 +2019,7 @@ function discoverBlockRuleParameters(preset) {
   // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
   const dayCountIndicators = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
   const percentIndicators = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "positionRatio"]);
+  const streakComparators = new Set(["risingStreak", "fallingStreak"]);
   const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
@@ -1995,12 +2031,16 @@ function discoverBlockRuleParameters(preset) {
           if (raw === null || raw === undefined || raw === "") return;
           const current = Number(raw);
           if (!Number.isFinite(current)) return;
-          const isInteger = integerFields.has(field) || (field === "value" && dayCountIndicators.has(condition.indicator));
-          const isPercent = field === "value" && percentIndicators.has(condition.indicator);
+          // risingStreak/fallingStreak repurpose "value" as a day count (see
+          // blockRuleComparators comment in app.js), never a threshold — always integer, never percent.
+          const isStreakDayCount = field === "value" && streakComparators.has(condition.comparator);
+          const isInteger = integerFields.has(field) || isStreakDayCount || (field === "value" && dayCountIndicators.has(condition.indicator));
+          const isPercent = !isStreakDayCount && field === "value" && percentIndicators.has(condition.indicator);
           const range = computeDefaultParamRange(current, isInteger, isPercent);
+          const fieldLabel = isStreakDayCount ? "连续天数" : fieldLabels[field];
           descriptors.push({
             path: `${sideKey}[${blockIndex}].conditions[${conditionIndex}].${field}`,
-            label: `${condLabel}·${fieldLabels[field]}`,
+            label: `${condLabel}·${fieldLabel}`,
             currentValue: current,
             isInteger,
             locked: false,

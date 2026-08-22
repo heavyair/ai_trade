@@ -526,11 +526,17 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
 }
 
 const BLOCK_RULE_INDICATORS = [
-  "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "rsi", "atrPercent",
+  "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maLevel", "maSlope", "rsi", "atrPercent",
   "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
   "positionRatio", "holdingDays",
 ];
-const BLOCK_RULE_COMPARATORS = [">", ">=", "<", "<=", "=="];
+// risingStreak/fallingStreak check whether the indicator's own value moved the same
+// direction every day for the last N days in a row (a genuine consecutive streak, not just
+// "higher/lower than N days ago") — see the matching comment in public/app.js's
+// blockRuleComparators for why this needed a dedicated comparator instead of reusing
+// maSlope. For these two, "value" is repurposed as the day count, not a threshold.
+const BLOCK_RULE_COMPARATORS = [">", ">=", "<", "<=", "==", "risingStreak", "fallingStreak"];
+const BLOCK_RULE_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 const BLOCK_RULE_ACTION_TYPES = ["targetPercent", "targetShares", "reducePercent", "exitAll"];
 
 function normalizeGeneratedModel(value) {
@@ -550,8 +556,12 @@ function normalizeGeneratedModel(value) {
     if (!condition || typeof condition !== "object" || Array.isArray(condition)) return null;
     if (!BLOCK_RULE_INDICATORS.includes(condition.indicator)) return null;
     if (!BLOCK_RULE_COMPARATORS.includes(condition.comparator)) return null;
-    const value = asNumber(condition.value, null);
-    if (value === null) return null;
+    const rawValue = asNumber(condition.value, null);
+    if (rawValue === null) return null;
+    // For a streak comparator, value is a day count — must be a positive whole number.
+    const value = BLOCK_RULE_STREAK_COMPARATORS.has(condition.comparator)
+      ? Math.max(1, Math.round(rawValue))
+      : rawValue;
     return {
       indicator: condition.indicator,
       lookbackDays: condition.lookbackDays === null || condition.lookbackDays === undefined
@@ -741,8 +751,9 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件，或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，必须选这个类型，不要硬套其它模板。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
-    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(均线偏离%)、maSlope(均线斜率%)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。action.type 只能是 targetPercent(调仓到目标百分比仓位)、targetShares(调仓到目标股数)、reducePercent(在当前仓位基础上减仓百分比)、exitAll(全部清仓，不需要 value)。",
-    "block-rules 示例——“距离波浪模型最近高点跌超20%且8天没创新高就买1000股；连续3天10日均线下跌就清仓”对应（注意距离“最近高点”用的是 drawdownFromWaveHigh，不是 drawdownFromHigh）：",
+    "block-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。",
+    "condition.comparator 除了 >、>=、<、<=、== 之外，还有 risingStreak 和 fallingStreak 两个特殊值：用来表达“某个指标自己连续 N 天每天都在涨/跌”（比如“10日均线连续3天每天都在涨”“RSI连续5天下降”），这跟 maSlope 只看首尾两个点净变化不一样——risingStreak/fallingStreak 会检查这 N 天里逐日都是同一个方向。用户描述里出现“连续N天都在涨/跌”“连续上行/下行”这类明确要求逐日同向的表述时，必须用 risingStreak/fallingStreak，不要用 maSlope+sustainedDays 或 maSlope+slopeWindowDays 去凑。用这两个值时，condition.value 表示天数 N（正整数），不是阈值，sustainedDays 留空即可。",
+    "block-rules 示例——“距离波浪模型最近高点跌超20%且8天没创新高就买1000股；10日均线连续3天每天都在跌就清仓”对应（注意距离“最近高点”用的是 drawdownFromWaveHigh，不是 drawdownFromHigh；“连续3天每天都在跌”用的是 fallingStreak，不是 maSlope）：",
     JSON.stringify({
       strategyType: "block-rules",
       buyBlockRules: [{
@@ -756,7 +767,7 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
       sellBlockRules: [{
         enabled: true,
         conditions: [
-          { indicator: "maSlope", lookbackDays: 10, slopeWindowDays: 1, comparator: "<", value: 0, sustainedDays: 3 },
+          { indicator: "maLevel", lookbackDays: 10, slopeWindowDays: null, comparator: "fallingStreak", value: 3, sustainedDays: null },
         ],
         action: { type: "exitAll", value: null },
       }],
