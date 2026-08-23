@@ -508,19 +508,29 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
 // statistical digest of a symbol's own price history (see buildSymbolDataProfile) and asked
 // to design a timing model suited to what that data actually looks like. Used by the
 // autonomous scripts/universe/run-auto-generate.js pipeline.
-async function generateModelFromDataProfile(profile, symbol) {
+// previousAttempts (optional): [{ strategyType, reason }, ...] from earlier
+// generateModelFromDataProfile calls for THIS SAME symbol in the same run — passed back in
+// so the AI is nudged toward a structurally different idea each time (different strategyType
+// and/or different indicators/formula) instead of regenerating variations of the same first
+// idea. The caller decides how many attempts to make and which one(s) to keep; this function
+// only handles making one attempt genuinely aware of what came before it.
+async function generateModelFromDataProfile(profile, symbol, previousAttempts = []) {
   if (!profile) {
     const error = new Error("历史数据不足，无法生成数据画像。");
     error.statusCode = 400;
     throw error;
   }
   const schema = buildModelSchema();
+  const diversityLine = previousAttempts.length > 0
+    ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，分别是：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 60)}）` : ""}`).join("；")}。这次请换一个明显不同的思路——尽量选不同的 strategyType，或者哪怕 strategyType 相同也要换一套不同的指标/公式组合，不要重复前面已经试过的想法。`
+    : null;
   const prompt = [
     "下面是一只股票的历史行情特征摘要（是统计特征，不是原始逐日行情）。请分析这些特征，设计一个尽量跑赢“买入并一直持有”、且最大回撤比买入持有更小的择时模型，转换成 AI Trade 支持的安全模型 JSON。",
     ...buildPromptGuideLines(schema),
     `股票/标的：${symbol || "通用"}`,
     "历史行情特征字段说明：totalReturnPercent=区间总收益率，annualizedVolatilityPercent=年化波动率，maxDrawdownPercent=买入持有的最大回撤，priceVsMa5Percent/priceVsMa20Percent/priceVsMa60Percent=当前价相对5/20/60日均线的偏离%，recentUpDayRatioPercent=最近20日上涨天数占比，rsi14=当前RSI(14)，atrPercentAverage14=最近14日平均ATR%，daysSince60DayHigh/daysSince60DayLow=距60日内最高/最低点的天数。",
     `历史行情特征（JSON）：${JSON.stringify(profile)}`,
+    diversityLine,
   ].filter(Boolean).join("\n");
 
   const text = await requestAiJsonModel({

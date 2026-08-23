@@ -15,8 +15,17 @@
 // no rate limiting on it anywhere — so --maxAttempts is a hard stop on AI call count,
 // independent of how many symbols are left to process.
 //
+// For each symbol, multiple AI attempts are made (--attemptsPerSymbol) instead of accepting
+// whatever the first call produces — each attempt is told what strategyType/approach earlier
+// attempts for the SAME symbol already used (see generateModelFromDataProfile's
+// previousAttempts param) and is asked to try something structurally different, so the
+// attempts are a genuine spread of ideas rather than re-rolls of the same one. Only the
+// single best-scoring attempt that beats buy-and-hold on both return and drawdown gets saved
+// per symbol — trying several ideas is about raising the chance of finding one good model,
+// not about saving every idea that happens to clear the bar.
+//
 // Usage: node scripts/universe/run-auto-generate.js [--symbols=513100,588000] [--limit=5]
-//   [--maxAttempts=20] [--candidates=150] [--minRows=250]
+//   [--maxAttempts=20] [--attemptsPerSymbol=5] [--candidates=150] [--minRows=250]
 
 const fs = require("fs");
 const path = require("path");
@@ -40,6 +49,7 @@ const getArgString = (name) => {
 };
 const SYMBOL_LIMIT = Math.max(0, getArg("limit", 0));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 20));
+const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 5));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 150));
 const MIN_ROWS = Math.max(30, getArg("minRows", 250));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
@@ -99,19 +109,17 @@ async function main() {
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 
-  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minRows=${MIN_ROWS}`);
+  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minRows=${MIN_ROWS}`);
 
   let aiCalls = 0;
   let saved = 0;
   let rejected = 0;
   let dataSkipped = 0;
   let errored = 0;
+  let budgetExhausted = false;
 
   for (const symbolEntry of symbols) {
-    if (aiCalls >= MAX_ATTEMPTS) {
-      console.log(`[budget] reached --maxAttempts=${MAX_ATTEMPTS} AI calls, stopping (${symbols.length - symbols.indexOf(symbolEntry)} symbols not attempted)`);
-      break;
-    }
+    if (budgetExhausted) break;
 
     const dbMarket = symbolEntry.market === "CN"
       ? (/^[569]/.test(symbolEntry.code) ? "1" : "0")
@@ -132,55 +140,71 @@ async function main() {
       const profile = ModelGenerator.buildSymbolDataProfile(rows);
       console.log(`[${symbolEntry.code}] profile: return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
 
-      aiCalls += 1;
-      let model;
-      try {
-        model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code);
-      } catch (aiError) {
-        console.error(`[ai-error] ${symbolEntry.code}: ${aiError.message}`);
-        errored += 1;
-        continue;
-      }
-
-      if (!modelHasRules(model)) {
-        console.log(`[empty-model] ${symbolEntry.code}: AI output had no usable rules after validation (strategyType=${model.strategyType}), skipping`);
-        rejected += 1;
-        continue;
-      }
-
       engine.setActiveLotSizeSymbol(symbolEntry.code);
-      const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: model.strategyType };
-      const best = searchBestConfig(engine, model, rows, baseConfig, CANDIDATES_PER_SYMBOL);
-      if (!best) {
-        console.log(`[no-candidate] ${symbolEntry.code}: parameter search produced no valid backtest`);
-        rejected += 1;
-        continue;
-      }
-
       const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
       const buyHold = buyHoldStates[buyHoldStates.length - 1];
 
-      const beatsReturn = best.last.returnRate > buyHold.returnRate;
-      const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
-      console.log(`[${symbolEntry.code}] strategyType=${model.strategyType} best=${best.last.returnRate.toFixed(1)}%/dd${best.last.maxDrawdown.toFixed(1)}% vs buyHold=${buyHold.returnRate.toFixed(1)}%/dd${buyHold.maxDrawdown.toFixed(1)}% beatsReturn=${beatsReturn} beatsDrawdown=${beatsDrawdown}`);
+      const previousAttempts = [];
+      let bestQualifying = null; // { model, best } — highest-scoring attempt that beat buy-hold on both dims
+      let attemptedAny = false;
 
-      if (!beatsReturn || !beatsDrawdown) {
-        rejected += 1;
-        continue;
+      for (let attempt = 0; attempt < ATTEMPTS_PER_SYMBOL; attempt += 1) {
+        if (aiCalls >= MAX_ATTEMPTS) {
+          console.log(`[budget] reached --maxAttempts=${MAX_ATTEMPTS} AI calls, stopping`);
+          budgetExhausted = true;
+          break;
+        }
+
+        aiCalls += 1;
+        let model;
+        try {
+          model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code, previousAttempts);
+        } catch (aiError) {
+          console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
+          errored += 1;
+          continue;
+        }
+        attemptedAny = true;
+        previousAttempts.push({ strategyType: model.strategyType, reason: model.reason });
+
+        if (!modelHasRules(model)) {
+          console.log(`[empty-model] ${symbolEntry.code} attempt ${attempt + 1}: AI output had no usable rules after validation (strategyType=${model.strategyType}), skipping`);
+          continue;
+        }
+
+        const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: model.strategyType };
+        const best = searchBestConfig(engine, model, rows, baseConfig, CANDIDATES_PER_SYMBOL);
+        if (!best) {
+          console.log(`[no-candidate] ${symbolEntry.code} attempt ${attempt + 1}: parameter search produced no valid backtest`);
+          continue;
+        }
+
+        const beatsReturn = best.last.returnRate > buyHold.returnRate;
+        const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
+        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} best=${best.last.returnRate.toFixed(1)}%/dd${best.last.maxDrawdown.toFixed(1)}% vs buyHold=${buyHold.returnRate.toFixed(1)}%/dd${buyHold.maxDrawdown.toFixed(1)}% beatsReturn=${beatsReturn} beatsDrawdown=${beatsDrawdown}`);
+
+        if (beatsReturn && beatsDrawdown && (!bestQualifying || best.score > bestQualifying.best.score)) {
+          bestQualifying = { model, best };
+        }
       }
 
-      const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-      const name = `ai_auto_${symbolEntry.code}_${dateSlug}`;
-      const label = `AI自动·${symbolEntry.code}·${dateSlug}`;
-      const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
-        name,
-        config: best.config,
-        label,
-        targetSymbol: symbolEntry.code,
-        originalText: model.reason || "",
-      });
-      console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label})`);
-      saved += 1;
+      if (bestQualifying) {
+        const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        const name = `ai_auto_${symbolEntry.code}_${dateSlug}`;
+        const label = `AI自动·${symbolEntry.code}·${dateSlug}`;
+        const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
+          name,
+          config: bestQualifying.best.config,
+          label,
+          targetSymbol: symbolEntry.code,
+          originalText: bestQualifying.model.reason || "",
+        });
+        console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType})`);
+        saved += 1;
+      } else if (attemptedAny) {
+        console.log(`[rejected] ${symbolEntry.code}: none of ${previousAttempts.length} attempts beat buy-hold on both return and drawdown`);
+        rejected += 1;
+      }
     } catch (error) {
       console.error(`[error] ${symbolEntry.code}: ${error.message}`);
       errored += 1;
