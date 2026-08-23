@@ -21,6 +21,7 @@ const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
+const { searchBestConfig } = require("./search-best-config.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -119,31 +120,6 @@ async function loadRows(symbol, market) {
     }))
     .filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close) && row.close > 0
       && Number.isFinite(row.high) && Number.isFinite(row.low));
-}
-
-function buildCandidates(preset, descriptors, baseConfig) {
-  const candidates = [];
-  if (descriptors.length === 0) {
-    candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, []));
-    return candidates;
-  }
-  const valueLists = descriptors.map((d) => engine.buildRangeValues(d));
-  const totalCombinations = valueLists.reduce((acc, list) => acc * Math.max(1, list.length), 1);
-  if (totalCombinations <= CANDIDATES_PER_PAIR) {
-    let combos = [[]];
-    valueLists.forEach((values) => {
-      const next = [];
-      combos.forEach((combo) => values.forEach((v) => next.push([...combo, v])));
-      combos = next;
-    });
-    combos.forEach((combo) => candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, combo)));
-  } else {
-    for (let i = 0; i < CANDIDATES_PER_PAIR; i += 1) {
-      const combo = valueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
-      candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, combo));
-    }
-  }
-  return candidates;
 }
 
 async function alreadyScanned(symbol, market, presetId) {
@@ -271,20 +247,12 @@ async function main() {
         const baselineStates = engine.buildBacktestStates(rows, config0);
         const baselineLast = baselineStates[baselineStates.length - 1];
 
-        const descriptors = engine.discoverOptimizationParameters(preset);
-        const candidates = buildCandidates(preset, descriptors, { ...baseConfig, strategyType: preset.strategyType });
-
-        let best = null;
-        let bestScore = -Infinity;
-        for (const candidateConfig of candidates) {
-          const states = engine.buildBacktestStates(rows, candidateConfig);
-          const last = states[states.length - 1];
-          const score = engine.scoreBacktestState(last);
-          if (score > bestScore) {
-            bestScore = score;
-            best = { config: candidateConfig, last };
-          }
+        const best = searchBestConfig(engine, preset, rows, { ...baseConfig, strategyType: preset.strategyType }, CANDIDATES_PER_PAIR);
+        if (!best) {
+          console.error(`[error] ${symbolEntry.code} x ${preset.label}: no candidate produced a valid backtest`);
+          continue;
         }
+        const bestScore = best.score;
 
         await saveResult({
           symbol: symbolEntry.code,
@@ -300,7 +268,7 @@ async function main() {
           bestMaxDrawdown: best.last.maxDrawdown,
           bestScore,
           bestTrades: best.last.trades.length,
-          testedCandidates: candidates.length,
+          testedCandidates: best.testedCandidates,
           bestConfig: best.config,
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
