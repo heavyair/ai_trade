@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-ranking-actions">
+    <link rel="stylesheet" href="/styles.css?v=20260823-save-as-model">
   </head>
   <body>
     <main class="shell">
@@ -118,6 +118,7 @@
           </label>
           <div class="dialog-actions">
             <button id="savePresetParamButton" type="button">保存参数</button>
+            <button id="saveAsNewPresetButton" type="button" class="ghost-button hidden">另存为模型</button>
           </div>
           <div class="security-note">保存时会校验策略类型和参数范围。内置预设会保存为本地副本，避免覆盖系统预设。</div>
         </form>
@@ -1126,7 +1127,7 @@
       </section>
       </div>
     </main>
-    <script src="/formula-engine.js?v=20260823-ranking-actions"></script>
-    <script src="/app.js?v=20260823-ranking-actions"></script>
+    <script src="/formula-engine.js?v=20260823-save-as-model"></script>
+    <script src="/app.js?v=20260823-save-as-model"></script>
   </body>
 </html>

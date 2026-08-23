@@ -88,6 +88,7 @@ const modelTradesDetail = document.querySelector("#modelTradesDetail");
 const presetParamDialog = document.querySelector("#presetParamDialog");
 const closePresetParamButton = document.querySelector("#closePresetParamButton");
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
+const saveAsNewPresetButton = document.querySelector("#saveAsNewPresetButton");
 const presetParamTitle = document.querySelector("#presetParamTitle");
 const presetParamSubtitle = document.querySelector("#presetParamSubtitle");
 const presetParamNameInput = document.querySelector("#presetParamNameInput");
@@ -272,6 +273,10 @@ let lastRenderedTrades = [];
 let selectedTradeForChart = null;
 let selectedTradeChartStates = [];
 let editingPresetName = null;
+// Set whenever openPresetParamEditor opens in read-only mode — holds what "另存为模型" needs
+// to save a copy of whatever's currently being viewed (admin lists, ranking snapshots, public
+// presets you can't edit in place), since 保存参数 only ever updates an owned preset.
+let presetParamViewerSaveSource = null;
 let activeOptimizationId = 0;
 let optimizationPresetDraft = null;
 let activeSimulationStep = "models";
@@ -7582,6 +7587,20 @@ function openPresetParamEditor(presetName, options = {}) {
     savePresetParamButton.classList.toggle("hidden", readonly);
     savePresetParamButton.disabled = readonly;
   }
+  // Any read-only param view (查看参数, wherever it was opened from — admin lists, ranking
+  // snapshots, public presets you can't edit) gets "另存为模型" as its save path instead of
+  // just having no save option at all, since 保存参数 above only ever updates an owned,
+  // editable preset in place.
+  if (saveAsNewPresetButton) {
+    saveAsNewPresetButton.classList.toggle("hidden", !readonly);
+  }
+  presetParamViewerSaveSource = readonly ? {
+    config: editorPreset,
+    targetSymbol: (preset.meta && preset.meta.targetSymbol) || normalizeSymbolInput(codeInput.value) || "通用",
+    defaultLabel: preset.label || presetName || "模型",
+    originalText: (preset.meta && (preset.meta.originalText || preset.meta.modelText)) || "",
+    originalModelId: presetName || (preset.meta && preset.meta.originalModelId) || "0",
+  } : null;
   const strategyTypeForForm = preset.strategyType || "wave";
   const isBlockRules = strategyTypeForForm === "block-rules";
   const isWave = strategyTypeForForm === "wave";
@@ -10891,6 +10910,35 @@ if (closePresetParamButton && presetParamDialog) {
 if (savePresetParamButton) {
   savePresetParamButton.addEventListener("click", () => {
     saveEditedPresetParameters();
+  });
+}
+
+if (saveAsNewPresetButton) {
+  saveAsNewPresetButton.addEventListener("click", async () => {
+    if (!presetParamViewerSaveSource) return;
+    const source = presetParamViewerSaveSource;
+    const defaultLabel = `${source.defaultLabel} 副本`.slice(0, 60);
+    const label = window.prompt("输入新模型名称：", defaultLabel);
+    if (label === null) return;
+    const trimmed = label.trim().slice(0, 80);
+    if (!trimmed) {
+      setStatus("模型名称不能为空。", true);
+      return;
+    }
+    if (!validateVisiblePresetLabel(trimmed)) return;
+    const preset = createPresetFromConfig(trimmed, source.config, {
+      targetSymbol: source.targetSymbol,
+      creator: "auto",
+      createdAt: todayText(),
+      updatedAt: todayText(),
+      originalText: source.originalText || `另存自：${source.defaultLabel}`,
+      originalModelId: source.originalModelId,
+    });
+    const presetName = await saveGeneratedPreset(preset);
+    if (presetName) {
+      setStatus(`已另存为模型：${strategyPresets[presetName].label}。`);
+      closeDialog(presetParamDialog);
+    }
   });
 }
 
