@@ -100,16 +100,30 @@ function modelHasRules(model) {
   return key ? Boolean(model[key]) : true;
 }
 
+// A CN code is always 6 digits; anything else (NET, QQQ, AMD, ...) is US. Symbols coming
+// from --symbols= are whatever the admin picked out of their query history (see
+// scripts/shared model-generator's saveGeneratedPreset / server.js symbol_query_history) —
+// that pool is much broader than the fixed batch-scan universe list in symbols.json (which
+// is just CSI300/Nasdaq100-ish index constituents), so an explicitly-requested symbol must
+// never be silently dropped just because it isn't ALSO a universe constituent.
+function inferMarket(code) {
+  return /^\d{6}$/.test(code) ? "CN" : "US";
+}
+
 async function main() {
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
-  let symbols = manifest.symbols;
+  let symbols;
   if (SYMBOLS_FILTER.length > 0) {
-    const filterSet = new Set(SYMBOLS_FILTER);
-    symbols = symbols.filter((s) => filterSet.has(s.code));
+    symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
+  } else {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
+    symbols = manifest.symbols;
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 
   console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minRows=${MIN_ROWS}`);
+  if (symbols.length === 0) {
+    console.log("[warn] no symbols to process (empty --symbols list or empty universe manifest) — exiting without doing anything.");
+  }
 
   let aiCalls = 0;
   let saved = 0;
