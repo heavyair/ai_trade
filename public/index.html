@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-return-labels">
+    <link rel="stylesheet" href="/styles.css?v=20260823-stock-wording">
   </head>
   <body>
     <main class="shell">
@@ -201,15 +201,15 @@
             <div id="adminValidationList" class="admin-ranking-list"></div>
           </div>
           <div id="adminAutoGeneratePanel" class="hidden">
-            <p class="field-hint">AI 看每只标的自己的历史行情特征（不是文字描述），对每只标的尝试多种不同的模型思路，参数搜索择优后只保存跑赢买入持有（收益更高、回撤更小）的最好一个，标记为 meta.creator=ai-auto。</p>
+            <p class="field-hint">AI 看每只股票自己的历史行情特征（不是文字描述），对每只股票尝试多种不同的模型思路，参数搜索择优后只保存跑赢买入持有（收益更高、回撤更小）的最好一个，标记为 meta.creator=ai-auto。</p>
             <div id="adminAutoGenerateTriggerRow" class="admin-scan-filter-row">
-              <label>标的代码（不选=用全市场清单，可多选，来源和历史模拟的"常用代码"一致）
+              <label>股票代码（不选=用全市场清单，可多选，来源和历史模拟的"常用代码"一致）
                 <select id="adminAutoGenerateSymbols" multiple size="6"></select>
               </label>
-              <label>标的数量上限
+              <label>股票数量上限
                 <input id="adminAutoGenerateLimit" type="number" step="1" min="0" placeholder="不限" value="5">
               </label>
-              <label>每个标的尝试次数
+              <label>每只股票尝试次数
                 <input id="adminAutoGenerateAttemptsPerSymbol" type="number" step="1" min="1" max="10" value="5">
               </label>
               <label>总 AI 调用次数上限
@@ -1126,7 +1126,7 @@
       </section>
       </div>
     </main>
-    <script src="/formula-engine.js?v=20260823-return-labels"></script>
-    <script src="/app.js?v=20260823-return-labels"></script>
+    <script src="/formula-engine.js?v=20260823-stock-wording"></script>
+    <script src="/app.js?v=20260823-stock-wording"></script>
   </body>
 </html>

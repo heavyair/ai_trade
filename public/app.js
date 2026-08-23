@@ -2358,7 +2358,7 @@ function renderAdminAutoGenerateList(payload) {
         <table class="admin-ranking-table">
           <thead>
             <tr>
-              <th>标的</th>
+              <th>股票</th>
               <th>模型名称</th>
               <th>策略类型</th>
               <th>AI 生成理由</th>
@@ -2396,8 +2396,8 @@ function renderAdminAutoGenerateList(payload) {
     const progress = payload.progress;
     if (runningIsAutoGenerate && progress) {
       const symbolLabel = progress.currentSymbol
-        ? `标的 ${progress.symbolIndex || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbol)}）`
-        : `标的 ${progress.symbolIndex || 0}/${progress.totalSymbols || "?"}`;
+        ? `股票 ${progress.symbolIndex || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbol)}）`
+        : `股票 ${progress.symbolIndex || 0}/${progress.totalSymbols || "?"}`;
       const attemptLabel = progress.attempt ? `第 ${progress.attempt}/${progress.attemptsPerSymbol || "?"} 次尝试` : "";
       const strategyLabel = progress.currentStrategyType ? `策略：${escapeHtml(getStrategyTypeLabel(progress.currentStrategyType))}` : "";
       const detailParts = [symbolLabel, attemptLabel, strategyLabel].filter(Boolean).join(" · ");
