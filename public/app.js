@@ -2520,20 +2520,29 @@ async function triggerAdminAutoGenerateRun() {
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
+  const requested = {
+    limit: Number.isFinite(limit) ? limit : 0,
+    attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 5,
+    maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
+  };
   if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "正在启动自动生成...";
   try {
     const response = await fetch("/api/admin/auto-generate/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbols,
-        limit: Number.isFinite(limit) ? limit : 0,
-        attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 5,
-        maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
-      }),
+      body: JSON.stringify({ symbols, ...requested }),
     });
-    await readJsonResponse(response, "启动自动生成失败。");
-    setStatus("已启动 AI 自动生成模型。");
+    const result = await readJsonResponse(response, "启动自动生成失败。");
+    // The server clamps limit/attemptsPerSymbol/maxAttempts to sane ranges — if what actually
+    // got used differs from what was typed, say so explicitly instead of silently running with
+    // a different number than the admin asked for (that's exactly what caused this to be
+    // confusing before: the cap existed but nothing ever told you your input got adjusted).
+    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts"]
+      .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
+      .map((key) => `${key} ${requested[key]}→${result[key]}`);
+    setStatus(adjustments.length > 0
+      ? `已启动 AI 自动生成模型（部分参数超出允许范围，已调整：${adjustments.join("，")}）。`
+      : "已启动 AI 自动生成模型。");
     await loadAdminAutoGenerate();
   } catch (error) {
     if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "";

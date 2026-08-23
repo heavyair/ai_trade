@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-stock-wording">
+    <link rel="stylesheet" href="/styles.css?v=20260823-attempts-cap-fix">
   </head>
   <body>
     <main class="shell">
@@ -210,7 +210,7 @@
                 <input id="adminAutoGenerateLimit" type="number" step="1" min="0" placeholder="不限" value="5">
               </label>
               <label>每只股票尝试次数
-                <input id="adminAutoGenerateAttemptsPerSymbol" type="number" step="1" min="1" max="10" value="5">
+                <input id="adminAutoGenerateAttemptsPerSymbol" type="number" step="1" min="1" max="30" value="5">
               </label>
               <label>总 AI 调用次数上限
                 <input id="adminAutoGenerateMaxAttempts" type="number" step="1" min="1" max="200" value="20">
@@ -1126,7 +1126,7 @@
       </section>
       </div>
     </main>
-    <script src="/formula-engine.js?v=20260823-stock-wording"></script>
-    <script src="/app.js?v=20260823-stock-wording"></script>
+    <script src="/formula-engine.js?v=20260823-attempts-cap-fix"></script>
+    <script src="/app.js?v=20260823-attempts-cap-fix"></script>
   </body>
 </html>
