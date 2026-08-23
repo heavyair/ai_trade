@@ -326,7 +326,7 @@ async function main() {
     status: "done",
     currentSymbol: null,
     currentStrategyType: null,
-    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 个标的，AI调用${aiCalls}次，保存${saved}个，未跑赢${rejected}个，数据不足跳过${dataSkipped}个，出错${errored}个${bestSummary}。`,
+    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 只股票，AI调用${aiCalls}次，保存${saved}个，未跑赢${rejected}个，数据不足跳过${dataSkipped}个，出错${errored}个${bestSummary}。`,
     bestAnnualizedReturn, bestAnnualizedSymbol, bestAnnualizedStrategyType,
   });
   await pool.end();
