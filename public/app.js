@@ -5660,11 +5660,20 @@ function buildPeVolumeBacktestStates(rows, config) {
   return states;
 }
 
+// Formula conditions are keyed by their own formula text (different formula strings must
+// never share a cache slot), everything else keeps the existing lookbackDays/slopeWindowDays
+// key — shared by buildBlockRuleSeriesCache/getBlockConditionValue/getBlockConditionSeries so
+// the three don't each reimplement (and risk drifting on) the same key format.
+function getConditionCacheKey(condition) {
+  if (condition.indicator === "formula") return `formula:${condition.formula}`;
+  return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+}
+
 function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
   const cache = new Map();
   const ensure = (condition) => {
     if (!condition || condition.indicator === "positionRatio" || condition.indicator === "holdingDays") return;
-    const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+    const key = getConditionCacheKey(condition);
     if (cache.has(key)) return;
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
@@ -5682,6 +5691,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "downDayCount") series = getDownDayCountSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maCompare") series = getMaCompareSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
     else if (condition.indicator === "candleBody") series = getCandleBodySeries(rows);
+    else if (condition.indicator === "formula") series = FormulaEngine.compileFormulaSeries(rows, condition.formula);
     if (series) cache.set(key, series);
   };
   [...(buyBlockRules || []), ...(sellBlockRules || [])].forEach((block) => {
@@ -5693,8 +5703,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
 function getBlockConditionValue(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
   if (condition.indicator === "positionRatio") return positionRatioHistory[index];
   if (condition.indicator === "holdingDays") return holdingDaysHistory[index];
-  const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
-  const series = cache.get(key);
+  const series = cache.get(getConditionCacheKey(condition));
   return series ? series[index] : null;
 }
 
@@ -5711,8 +5720,7 @@ function compareBlockValue(value, comparator, target) {
 function getBlockConditionSeries(condition, cache, positionRatioHistory, holdingDaysHistory) {
   if (condition.indicator === "positionRatio") return positionRatioHistory;
   if (condition.indicator === "holdingDays") return holdingDaysHistory;
-  const key = `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
-  return cache.get(key) || null;
+  return cache.get(getConditionCacheKey(condition)) || null;
 }
 
 // True iff the indicator's own series moved the same direction every day for the last
@@ -5790,6 +5798,10 @@ function getBlockIndicatorLabel(indicator) {
 }
 
 function describeBlockCondition(condition) {
+  if (condition.indicator === "formula") {
+    const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
+    return `${sustain}公式[${condition.formula}]${condition.comparator}${condition.value}`;
+  }
   const label = getBlockIndicatorLabel(condition.indicator);
   const days = condition.lookbackDays ? `${condition.lookbackDays}日` : "";
   const slopeWindow = condition.indicator === "maSlope" && condition.slopeWindowDays && condition.slopeWindowDays > 1

@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
 const { Pool } = require("pg");
+const FormulaEngine = require("./public/formula-engine.js");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -528,7 +529,7 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
 const BLOCK_RULE_INDICATORS = [
   "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maLevel", "maSlope", "rsi", "atrPercent",
   "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount", "maCompare", "candleBody",
-  "positionRatio", "holdingDays",
+  "positionRatio", "holdingDays", "formula",
 ];
 // risingStreak/fallingStreak check whether the indicator's own value moved the same
 // direction every day for the last N days in a row (a genuine consecutive streak, not just
@@ -556,6 +557,16 @@ function normalizeGeneratedModel(value) {
     if (!condition || typeof condition !== "object" || Array.isArray(condition)) return null;
     if (!BLOCK_RULE_INDICATORS.includes(condition.indicator)) return null;
     if (!BLOCK_RULE_COMPARATORS.includes(condition.comparator)) return null;
+    // formula conditions carry their own window sizes inside the formula string (e.g.
+    // sma(close, 10)) — lookbackDays/slopeWindowDays are meaningless here and forced to
+    // null below even if the AI mistakenly filled them in.
+    if (condition.indicator === "formula") {
+      if (typeof condition.formula !== "string" || condition.formula.length === 0
+        || condition.formula.length > FormulaEngine.MAX_FORMULA_LENGTH
+        || !FormulaEngine.validateFormula(condition.formula)) {
+        return null;
+      }
+    }
     const rawValue = asNumber(condition.value, null);
     if (rawValue === null) return null;
     // For a streak comparator, value is a day count — must be a positive whole number.
@@ -564,10 +575,11 @@ function normalizeGeneratedModel(value) {
       : rawValue;
     return {
       indicator: condition.indicator,
-      lookbackDays: condition.lookbackDays === null || condition.lookbackDays === undefined
+      formula: condition.indicator === "formula" ? condition.formula : null,
+      lookbackDays: condition.indicator === "formula" || condition.lookbackDays === null || condition.lookbackDays === undefined
         ? null
         : clamp(condition.lookbackDays, 1, 250, 20),
-      slopeWindowDays: condition.slopeWindowDays === null || condition.slopeWindowDays === undefined
+      slopeWindowDays: condition.indicator === "formula" || condition.slopeWindowDays === null || condition.slopeWindowDays === undefined
         ? null
         : clamp(condition.slopeWindowDays, 1, 60, 1),
       comparator: condition.comparator,
@@ -686,6 +698,7 @@ const blockRuleConditionSchema = {
   additionalProperties: false,
   properties: {
     indicator: { type: "string", enum: BLOCK_RULE_INDICATORS },
+    formula: { type: ["string", "null"] },
     lookbackDays: { type: ["number", "null"] },
     slopeWindowDays: { type: ["number", "null"] },
     comparator: { type: "string", enum: BLOCK_RULE_COMPARATORS },
@@ -802,8 +815,19 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
     "- score-rules：用户的描述是“打分制”——多条独立条件各自命中就加若干分（不要求互斥，同一天可以同时命中多条、分数累加），再按当天总分落在哪个区间决定目标仓位百分比（例如“A得10分，B得10分…总分满20分半仓，满30分全仓”）。出现“得X分”“加X分”“总分”“打分”这类字眼、或者列举一串各自独立打分的条件时，必须选这个类型，不要硬套 block-rules 的且/或结构（block-rules 的 action 是触发一次性动作，没法表达“多个条件独立累加分数”）。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
-    "block-rules 和 score-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、maCompare(两条均线互相比较：用 lookbackDays 当快线周期、slopeWindowDays 当慢线周期，算 (快线-慢线)/慢线*100——判断“N日均线大于/高于M日均线”这类两条均线互相比较的说法时用这个，comparator 用 > 0)、candleBody((收盘价-开盘价)/开盘价*100——判断“收阳线/收阴线”时用这个，comparator 用 >0 表示收阳线、<0 表示收阴线，lookbackDays 必须设为 null，这个指标不需要回看窗口)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。",
+    "block-rules 和 score-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、riseFromLow(距低点反弹%)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、maCompare(两条均线互相比较：用 lookbackDays 当快线周期、slopeWindowDays 当慢线周期，算 (快线-慢线)/慢线*100——判断“N日均线大于/高于M日均线”这类两条均线互相比较的说法时用这个，comparator 用 > 0)、candleBody((收盘价-开盘价)/开盘价*100——判断“收阳线/收阴线”时用这个，comparator 用 >0 表示收阳线、<0 表示收阴线，lookbackDays 必须设为 null，这个指标不需要回看窗口)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(未创新高天数)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)、formula(上面所有固定指标都表达不了时用这个，见下方公式说明)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立（用来表达“连续N天满足某条件”）。",
     "condition.comparator 除了 >、>=、<、<=、== 之外，还有 risingStreak 和 fallingStreak 两个特殊值：用来表达“某个指标自己连续 N 天每天都在涨/跌”（比如“10日均线连续3天每天都在涨”“RSI连续5天下降”），这跟 maSlope 只看首尾两个点净变化不一样——risingStreak/fallingStreak 会检查这 N 天里逐日都是同一个方向。用户描述里出现“连续N天都在涨/跌”“连续上行/下行”这类明确要求逐日同向的表述时，必须用 risingStreak/fallingStreak，不要用 maSlope+sustainedDays 或 maSlope+slopeWindowDays 去凑。用这两个值时，condition.value 表示天数 N（正整数），不是阈值，sustainedDays 留空即可。",
+    "formula 指标——当用户描述的比较关系用上面固定指标（哪怕组合 sustainedDays/risingStreak）都拼不出来时用这个，最典型的场景是“比较两个不同字段”（比如最低价和均线比较，而不是收盘价；或者当天振幅和历史振幅比较）。用法：indicator 设为 \"formula\"，condition.formula 写一个数学表达式字符串，lookbackDays/slopeWindowDays 都设为 null（窗口天数写在公式字符串内部），comparator/value/sustainedDays 用法不变——公式算出的数字按普通指标一样跟 value 比较。formula 语法：字段 close/open/high/low/volume/pe/peTtm/pb，字段名后面可以加 [-N] 表示N个交易日前（比如 close[-1] 是昨天收盘价），不能写正数偏移量（不能看未来）；函数 sma(表达式,N)/ema(表达式,N)/stdev(表达式,N)/max(表达式,N)/min(表达式,N)/sum(表达式,N)（N 是1-250的整数窗口天数）、rsi(N)、atr(N)、abs(表达式)；支持 + - * / 和括号。formula 语法里没有且/或（and/or），如果需要同时满足多个条件，拆成同一个规则块里的多条 condition（block-rules 里块内条件本来就是且的关系）。公式字符串长度不能超过200字符。示例——“最低价跌破10日均线连续3天卖出”对应 { indicator: \"formula\", formula: \"low - sma(close, 10)\", comparator: \"<\", value: 0, sustainedDays: 3, lookbackDays: null, slopeWindowDays: null }（这跟“收盘价跌破均线”不一样，收盘价跌破用 maValue 就够了，只有明确说“最低价”这种固定指标覆盖不到的字段组合才需要 formula）。对应的完整 JSON：",
+    JSON.stringify({
+      strategyType: "block-rules",
+      sellBlockRules: [{
+        enabled: true,
+        conditions: [
+          { indicator: "formula", formula: "low - sma(close, 10)", lookbackDays: null, slopeWindowDays: null, comparator: "<", value: 0, sustainedDays: 3 },
+        ],
+        action: { type: "exitAll", value: null },
+      }],
+    }),
     "block-rules 示例——“距离波浪模型最近高点跌超20%且8天没创新高就买1000股；10日均线连续3天每天都在跌就清仓”对应（注意距离“最近高点”用的是 drawdownFromWaveHigh，不是 drawdownFromHigh；“连续3天每天都在跌”用的是 fallingStreak，不是 maSlope）：",
     JSON.stringify({
       strategyType: "block-rules",
