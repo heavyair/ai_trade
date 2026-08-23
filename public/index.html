@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-admin-autogen-ui">
+    <link rel="stylesheet" href="/styles.css?v=20260823-symbol-history">
   </head>
   <body>
     <main class="shell">
@@ -203,8 +203,8 @@
           <div id="adminAutoGeneratePanel" class="hidden">
             <p class="field-hint">AI 看每只标的自己的历史行情特征（不是文字描述），对每只标的尝试多种不同的模型思路，参数搜索择优后只保存跑赢买入持有（收益更高、回撤更小）的最好一个，标记为 meta.creator=ai-auto。</p>
             <div id="adminAutoGenerateTriggerRow" class="admin-scan-filter-row">
-              <label>标的代码（留空=用全市场清单，逗号分隔）
-                <input id="adminAutoGenerateSymbols" type="text" placeholder="例如 NET,513100">
+              <label>标的代码（不选=用全市场清单，可多选，来源和历史模拟的"常用代码"一致）
+                <select id="adminAutoGenerateSymbols" multiple size="6"></select>
               </label>
               <label>标的数量上限
                 <input id="adminAutoGenerateLimit" type="number" step="1" min="0" placeholder="不限" value="5">
@@ -1125,7 +1125,7 @@
       </section>
       </div>
     </main>
-    <script src="/formula-engine.js?v=20260823-admin-autogen-ui"></script>
-    <script src="/app.js?v=20260823-admin-autogen-ui"></script>
+    <script src="/formula-engine.js?v=20260823-symbol-history"></script>
+    <script src="/app.js?v=20260823-symbol-history"></script>
   </body>
 </html>

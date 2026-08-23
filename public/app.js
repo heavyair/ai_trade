@@ -281,13 +281,17 @@ let adminOwnerOptions = ["public"];
 let adminPresetsCache = [];
 
 const symbolPresets = ["513100", "588000", "NET", "QQQ", "AMD"];
-const recentSymbolStorageKey = "aiTradeRecentSymbols";
 const customPresetStorageKey = "aiTradeCustomStrategyPresets";
 const customPresetMigrationKey = "aiTradeCustomStrategyPresetsMigratedToServer";
 const rankingRecordStorageKey = "aiTradeRankingRecords";
 const rankingPeriods = [1, 3, 5];
 const rankingPageSize = 10;
-let recentSymbolPresets = [];
+// Server-backed (not per-browser localStorage): every /api/klines call already records the
+// resolved name + a fresh timestamp into the `symbols` table (see server.js persistKlineData),
+// so this is simply that history read back, most-recent first — shared across devices/users,
+// and the single source both the history-simulation "常用代码" dropdown and the admin
+// "AI自动生成" symbol picker draw from.
+let symbolHistoryCache = [];
 let rankingRecords = [];
 let publicRankingRecords = [];
 let rankingPageByPeriod = {};
@@ -2414,7 +2418,26 @@ function stopAdminAutoGeneratePoll() {
   }
 }
 
+// Same source as the history-simulation "常用代码" dropdown (symbolHistoryCache, server-backed
+// via /api/symbol-history) — refreshed on each tab-open so it reflects codes anyone has
+// looked up since this admin session started, not just what was cached at page load.
+function renderAdminAutoGenerateSymbolOptions() {
+  if (!adminAutoGenerateSymbolsInput) return;
+  const previouslySelected = new Set(
+    Array.from(adminAutoGenerateSymbolsInput.selectedOptions || []).map((opt) => opt.value)
+  );
+  const allSymbols = getAllSymbolPresets();
+  adminAutoGenerateSymbolsInput.innerHTML = allSymbols
+    .map((symbol) => {
+      const selectedAttr = previouslySelected.has(symbol) ? " selected" : "";
+      return `<option value="${symbol}"${selectedAttr}>${escapeHtml(formatSymbolOptionLabel(symbol))}</option>`;
+    })
+    .join("");
+}
+
 async function loadAdminAutoGenerate() {
+  renderAdminAutoGenerateSymbolOptions();
+  loadSymbolHistory().then(renderAdminAutoGenerateSymbolOptions).catch(() => {});
   if (!adminAutoGenerateList) return;
   if (!adminAutoGenerateList.innerHTML.trim()) {
     adminAutoGenerateList.innerHTML = '<div class="ranking-empty">正在读取自动生成的模型...</div>';
@@ -2429,8 +2452,9 @@ async function loadAdminAutoGenerate() {
 }
 
 async function triggerAdminAutoGenerateRun() {
-  const symbols = (adminAutoGenerateSymbolsInput && adminAutoGenerateSymbolsInput.value || "")
-    .split(",").map((s) => s.trim()).filter(Boolean);
+  const symbols = adminAutoGenerateSymbolsInput
+    ? Array.from(adminAutoGenerateSymbolsInput.selectedOptions || []).map((opt) => opt.value)
+    : [];
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
@@ -2880,19 +2904,33 @@ function normalizeSymbolInput(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function loadRecentSymbols() {
+async function loadSymbolHistory() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(recentSymbolStorageKey) || "[]");
-    return Array.isArray(parsed)
-      ? parsed.map(normalizeSymbolInput).filter(Boolean).slice(0, 20)
-      : [];
+    const response = await fetch("/api/symbol-history", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取股票代码历史失败。");
+    symbolHistoryCache = Array.isArray(payload.symbols) ? payload.symbols : [];
   } catch (error) {
-    return [];
+    symbolHistoryCache = [];
   }
 }
 
+// History first (server order = most-recently-used first), then any base preset not already
+// covered by history — so a fresh/empty history still shows sensible defaults.
 function getAllSymbolPresets() {
-  return Array.from(new Set([...symbolPresets, ...recentSymbolPresets]));
+  const historyCodes = symbolHistoryCache.map((entry) => normalizeSymbolInput(entry.code)).filter(Boolean);
+  const historySet = new Set(historyCodes);
+  return [...historyCodes, ...symbolPresets.filter((symbol) => !historySet.has(symbol))];
+}
+
+function getSymbolDescription(symbol) {
+  const normalized = normalizeSymbolInput(symbol);
+  const entry = symbolHistoryCache.find((item) => normalizeSymbolInput(item.code) === normalized);
+  return entry ? String(entry.description || "").slice(0, 23) : "";
+}
+
+function formatSymbolOptionLabel(symbol) {
+  const description = getSymbolDescription(symbol);
+  return description ? `${symbol} ${description}` : symbol;
 }
 
 function renderSymbolPresetOptions(selectedSymbol = normalizeSymbolInput(codeInput.value)) {
@@ -2904,8 +2942,7 @@ function renderSymbolPresetOptions(selectedSymbol = normalizeSymbolInput(codeInp
   symbolPresetSelect.innerHTML = allSymbols
     .map((symbol) => {
       const selectedAttr = symbol === selected ? " selected" : "";
-      const recentLabel = !symbolPresets.includes(symbol) ? "最近 " : "";
-      return `<option value="${symbol}"${selectedAttr}>${recentLabel}${symbol}</option>`;
+      return `<option value="${symbol}"${selectedAttr}>${escapeHtml(formatSymbolOptionLabel(symbol))}</option>`;
     })
     .join("");
 }
@@ -2917,17 +2954,20 @@ function updateSymbolPresetFromInput() {
   }
 }
 
-function rememberLoadedSymbol(symbol) {
+// The actual recording (code + resolved name + timestamp) already happened server-side as
+// part of the /api/klines call that just loaded this symbol's data (see server.js
+// persistKlineData) — this just refreshes the client's cache so the dropdown reflects it
+// immediately, without waiting for a full page reload.
+function rememberLoadedSymbol(symbol, description) {
   const normalized = normalizeSymbolInput(symbol);
   if (!normalized) return;
-  recentSymbolPresets = [
-    normalized,
-    ...recentSymbolPresets.filter((item) => item !== normalized),
-  ]
-    .filter((item, index, list) => list.indexOf(item) === index)
-    .slice(0, 20);
-  localStorage.setItem(recentSymbolStorageKey, JSON.stringify(recentSymbolPresets));
+  const trimmedDescription = String(description || "").slice(0, 23);
+  symbolHistoryCache = [
+    { code: normalized, description: trimmedDescription, updatedAt: new Date().toISOString() },
+    ...symbolHistoryCache.filter((item) => normalizeSymbolInput(item.code) !== normalized),
+  ];
   renderSymbolPresetOptions(normalized);
+  loadSymbolHistory().then(() => renderSymbolPresetOptions(normalized)).catch(() => {});
 }
 
 function setDateRangeByYears(years) {
@@ -10198,7 +10238,7 @@ function renderResult(result) {
   fields.chartTitle.textContent = displayName;
   fields.chartSubtitle.textContent = `${startInput.value} 至 ${endInput.value}`;
   renderCompanyInfo(result);
-  rememberLoadedSymbol(code);
+  rememberLoadedSymbol(code, name);
   closeDialog(dataSelectorDialog);
 
   drawChart(rows, summary);
@@ -10926,9 +10966,9 @@ window.addEventListener("resize", () => {
 });
 
 async function initializeApp() {
-  recentSymbolPresets = loadRecentSymbols();
   applyLanguage(activeLanguage);
   renderSymbolPresetOptions(codeInput.value);
+  loadSymbolHistory().then(() => renderSymbolPresetOptions(codeInput.value)).catch(() => {});
   renderModelCompareOptions();
   renderModelRanking();
   setSimulationStep("models");

@@ -3504,6 +3504,40 @@ async function handleApi(req, res, requestUrl) {
   }
 }
 
+// Every /api/klines call already upserts the `symbols` table (persistKlineData, called from
+// fetchKlines) with the resolved name and a fresh updated_at — i.e. "which stock codes has
+// anyone looked up, and when" is already recorded for free every time a user enters a code
+// and loads its history. This endpoint just reads that back, most-recent first, so the
+// history-simulation and admin "AI自动生成" dropdowns can share one live, server-backed list
+// instead of each keeping their own (browser-local, single-device) recent-symbols cache.
+async function handleSymbolHistoryApi(req, res) {
+  try {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT symbol, name, updated_at FROM (
+        SELECT symbol, name, updated_at,
+          ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY updated_at DESC) AS rn
+        FROM symbols
+      ) t
+      WHERE rn = 1
+      ORDER BY updated_at DESC
+      LIMIT 200
+    `);
+    sendJson(res, 200, {
+      symbols: result.rows.map((row) => ({
+        code: row.symbol,
+        description: String(row.name || "").slice(0, 23),
+        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+      })),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取股票代码历史失败。" });
+  }
+}
+
 function serveStatic(req, res, requestUrl) {
   const requestPath = requestUrl.pathname === "/" ? "/index.html" : requestUrl.pathname;
   const decoded = decodeURIComponent(requestPath);
@@ -3550,6 +3584,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/klines") {
     handleApi(req, res, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/symbol-history") {
+    handleSymbolHistoryApi(req, res);
     return;
   }
 
