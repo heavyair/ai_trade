@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260822-formula-engine">
+    <link rel="stylesheet" href="/styles.css?v=20260823-admin-autogen-ui">
   </head>
   <body>
     <main class="shell">
@@ -138,6 +138,7 @@
             <button id="adminScanTabButton" type="button">后台模型排行</button>
             <button id="adminScanStatusTabButton" type="button">后台计算状态</button>
             <button id="adminValidationTabButton" type="button">全市场验证</button>
+            <button id="adminAutoGenerateTabButton" type="button">AI自动生成</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -198,6 +199,26 @@
               <button type="button" id="adminParamPatternViewButton" class="ghost-button">查看参数规律</button>
             </div>
             <div id="adminValidationList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminAutoGeneratePanel" class="hidden">
+            <p class="field-hint">AI 看每只标的自己的历史行情特征（不是文字描述），对每只标的尝试多种不同的模型思路，参数搜索择优后只保存跑赢买入持有（收益更高、回撤更小）的最好一个，标记为 meta.creator=ai-auto。</p>
+            <div id="adminAutoGenerateTriggerRow" class="admin-scan-filter-row">
+              <label>标的代码（留空=用全市场清单，逗号分隔）
+                <input id="adminAutoGenerateSymbols" type="text" placeholder="例如 NET,513100">
+              </label>
+              <label>标的数量上限
+                <input id="adminAutoGenerateLimit" type="number" step="1" min="0" placeholder="不限" value="5">
+              </label>
+              <label>每个标的尝试次数
+                <input id="adminAutoGenerateAttemptsPerSymbol" type="number" step="1" min="1" max="10" value="5">
+              </label>
+              <label>总 AI 调用次数上限
+                <input id="adminAutoGenerateMaxAttempts" type="number" step="1" min="1" max="200" value="20">
+              </label>
+              <button type="button" id="adminAutoGenerateRunButton" class="ghost-button">启动自动生成</button>
+              <span id="adminAutoGenerateRunStatus" class="field-hint"></span>
+            </div>
+            <div id="adminAutoGenerateList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1104,7 +1125,7 @@
       </section>
       </div>
     </main>
-    <script src="/formula-engine.js?v=20260822-formula-engine"></script>
-    <script src="/app.js?v=20260822-formula-engine"></script>
+    <script src="/formula-engine.js?v=20260823-admin-autogen-ui"></script>
+    <script src="/app.js?v=20260823-admin-autogen-ui"></script>
   </body>
 </html>

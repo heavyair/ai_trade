@@ -2071,6 +2071,20 @@ function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
   });
 }
 
+function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy }) {
+  const scriptArgs = [`--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`];
+  if (limit > 0) scriptArgs.push(`--limit=${limit}`);
+  if (symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
+  launchBackgroundJob({
+    jobType: "autoGenerate",
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-auto-generate.js"),
+    scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    extra: { symbols, limit, attemptsPerSymbol, maxAttempts },
+  });
+}
+
 function launchUniverseValidationProcess({ buyHoldMax, bestReturnMin, rescan, sessionStartedAt, triggeredBy }) {
   const scriptArgs = [`--buyHoldMax=${buyHoldMax}`, `--bestReturnMin=${bestReturnMin}`, `--minRows=250`, `--sessionSince=${sessionStartedAt}`];
   if (rescan) scriptArgs.push("--rescan");
@@ -2255,6 +2269,78 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+// Lists presets scripts/universe/run-auto-generate.js has saved (meta.creator = "ai-auto"),
+// plus the shared background-job running/last-result state (same globals the scan/validation
+// panels already poll — only one batch job runs at a time regardless of type).
+async function handleAdminAutoGenerateListApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    const result = await dbQuery(`
+      SELECT id, label, strategy_type, meta, created_at, updated_at
+      FROM strategy_presets
+      WHERE meta->>'creator' = 'ai-auto'
+      ORDER BY updated_at DESC
+      LIMIT 500
+    `);
+    const presets = result.rows.map((row) => {
+      const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+      return {
+        id: row.id,
+        label: row.label,
+        strategyType: row.strategy_type,
+        targetSymbol: meta.targetSymbol || "",
+        reason: meta.originalText || "",
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+      };
+    });
+
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      presets,
+      running: isScanRunning(),
+      scanInfo: activeScanInfo,
+      lastScanResult,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+async function handleAdminAutoGenerateRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "已有后台任务在运行中，请等它完成后再启动新的。", info: activeScanInfo });
+      return;
+    }
+
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const symbols = Array.isArray(payload.symbols)
+      ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
+      : [];
+    const limit = Math.max(0, Math.min(500, Math.round(Number(payload.limit)) || 0));
+    const attemptsPerSymbol = Math.max(1, Math.min(10, Math.round(Number(payload.attemptsPerSymbol)) || 5));
+    const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
+    const sessionStartedAt = new Date().toISOString();
+
+    launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });
   }
 }
 
@@ -3504,6 +3590,16 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
     handleAdminOptimizationScanRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/auto-generate") {
+    handleAdminAutoGenerateListApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/auto-generate/run") {
+    handleAdminAutoGenerateRunApi(req, res);
     return;
   }
 

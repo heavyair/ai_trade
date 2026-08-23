@@ -119,6 +119,15 @@ const adminValidationRunStatus = document.querySelector("#adminValidationRunStat
 const adminValidationThresholdInput = document.querySelector("#adminValidationThreshold");
 const adminValidationApplyThresholdButton = document.querySelector("#adminValidationApplyThresholdButton");
 const adminValidationList = document.querySelector("#adminValidationList");
+const adminAutoGenerateTabButton = document.querySelector("#adminAutoGenerateTabButton");
+const adminAutoGeneratePanel = document.querySelector("#adminAutoGeneratePanel");
+const adminAutoGenerateSymbolsInput = document.querySelector("#adminAutoGenerateSymbols");
+const adminAutoGenerateLimitInput = document.querySelector("#adminAutoGenerateLimit");
+const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAutoGenerateAttemptsPerSymbol");
+const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
+const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRunButton");
+const adminAutoGenerateRunStatus = document.querySelector("#adminAutoGenerateRunStatus");
+const adminAutoGenerateList = document.querySelector("#adminAutoGenerateList");
 const adminParamPatternModelSelect = document.querySelector("#adminParamPatternModelSelect");
 const adminParamPatternViewButton = document.querySelector("#adminParamPatternViewButton");
 const adminParamPatternDialog = document.querySelector("#adminParamPatternDialog");
@@ -2318,6 +2327,134 @@ async function triggerAdminValidationRun() {
   }
 }
 
+function formatAdminAutoGenerateReason(reason) {
+  const text = String(reason || "").trim();
+  if (!text) return "";
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
+function renderAdminAutoGenerateList(payload) {
+  adminAutoGenerateLastPayload = payload;
+  const presets = Array.isArray(payload.presets) ? payload.presets : [];
+  if (adminAutoGenerateList) {
+    if (presets.length === 0) {
+      adminAutoGenerateList.innerHTML = '<div class="ranking-empty">还没有自动生成并保存的模型。</div>';
+    } else {
+      const rows = presets.map((p) => `
+        <tr>
+          <td>${escapeHtml(p.targetSymbol || "")}</td>
+          <td>${escapeHtml(p.label || "")}</td>
+          <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
+          <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
+          <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
+        </tr>
+      `).join("");
+      adminAutoGenerateList.innerHTML = `
+        <table class="admin-ranking-table">
+          <thead>
+            <tr>
+              <th>标的</th>
+              <th>模型名称</th>
+              <th>策略类型</th>
+              <th>AI 生成理由</th>
+              <th>更新时间</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+  }
+
+  const running = Boolean(payload.running);
+  if (adminAutoGenerateRunButton) adminAutoGenerateRunButton.disabled = running;
+
+  const last = payload.lastScanResult;
+  const autoGenerateLast = last && last.jobType === "autoGenerate" ? last : null;
+  const crashed = Boolean(autoGenerateLast && autoGenerateLast.exitCode !== 0);
+  if (adminAutoGenerateRunStatus) {
+    const runningIsAutoGenerate = running && payload.scanInfo && payload.scanInfo.jobType === "autoGenerate";
+    if (runningIsAutoGenerate) {
+      adminAutoGenerateRunStatus.textContent = `自动生成进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
+    } else if (running) {
+      adminAutoGenerateRunStatus.textContent = "已有其它后台任务在运行，请等它结束后再启动自动生成。";
+    } else if (crashed) {
+      adminAutoGenerateRunStatus.textContent = `上次自动生成异常退出（退出码 ${autoGenerateLast.exitCode}，${escapeHtml(formatAdminDate(autoGenerateLast.endedAt))}）。`;
+    } else if (autoGenerateLast) {
+      adminAutoGenerateRunStatus.textContent = `上次自动生成已完成（${escapeHtml(formatAdminDate(autoGenerateLast.endedAt))}）。`;
+    } else {
+      adminAutoGenerateRunStatus.textContent = "";
+    }
+  }
+  if (running) {
+    scheduleAdminAutoGeneratePoll();
+  } else {
+    stopAdminAutoGeneratePoll();
+  }
+}
+
+let adminAutoGenerateLastPayload = null;
+let adminAutoGeneratePollTimer = null;
+
+function scheduleAdminAutoGeneratePoll() {
+  if (adminAutoGeneratePollTimer) return;
+  adminAutoGeneratePollTimer = window.setInterval(() => {
+    if (!adminAutoGeneratePanel || adminAutoGeneratePanel.classList.contains("hidden")) {
+      stopAdminAutoGeneratePoll();
+      return;
+    }
+    loadAdminAutoGenerate();
+  }, 5000);
+}
+
+function stopAdminAutoGeneratePoll() {
+  if (adminAutoGeneratePollTimer) {
+    window.clearInterval(adminAutoGeneratePollTimer);
+    adminAutoGeneratePollTimer = null;
+  }
+}
+
+async function loadAdminAutoGenerate() {
+  if (!adminAutoGenerateList) return;
+  if (!adminAutoGenerateList.innerHTML.trim()) {
+    adminAutoGenerateList.innerHTML = '<div class="ranking-empty">正在读取自动生成的模型...</div>';
+  }
+  try {
+    const response = await fetch("/api/admin/auto-generate", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取自动生成模型失败。");
+    renderAdminAutoGenerateList(payload);
+  } catch (error) {
+    adminAutoGenerateList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function triggerAdminAutoGenerateRun() {
+  const symbols = (adminAutoGenerateSymbolsInput && adminAutoGenerateSymbolsInput.value || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
+  const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
+  const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
+  if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "正在启动自动生成...";
+  try {
+    const response = await fetch("/api/admin/auto-generate/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbols,
+        limit: Number.isFinite(limit) ? limit : 0,
+        attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 5,
+        maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
+      }),
+    });
+    await readJsonResponse(response, "启动自动生成失败。");
+    setStatus("已启动 AI 自动生成模型。");
+    await loadAdminAutoGenerate();
+  } catch (error) {
+    if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "";
+    setStatus(`启动自动生成失败：${error.message}`, true);
+  }
+}
+
 function openAdminValidationParamViewer(sourceScanResultId) {
   const candidate = adminValidationCache.find((item) => item.sourceScanResultId === sourceScanResultId);
   if (!candidate) return;
@@ -2425,21 +2562,25 @@ function setAdminTab(tab) {
   const showScan = tab === "scan";
   const showScanStatus = tab === "scanStatus";
   const showValidation = tab === "validation";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation;
+  const showAutoGenerate = tab === "autoGenerate";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
   if (adminScanStatusTabButton) adminScanStatusTabButton.classList.toggle("active", showScanStatus);
   if (adminValidationTabButton) adminValidationTabButton.classList.toggle("active", showValidation);
+  if (adminAutoGenerateTabButton) adminAutoGenerateTabButton.classList.toggle("active", showAutoGenerate);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
   if (adminScanStatusPanel) adminScanStatusPanel.classList.toggle("hidden", !showScanStatus);
   if (adminValidationPanel) adminValidationPanel.classList.toggle("hidden", !showValidation);
+  if (adminAutoGeneratePanel) adminAutoGeneratePanel.classList.toggle("hidden", !showAutoGenerate);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
   if (showValidation) loadAdminValidation();
+  if (showAutoGenerate) loadAdminAutoGenerate();
 }
 
 if (adminPresetsTabButton) {
@@ -2456,6 +2597,15 @@ if (adminScanStatusTabButton) {
 }
 if (adminValidationTabButton) {
   adminValidationTabButton.addEventListener("click", () => setAdminTab("validation"));
+}
+if (adminAutoGenerateTabButton) {
+  adminAutoGenerateTabButton.addEventListener("click", () => setAdminTab("autoGenerate"));
+}
+if (adminAutoGenerateRunButton) {
+  adminAutoGenerateRunButton.addEventListener("click", () => {
+    if (!window.confirm("确定要启动 AI 自动生成吗？这会消耗 AI API 调用额度（最多按“总 AI 调用次数上限”计费），并跑参数搜索，可能耗时较久。")) return;
+    triggerAdminAutoGenerateRun();
+  });
 }
 if (adminValidationRunButton) {
   adminValidationRunButton.addEventListener("click", () => {
