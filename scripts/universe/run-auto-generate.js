@@ -56,6 +56,21 @@ const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).f
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
+// Live progress, polled by server.js's /api/admin/auto-generate status endpoint so the admin
+// panel can show "currently trying model X, attempt N/M" instead of just "running" — same
+// file-based reporting convention as server.js's own scan-session-state.json, just owned by
+// this script instead of the server (the server never runs the loop itself, only spawns it).
+const PROGRESS_FILE = path.join(__dirname, "..", "..", "data", "auto-generate-progress.json");
+let progressState = {};
+function writeProgress(patch) {
+  progressState = { ...progressState, ...patch, updatedAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progressState));
+  } catch (error) {
+    // Best-effort only — progress reporting must never take down the actual job.
+  }
+}
+
 async function loadRows(symbol, market) {
   const result = await pool.query(`
     SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume,
@@ -132,8 +147,26 @@ async function main() {
   let errored = 0;
   let budgetExhausted = false;
 
+  writeProgress({
+    status: "running",
+    totalSymbols: symbols.length,
+    symbolIndex: 0,
+    currentSymbol: null,
+    attempt: 0,
+    attemptsPerSymbol: ATTEMPTS_PER_SYMBOL,
+    currentStrategyType: null,
+    currentReason: null,
+    maxAttempts: MAX_ATTEMPTS,
+    aiCalls: 0,
+    saved: 0,
+    rejected: 0,
+  });
+
+  let symbolIndex = 0;
   for (const symbolEntry of symbols) {
     if (budgetExhausted) break;
+    symbolIndex += 1;
+    writeProgress({ symbolIndex, currentSymbol: symbolEntry.code, attempt: 0, currentStrategyType: null, currentReason: null });
 
     const dbMarket = symbolEntry.market === "CN"
       ? (/^[569]/.test(symbolEntry.code) ? "1" : "0")
@@ -148,6 +181,7 @@ async function main() {
       if (rows.length < MIN_ROWS) {
         console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS})`);
         dataSkipped += 1;
+        writeProgress({ dataSkipped, currentReason: `历史数据不足（${rows.length} 行 < ${MIN_ROWS}），跳过` });
         continue;
       }
 
@@ -169,6 +203,7 @@ async function main() {
           break;
         }
 
+        writeProgress({ attempt: attempt + 1, currentStrategyType: null, currentReason: "AI 正在分析数据、设计模型…" });
         aiCalls += 1;
         let model;
         try {
@@ -176,10 +211,16 @@ async function main() {
         } catch (aiError) {
           console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
           errored += 1;
+          writeProgress({ aiCalls, errored });
           continue;
         }
         attemptedAny = true;
         previousAttempts.push({ strategyType: model.strategyType, reason: model.reason });
+        writeProgress({
+          aiCalls,
+          currentStrategyType: model.strategyType,
+          currentReason: String(model.reason || "").slice(0, 120),
+        });
 
         if (!modelHasRules(model)) {
           console.log(`[empty-model] ${symbolEntry.code} attempt ${attempt + 1}: AI output had no usable rules after validation (strategyType=${model.strategyType}), skipping`);
@@ -196,6 +237,9 @@ async function main() {
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} best=${best.last.returnRate.toFixed(1)}%/dd${best.last.maxDrawdown.toFixed(1)}% vs buyHold=${buyHold.returnRate.toFixed(1)}%/dd${buyHold.maxDrawdown.toFixed(1)}% beatsReturn=${beatsReturn} beatsDrawdown=${beatsDrawdown}`);
+        writeProgress({
+          currentReason: `${model.strategyType}：回测 ${best.last.returnRate.toFixed(1)}%/回撤${best.last.maxDrawdown.toFixed(1)}%，买入持有 ${buyHold.returnRate.toFixed(1)}%/回撤${buyHold.maxDrawdown.toFixed(1)}% → ${beatsReturn && beatsDrawdown ? "跑赢，候选" : "未跑赢"}`,
+        });
 
         if (beatsReturn && beatsDrawdown && (!bestQualifying || best.score > bestQualifying.best.score)) {
           bestQualifying = { model, best };
@@ -215,17 +259,26 @@ async function main() {
         });
         console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType})`);
         saved += 1;
+        writeProgress({ saved, currentReason: `已保存：${label}（${bestQualifying.model.strategyType}）` });
       } else if (attemptedAny) {
         console.log(`[rejected] ${symbolEntry.code}: none of ${previousAttempts.length} attempts beat buy-hold on both return and drawdown`);
         rejected += 1;
+        writeProgress({ rejected, currentReason: `${previousAttempts.length} 次尝试都没有跑赢买入持有，未保存` });
       }
     } catch (error) {
       console.error(`[error] ${symbolEntry.code}: ${error.message}`);
       errored += 1;
+      writeProgress({ errored });
     }
   }
 
   console.log(`\ndone. aiCalls=${aiCalls} saved=${saved} rejected(didn't beat buy-hold)=${rejected} skipped(insufficient data)=${dataSkipped} errored=${errored}`);
+  writeProgress({
+    status: "done",
+    currentSymbol: null,
+    currentStrategyType: null,
+    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 个标的，AI调用${aiCalls}次，保存${saved}个，未跑赢${rejected}个，数据不足跳过${dataSkipped}个，出错${errored}个。`,
+  });
   await pool.end();
 }
 

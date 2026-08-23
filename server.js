@@ -14,6 +14,11 @@ const PRESETS_FILE = process.env.PRESETS_FILE || path.join(DATA_DIR, "custom-pre
 const RANKINGS_FILE = process.env.RANKINGS_FILE || path.join(DATA_DIR, "ranking-records.json");
 const USERS_FILE = process.env.USERS_FILE || path.join(DATA_DIR, "users.json");
 const SCAN_SESSION_STATE_FILE = process.env.SCAN_SESSION_STATE_FILE || path.join(DATA_DIR, "scan-session-state.json");
+// Written by scripts/universe/run-auto-generate.js itself (see its writeProgress helper) —
+// the server never runs that loop, it only spawns it, so this is how live "currently trying
+// model X, attempt N/M" detail gets back to the admin panel instead of the panel only ever
+// seeing coarse running/not-running state.
+const AUTO_GENERATE_PROGRESS_FILE = process.env.AUTO_GENERATE_PROGRESS_FILE || path.join(DATA_DIR, "auto-generate-progress.json");
 const AKSHARE_PYTHON = process.env.AKSHARE_PYTHON || "python3";
 const AKSHARE_TIMEOUT_MS = Math.max(3000, Number(process.env.AKSHARE_TIMEOUT_MS || 18000));
 const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
@@ -2134,7 +2139,22 @@ function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
   });
 }
 
+function readAutoGenerateProgress() {
+  try {
+    return JSON.parse(fs.readFileSync(AUTO_GENERATE_PROGRESS_FILE, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
 function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy }) {
+  // Clear any progress left over from a previous run so the panel doesn't briefly show stale
+  // "currently trying..." detail before the freshly-spawned process writes its first update.
+  try {
+    fs.unlinkSync(AUTO_GENERATE_PROGRESS_FILE);
+  } catch (error) {
+    // fine if it didn't exist yet
+  }
   const scriptArgs = [`--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`];
   if (limit > 0) scriptArgs.push(`--limit=${limit}`);
   if (symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
@@ -2372,6 +2392,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
       running: isScanRunning(),
       scanInfo: activeScanInfo,
       lastScanResult,
+      progress: readAutoGenerateProgress(),
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });

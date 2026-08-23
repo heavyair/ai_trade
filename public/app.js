@@ -127,6 +127,7 @@ const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAu
 const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
 const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRunButton");
 const adminAutoGenerateRunStatus = document.querySelector("#adminAutoGenerateRunStatus");
+const adminAutoGenerateProgressBanner = document.querySelector("#adminAutoGenerateProgressBanner");
 const adminAutoGenerateList = document.querySelector("#adminAutoGenerateList");
 const adminParamPatternModelSelect = document.querySelector("#adminParamPatternModelSelect");
 const adminParamPatternViewButton = document.querySelector("#adminParamPatternViewButton");
@@ -2376,8 +2377,8 @@ function renderAdminAutoGenerateList(payload) {
   const last = payload.lastScanResult;
   const autoGenerateLast = last && last.jobType === "autoGenerate" ? last : null;
   const crashed = Boolean(autoGenerateLast && autoGenerateLast.exitCode !== 0);
+  const runningIsAutoGenerate = running && payload.scanInfo && payload.scanInfo.jobType === "autoGenerate";
   if (adminAutoGenerateRunStatus) {
-    const runningIsAutoGenerate = running && payload.scanInfo && payload.scanInfo.jobType === "autoGenerate";
     if (runningIsAutoGenerate) {
       adminAutoGenerateRunStatus.textContent = `自动生成进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
     } else if (running) {
@@ -2390,6 +2391,35 @@ function renderAdminAutoGenerateList(payload) {
       adminAutoGenerateRunStatus.textContent = "";
     }
   }
+
+  if (adminAutoGenerateProgressBanner) {
+    const progress = payload.progress;
+    if (runningIsAutoGenerate && progress) {
+      const symbolLabel = progress.currentSymbol
+        ? `标的 ${progress.symbolIndex || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbol)}）`
+        : `标的 ${progress.symbolIndex || 0}/${progress.totalSymbols || "?"}`;
+      const attemptLabel = progress.attempt ? `第 ${progress.attempt}/${progress.attemptsPerSymbol || "?"} 次尝试` : "";
+      const strategyLabel = progress.currentStrategyType ? `策略：${escapeHtml(getStrategyTypeLabel(progress.currentStrategyType))}` : "";
+      const detailParts = [symbolLabel, attemptLabel, strategyLabel].filter(Boolean).join(" · ");
+      const reasonText = progress.currentReason ? escapeHtml(progress.currentReason) : "";
+      adminAutoGenerateProgressBanner.classList.remove("hidden");
+      adminAutoGenerateProgressBanner.innerHTML = `
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>AI自动生成进行中</div>
+        <div class="admin-progress-banner-detail">${detailParts}${reasonText ? `<br>${reasonText}` : ""}</div>
+        <div class="admin-progress-banner-stats">
+          <span>AI 调用 <strong>${progress.aiCalls || 0}</strong>/${progress.maxAttempts || "?"}</span>
+          <span>已保存 <strong>${progress.saved || 0}</strong></span>
+          <span>未跑赢 <strong>${progress.rejected || 0}</strong></span>
+          <span>数据不足跳过 <strong>${progress.dataSkipped || 0}</strong></span>
+          <span>出错 <strong>${progress.errored || 0}</strong></span>
+        </div>
+      `;
+    } else {
+      adminAutoGenerateProgressBanner.classList.add("hidden");
+      adminAutoGenerateProgressBanner.innerHTML = "";
+    }
+  }
+
   if (running) {
     scheduleAdminAutoGeneratePoll();
   } else {
