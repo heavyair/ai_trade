@@ -2418,26 +2418,53 @@ function stopAdminAutoGeneratePoll() {
   }
 }
 
-// Same source as the history-simulation "常用代码" dropdown (symbolHistoryCache, server-backed
-// via /api/symbol-history) — refreshed on each tab-open so it reflects codes anyone has
-// looked up since this admin session started, not just what was cached at page load.
+// /api/symbol-history is private to the calling owner (logged-in account, or anonymous
+// browser cookie) — the history-simulation dropdown uses it via symbolHistoryCache. Admin's
+// picker deliberately does NOT reuse that: it needs to see codes ANY user has queried (to
+// have a meaningful pool to pick a batch from), so it has its own cache backed by the
+// admin-only /api/admin/symbol-history aggregate endpoint instead.
+let adminSymbolHistoryCache = [];
+
+async function loadAdminSymbolHistory() {
+  try {
+    const response = await fetch("/api/admin/symbol-history", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取管理员股票代码历史失败。");
+    adminSymbolHistoryCache = Array.isArray(payload.symbols) ? payload.symbols : [];
+  } catch (error) {
+    adminSymbolHistoryCache = [];
+  }
+}
+
+function getAdminSymbolOptionsList() {
+  const historyCodes = adminSymbolHistoryCache.map((entry) => normalizeSymbolInput(entry.code)).filter(Boolean);
+  const historySet = new Set(historyCodes);
+  return [...historyCodes, ...symbolPresets.filter((symbol) => !historySet.has(symbol))];
+}
+
+function formatAdminSymbolOptionLabel(symbol) {
+  const normalized = normalizeSymbolInput(symbol);
+  const entry = adminSymbolHistoryCache.find((item) => normalizeSymbolInput(item.code) === normalized);
+  const description = entry ? String(entry.description || "").slice(0, 23) : "";
+  return description ? `${symbol} ${description}` : symbol;
+}
+
 function renderAdminAutoGenerateSymbolOptions() {
   if (!adminAutoGenerateSymbolsInput) return;
   const previouslySelected = new Set(
     Array.from(adminAutoGenerateSymbolsInput.selectedOptions || []).map((opt) => opt.value)
   );
-  const allSymbols = getAllSymbolPresets();
+  const allSymbols = getAdminSymbolOptionsList();
   adminAutoGenerateSymbolsInput.innerHTML = allSymbols
     .map((symbol) => {
       const selectedAttr = previouslySelected.has(symbol) ? " selected" : "";
-      return `<option value="${symbol}"${selectedAttr}>${escapeHtml(formatSymbolOptionLabel(symbol))}</option>`;
+      return `<option value="${symbol}"${selectedAttr}>${escapeHtml(formatAdminSymbolOptionLabel(symbol))}</option>`;
     })
     .join("");
 }
 
 async function loadAdminAutoGenerate() {
   renderAdminAutoGenerateSymbolOptions();
-  loadSymbolHistory().then(renderAdminAutoGenerateSymbolOptions).catch(() => {});
+  loadAdminSymbolHistory().then(renderAdminAutoGenerateSymbolOptions).catch(() => {});
   if (!adminAutoGenerateList) return;
   if (!adminAutoGenerateList.innerHTML.trim()) {
     adminAutoGenerateList.innerHTML = '<div class="ranking-empty">正在读取自动生成的模型...</div>';

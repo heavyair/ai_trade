@@ -196,6 +196,19 @@ async function initializeDatabase() {
       PRIMARY KEY(symbol, market)
     );
 
+    -- Per-owner (logged-in user, or anonymous browser via cookie) record of which stock
+    -- codes they've queried and when — deliberately separate from the symbols table (which
+    -- is the shared market-data cache, not a private per-visitor history). owner_key is
+    -- either "user:<userId>" or "anon:<cookieId>".
+    CREATE TABLE IF NOT EXISTS symbol_query_history (
+      owner_key TEXT NOT NULL,
+      code TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_key, code)
+    );
+    CREATE INDEX IF NOT EXISTS symbol_query_history_owner_idx ON symbol_query_history(owner_key, last_used_at DESC);
+
     CREATE TABLE IF NOT EXISTS daily_prices (
       symbol TEXT NOT NULL,
       market TEXT NOT NULL,
@@ -1115,6 +1128,56 @@ function setSessionCookie(res, token, expiresAt) {
 
 function clearSessionCookie(res) {
   res.setHeader("Set-Cookie", "ai_trade_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+}
+
+// setHeader("Set-Cookie", ...) replaces any previous Set-Cookie header on this response
+// rather than appending — if a route ever needs to set more than one cookie (e.g. the
+// anon-id cookie below alongside a future session-refresh), a plain setHeader call would
+// silently drop the earlier one. Always go through this helper for any new cookie instead.
+function appendSetCookie(res, cookieString) {
+  const existing = res.getHeader("Set-Cookie");
+  if (!existing) {
+    res.setHeader("Set-Cookie", cookieString);
+  } else if (Array.isArray(existing)) {
+    res.setHeader("Set-Cookie", [...existing, cookieString]);
+  } else {
+    res.setHeader("Set-Cookie", [existing, cookieString]);
+  }
+}
+
+// Anonymous (not-logged-in) visitors still get a private, per-browser query history —
+// identified by a long-lived random id cookie, separate from the session cookie (which only
+// exists once someone logs in).
+function getOrCreateAnonId(req, res) {
+  const cookies = parseCookies(req);
+  const existing = cookies.ai_trade_anon_id;
+  if (existing && /^[a-f0-9]{32}$/.test(existing)) return existing;
+  const anonId = crypto.randomBytes(16).toString("hex");
+  appendSetCookie(res, `ai_trade_anon_id=${anonId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 365 * 2}`);
+  return anonId;
+}
+
+// Resolves which "owner" a symbol-query-history row belongs to for this request: the logged-in
+// user's account if there is one (so their history follows them across devices), otherwise a
+// per-browser anonymous id (so anonymous visitors still get private history, scoped to their
+// own browser). May set a cookie on `res` — must be called before the response is sent.
+async function resolveSymbolHistoryOwnerKey(req, res) {
+  const user = await getCurrentUser(req);
+  if (user) return `user:${userIdForEmail(user.email)}`;
+  return `anon:${getOrCreateAnonId(req, res)}`;
+}
+
+async function recordSymbolQuery(ownerKey, code, name) {
+  const normalizedCode = String(code || "").trim().toUpperCase().slice(0, 16);
+  if (!ownerKey || !normalizedCode) return;
+  const description = String(name || "").trim().slice(0, 23);
+  await dbQuery(`
+    INSERT INTO symbol_query_history (owner_key, code, description, last_used_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (owner_key, code) DO UPDATE SET
+      description = CASE WHEN EXCLUDED.description <> '' THEN EXCLUDED.description ELSE symbol_query_history.description END,
+      last_used_at = NOW()
+  `, [ownerKey, normalizedCode, description]);
 }
 
 async function getCurrentUser(req) {
@@ -3498,39 +3561,71 @@ async function handleApi(req, res, requestUrl) {
     }
 
     const result = await fetchKlines({ code, start, end });
+    // Resolve (and, for a first-time anonymous visitor, cookie-set) the owner BEFORE sending
+    // the response — Set-Cookie has to go out with these response headers, not after.
+    const ownerKey = await resolveSymbolHistoryOwnerKey(req, res);
+    recordSymbolQuery(ownerKey, code, result.name).catch(() => {});
     sendJson(res, 200, result);
   } catch (error) {
     sendJson(res, 400, { error: error.message || "请求失败。" });
   }
 }
 
-// Every /api/klines call already upserts the `symbols` table (persistKlineData, called from
-// fetchKlines) with the resolved name and a fresh updated_at — i.e. "which stock codes has
-// anyone looked up, and when" is already recorded for free every time a user enters a code
-// and loads its history. This endpoint just reads that back, most-recent first, so the
-// history-simulation and admin "AI自动生成" dropdowns can share one live, server-backed list
-// instead of each keeping their own (browser-local, single-device) recent-symbols cache.
+// Private, per-owner history — only the codes THIS visitor (logged-in account, or their
+// anonymous browser cookie if not logged in) has queried, most-recent first. Powers the
+// history-simulation "常用代码" dropdown.
 async function handleSymbolHistoryApi(req, res) {
   try {
     if (req.method !== "GET") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
+    const ownerKey = await resolveSymbolHistoryOwnerKey(req, res);
     const result = await dbQuery(`
-      SELECT symbol, name, updated_at FROM (
-        SELECT symbol, name, updated_at,
-          ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY updated_at DESC) AS rn
-        FROM symbols
+      SELECT code, description, last_used_at
+      FROM symbol_query_history
+      WHERE owner_key = $1
+      ORDER BY last_used_at DESC
+      LIMIT 200
+    `, [ownerKey]);
+    sendJson(res, 200, {
+      symbols: result.rows.map((row) => ({
+        code: row.code,
+        description: row.description || "",
+        updatedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : "",
+      })),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取股票代码历史失败。" });
+  }
+}
+
+// Admin-only, cross-owner view — every code ANY user or anonymous visitor has queried,
+// deduped by code (keeping whichever owner queried it most recently), most-recent first.
+// Admin needs visibility into the full pool of codes people have looked at (to pick a
+// meaningfully diverse batch for "AI自动生成"), unlike the private per-owner view above.
+async function handleAdminSymbolHistoryApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT code, description, last_used_at FROM (
+        SELECT code, description, last_used_at,
+          ROW_NUMBER() OVER (PARTITION BY code ORDER BY last_used_at DESC) AS rn
+        FROM symbol_query_history
       ) t
       WHERE rn = 1
-      ORDER BY updated_at DESC
+      ORDER BY last_used_at DESC
       LIMIT 200
     `);
     sendJson(res, 200, {
       symbols: result.rows.map((row) => ({
-        code: row.symbol,
-        description: String(row.name || "").slice(0, 23),
-        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+        code: row.code,
+        description: row.description || "",
+        updatedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : "",
       })),
     });
   } catch (error) {
@@ -3589,6 +3684,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/symbol-history") {
     handleSymbolHistoryApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/symbol-history") {
+    handleAdminSymbolHistoryApi(req, res);
     return;
   }
 
