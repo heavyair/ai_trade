@@ -102,6 +102,19 @@ async function loadRows(symbol, market) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
+// CAGR-style annualization: a 30% return over 2 years and a 30% return over 6 months aren't
+// comparable as raw numbers, but their annualized rates are — used both for the "best so far"
+// progress headline and for the saved model's display label, so return figures mean the same
+// thing regardless of how much history a given symbol happened to have.
+function annualizedReturnRate(returnRatePercent, tradingDays) {
+  if (!Number.isFinite(returnRatePercent) || !Number.isFinite(tradingDays) || tradingDays <= 0) return null;
+  const years = tradingDays / 252;
+  if (years <= 0) return null;
+  const totalMultiple = 1 + returnRatePercent / 100;
+  if (totalMultiple <= 0) return -100;
+  return (Math.pow(totalMultiple, 1 / years) - 1) * 100;
+}
+
 // The AI can still hand back a syntactically-valid-but-empty skeleton (e.g. every condition
 // it proposed got filtered out by normalizeGeneratedModel for using a disallowed field) —
 // this catches that before wasting a parameter search on a model with nothing to optimize.
@@ -151,6 +164,13 @@ async function main() {
   let dataSkipped = 0;
   let errored = 0;
   let budgetExhausted = false;
+  // Best ANNUALIZED return seen across every attempt actually backtested this run — tracked
+  // independently of whether that attempt beat buy-hold/got saved, so the admin panel can
+  // show "best model tested so far" as a running headline even while most attempts are still
+  // being rejected.
+  let bestAnnualizedReturn = null;
+  let bestAnnualizedSymbol = null;
+  let bestAnnualizedStrategyType = null;
 
   writeProgress({
     status: "running",
@@ -165,6 +185,9 @@ async function main() {
     aiCalls: 0,
     saved: 0,
     rejected: 0,
+    bestAnnualizedReturn: null,
+    bestAnnualizedSymbol: null,
+    bestAnnualizedStrategyType: null,
   });
 
   let symbolIndex = 0;
@@ -242,8 +265,17 @@ async function main() {
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} best=${best.last.returnRate.toFixed(1)}%/dd${best.last.maxDrawdown.toFixed(1)}% vs buyHold=${buyHold.returnRate.toFixed(1)}%/dd${buyHold.maxDrawdown.toFixed(1)}% beatsReturn=${beatsReturn} beatsDrawdown=${beatsDrawdown}`);
+
+        const attemptAnnualized = annualizedReturnRate(best.last.returnRate, rows.length);
+        if (attemptAnnualized !== null && (bestAnnualizedReturn === null || attemptAnnualized > bestAnnualizedReturn)) {
+          bestAnnualizedReturn = attemptAnnualized;
+          bestAnnualizedSymbol = symbolEntry.code;
+          bestAnnualizedStrategyType = model.strategyType;
+        }
+
         writeProgress({
           currentReason: `${model.strategyType}：回测 ${best.last.returnRate.toFixed(1)}%/回撤${best.last.maxDrawdown.toFixed(1)}%，买入持有 ${buyHold.returnRate.toFixed(1)}%/回撤${buyHold.maxDrawdown.toFixed(1)}% → ${beatsReturn && beatsDrawdown ? "跑赢，候选" : "未跑赢"}`,
+          bestAnnualizedReturn, bestAnnualizedSymbol, bestAnnualizedStrategyType,
         });
 
         if (beatsReturn && beatsDrawdown && (!bestQualifying || best.score > bestQualifying.best.score)) {
@@ -254,7 +286,14 @@ async function main() {
       if (bestQualifying) {
         const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
         const name = `ai_auto_${symbolEntry.code}_${dateSlug}`;
-        const label = `AI自动·${symbolEntry.code}·${dateSlug}`;
+        // Label carries the symbol code and the annualized return so it's immediately
+        // scannable in a list of many saved models without opening each one — falls back to
+        // the raw (non-annualized) return if there isn't enough history to annualize from.
+        const savedAnnualized = annualizedReturnRate(bestQualifying.best.last.returnRate, rows.length);
+        const returnLabel = savedAnnualized !== null
+          ? `${savedAnnualized >= 0 ? "+" : ""}${savedAnnualized.toFixed(1)}%年化`
+          : `${bestQualifying.best.last.returnRate.toFixed(1)}%`;
+        const label = `AI自动·${symbolEntry.code}·${returnLabel}·${dateSlug}`;
         const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
           name,
           config: bestQualifying.best.config,
@@ -279,12 +318,16 @@ async function main() {
     }
   }
 
-  console.log(`\ndone. aiCalls=${aiCalls} saved=${saved} rejected(didn't beat buy-hold)=${rejected} skipped(insufficient data)=${dataSkipped} errored=${errored}`);
+  const bestSummary = bestAnnualizedReturn !== null
+    ? `，测试过的最好年化回报率 ${bestAnnualizedReturn.toFixed(1)}%（${bestAnnualizedSymbol}，${bestAnnualizedStrategyType}）`
+    : "";
+  console.log(`\ndone. aiCalls=${aiCalls} saved=${saved} rejected(didn't beat buy-hold)=${rejected} skipped(insufficient data)=${dataSkipped} errored=${errored}${bestSummary}`);
   writeProgress({
     status: "done",
     currentSymbol: null,
     currentStrategyType: null,
-    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 个标的，AI调用${aiCalls}次，保存${saved}个，未跑赢${rejected}个，数据不足跳过${dataSkipped}个，出错${errored}个。`,
+    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 个标的，AI调用${aiCalls}次，保存${saved}个，未跑赢${rejected}个，数据不足跳过${dataSkipped}个，出错${errored}个${bestSummary}。`,
+    bestAnnualizedReturn, bestAnnualizedSymbol, bestAnnualizedStrategyType,
   });
   await pool.end();
 }

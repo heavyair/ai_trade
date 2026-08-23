@@ -2291,6 +2291,15 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.admin-progress-banner-best {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(31, 122, 140, 0.1);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent-dark);
+}
+
 .admin-progress-banner-stats {
   display: flex;
   flex-wrap: wrap;

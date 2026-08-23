@@ -2402,10 +2402,15 @@ function renderAdminAutoGenerateList(payload) {
       const strategyLabel = progress.currentStrategyType ? `策略：${escapeHtml(getStrategyTypeLabel(progress.currentStrategyType))}` : "";
       const detailParts = [symbolLabel, attemptLabel, strategyLabel].filter(Boolean).join(" · ");
       const reasonText = progress.currentReason ? escapeHtml(progress.currentReason) : "";
+      const bestReturn = Number.isFinite(progress.bestAnnualizedReturn) ? progress.bestAnnualizedReturn : null;
+      const bestReturnLabel = bestReturn !== null
+        ? `目前最佳年化回报率 <strong>${bestReturn >= 0 ? "+" : ""}${bestReturn.toFixed(1)}%</strong>（${escapeHtml(progress.bestAnnualizedSymbol || "")}·${escapeHtml(getStrategyTypeLabel(progress.bestAnnualizedStrategyType))}）`
+        : "目前最佳年化回报率：暂无";
       adminAutoGenerateProgressBanner.classList.remove("hidden");
       adminAutoGenerateProgressBanner.innerHTML = `
         <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>AI自动生成进行中</div>
         <div class="admin-progress-banner-detail">${detailParts}${reasonText ? `<br>${reasonText}` : ""}</div>
+        <div class="admin-progress-banner-best">${bestReturnLabel}</div>
         <div class="admin-progress-banner-stats">
           <span>AI 调用 <strong>${progress.aiCalls || 0}</strong>/${progress.maxAttempts || "?"}</span>
           <span>已保存 <strong>${progress.saved || 0}</strong></span>
