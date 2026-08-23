@@ -2147,7 +2147,7 @@ function readAutoGenerateProgress() {
   }
 }
 
-function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy }) {
+function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   // Clear any progress left over from a previous run so the panel doesn't briefly show stale
   // "currently trying..." detail before the freshly-spawned process writes its first update.
   try {
@@ -2158,6 +2158,8 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   const scriptArgs = [`--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`];
   if (limit > 0) scriptArgs.push(`--limit=${limit}`);
   if (symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
+  if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
+  if (ownerEmail) scriptArgs.push(`--ownerEmail=${ownerEmail}`);
   launchBackgroundJob({
     jobType: "autoGenerate",
     scriptPath: path.join(__dirname, "scripts", "universe", "run-auto-generate.js"),
@@ -2421,7 +2423,12 @@ async function handleAdminAutoGenerateRunApi(req, res) {
     const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
     const sessionStartedAt = new Date().toISOString();
 
-    launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy: admin.email });
+    launchAutoGenerateProcess({
+      symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt,
+      triggeredBy: admin.email,
+      ownerUserId: userIdForEmail(admin.email),
+      ownerEmail: admin.email,
+    });
     sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });

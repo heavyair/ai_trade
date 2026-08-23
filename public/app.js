@@ -6722,9 +6722,17 @@ function renderRankingSection(sectionKey, records, options = {}) {
 
   return rankingPeriods
     .map((periodYears) => {
+      // Return rate first; when that ties, prefer the lower drawdown; when both tie, prefer
+      // fewer trades (a model that reaches the same result with less trading is simpler and
+      // has less execution/slippage risk, so it should rank above one that churns more for
+      // the same outcome).
       const periodRecords = records
         .filter((record) => record.periodYears === periodYears)
-        .sort((a, b) => b.returnRate - a.returnRate);
+        .sort((a, b) => {
+          if (b.returnRate !== a.returnRate) return b.returnRate - a.returnRate;
+          if (a.maxDrawdown !== b.maxDrawdown) return a.maxDrawdown - b.maxDrawdown;
+          return a.trades - b.trades;
+        });
       const pageKey = `${sectionKey}_${periodYears}`;
       const pageCount = Math.max(1, Math.ceil(periodRecords.length / rankingPageSize));
       const currentPage = Math.min(Math.max(0, Number(rankingPageByPeriod[pageKey]) || 0), pageCount - 1);

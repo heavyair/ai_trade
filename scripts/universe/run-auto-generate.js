@@ -53,6 +53,11 @@ const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 5));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 150));
 const MIN_ROWS = Math.max(30, getArg("minRows", 250));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
+// Whoever triggered this run (the logged-in admin — only admins can reach the trigger
+// endpoint) owns the resulting presets, same as any other saved preset in this app. Falls
+// back to an ownerless/global preset only if this was invoked by hand without these args.
+const OWNER_USER_ID = getArgString("ownerUserId") || null;
+const OWNER_EMAIL = getArgString("ownerEmail") || "";
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
@@ -256,6 +261,8 @@ async function main() {
           label,
           targetSymbol: symbolEntry.code,
           originalText: bestQualifying.model.reason || "",
+          ownerUserId: OWNER_USER_ID,
+          ownerEmail: OWNER_EMAIL,
         });
         console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType})`);
         saved += 1;

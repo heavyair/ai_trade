@@ -665,12 +665,17 @@ async function assertPresetLabelGloballyUnique(pool, label, presetId) {
 
 // Persists an autonomously-generated, already-backtested-and-vetted config as a real preset
 // row, using a "ai-auto" meta.creator marker so it's distinguishable from hand-created or
-// interactively-AI-generated presets. owner_user_id NULL reuses the existing
-// "ownerless = global/public preset" convention (see server.js's strategy_presets_legacy_name_idx).
-async function saveGeneratedPreset(pool, { name, config, label, targetSymbol, originalText }) {
+// interactively-AI-generated presets. Owned by whoever triggered the generation (ownerUserId/
+// ownerEmail — the logged-in admin, since only admins can trigger this) the same way any
+// other saved preset is owned — see server.js's upsertPreset, whose
+// `ownerUserId ? preset_${ownerUserId}_${key} : preset_legacy_${key}` id convention this
+// mirrors exactly. Falls back to an ownerless/global preset only if no owner was supplied
+// (e.g. someone ran the script by hand outside the admin-triggered flow).
+async function saveGeneratedPreset(pool, { name, config, label, targetSymbol, originalText, ownerUserId, ownerEmail }) {
   const key = normalizePresetKey(name);
   if (!key) throw new Error("预设名称不合法。");
-  const presetId = `preset_legacy_${key}`;
+  const safeOwnerUserId = ownerUserId ? String(ownerUserId).trim() : null;
+  const presetId = safeOwnerUserId ? `preset_${safeOwnerUserId}_${key}` : `preset_legacy_${key}`;
   const today = new Date().toISOString().slice(0, 10);
   const safeLabel = String(label || key).slice(0, 100);
   const meta = {
@@ -681,9 +686,9 @@ async function saveGeneratedPreset(pool, { name, config, label, targetSymbol, or
     updatedAt: today,
     originalText: String(originalText || "").slice(0, 8000),
     modelText: String(originalText || "").slice(0, 8000),
-    ownerEmail: "",
+    ownerEmail: String(ownerEmail || "").slice(0, 160),
     isOwner: false,
-    isPublic: true,
+    isPublic: !safeOwnerUserId,
     isLegacy: false,
     originalModelId: "0",
   };
@@ -695,7 +700,7 @@ async function saveGeneratedPreset(pool, { name, config, label, targetSymbol, or
     INSERT INTO strategy_presets (
       id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, original_model_id, created_at, updated_at
     )
-    VALUES ($1, NULL, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, FALSE, $9, NOW(), NOW())
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, FALSE, $10, NOW(), NOW())
     ON CONFLICT (id) DO UPDATE
       SET label = EXCLUDED.label,
           strategy_type = EXCLUDED.strategy_type,
@@ -705,6 +710,7 @@ async function saveGeneratedPreset(pool, { name, config, label, targetSymbol, or
           updated_at = NOW()
   `, [
     presetId,
+    safeOwnerUserId,
     key,
     safeLabel,
     configPayload.strategyType,
