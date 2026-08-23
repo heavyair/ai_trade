@@ -1762,12 +1762,20 @@ function mapAdminRankingRow(row) {
     ownerEmail: row.owner_email || PUBLIC_OWNER_LABEL,
     symbol: row.symbol,
     symbolName: row.symbol_name,
+    periodYears: row.period_years,
     periodLabel: row.period_label,
     startDate: row.start_date ? new Date(row.start_date).toISOString().slice(0, 10) : "",
     endDate: row.end_date ? new Date(row.end_date).toISOString().slice(0, 10) : "",
     presetName: row.preset_name,
     presetLabel: row.preset_label,
     strategyType: row.strategy_type,
+    // Snapshotted at the time this record was created — lets the admin view "what config
+    // actually produced this result" and replay its trades, even if the live preset (if any
+    // still exists under this name) has since been edited or deleted.
+    presetConfigSnapshot: row.preset_config_snapshot && typeof row.preset_config_snapshot === "object" ? row.preset_config_snapshot : {},
+    presetMetaSnapshot: row.preset_meta_snapshot && typeof row.preset_meta_snapshot === "object" ? row.preset_meta_snapshot : {},
+    presetOriginalTextSnapshot: row.preset_original_text_snapshot || "",
+    presetModelTextSnapshot: row.preset_model_text_snapshot || "",
     returnRate: Number(row.return_rate) || 0,
     annualizedReturn: Number(row.annualized_return) || 0,
     buyHoldReturnRate: Number(row.buy_hold_return_rate) || 0,

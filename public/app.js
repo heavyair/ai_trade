@@ -1438,6 +1438,7 @@ function renderAdminRankingList() {
   const sorted = sortAdminRankingRecords(adminRankingCache);
   const rows = sorted.map((record) => {
     const returnClass = record.returnRate > 0 ? "up" : record.returnRate < 0 ? "down" : "";
+    const hasSnapshot = hasRankingPresetSnapshot(record);
     return `
       <tr>
         <td>${escapeHtml(record.ownerEmail || "public")}</td>
@@ -1451,6 +1452,10 @@ function renderAdminRankingList() {
         <td>${formatPercent(record.excessReturn)}</td>
         <td>${record.trades || 0}</td>
         <td>${escapeHtml(formatAdminDate(record.updatedAt))}</td>
+        <td class="admin-scan-actions">
+          <button type="button" class="admin-ranking-view-params-button" data-ranking-key="${escapeHtml(record.key)}"${hasSnapshot ? "" : " disabled"}>查看参数</button>
+          <button type="button" class="admin-ranking-rerun-button" data-ranking-key="${escapeHtml(record.key)}"${hasSnapshot ? "" : " disabled"}>交易记录</button>
+        </td>
       </tr>
     `;
   }).join("");
@@ -1462,7 +1467,7 @@ function renderAdminRankingList() {
   adminRankingList.innerHTML = `
     <table class="admin-ranking-table">
       <thead>
-        <tr>${headerCells}</tr>
+        <tr>${headerCells}<th></th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -1472,6 +1477,17 @@ function renderAdminRankingList() {
 if (adminRankingList) {
   adminRankingList.addEventListener("click", (event) => {
     const target = event.target;
+    const viewParamsButton = target && target.closest ? target.closest(".admin-ranking-view-params-button") : null;
+    if (viewParamsButton) {
+      const record = adminRankingCache.find((item) => item.key === viewParamsButton.dataset.rankingKey);
+      if (record) openRankingRecordParamSnapshot(record);
+      return;
+    }
+    const rerunButton = target && target.closest ? target.closest(".admin-ranking-rerun-button") : null;
+    if (rerunButton) {
+      openAdminRankingRerun(rerunButton.dataset.rankingKey);
+      return;
+    }
     const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header[data-admin-ranking-sort-key]") : null;
     if (!sortHeader) return;
     const key = sortHeader.dataset.adminRankingSortKey;
@@ -1893,13 +1909,15 @@ function restartAdminRerunPlayback() {
   startAdminRerunPlayback();
 }
 
-async function openAdminRerun(scanId) {
-  const record = adminScanCache.find((item) => item.id === scanId);
-  if (!record || !adminRerunDialog) return;
-
+// Shared by openAdminRerun (后台模型排行's "重新运行") and openAdminRankingRerun (历史测试
+//记录's "交易记录") — both do the same thing (load a symbol's history for a specific date
+// range, re-simulate a given config against it client-side, and play back the resulting
+// trades in adminRerunDialog); they only differ in which record shape they pull
+// symbol/config/label/date-range out of.
+async function runAdminRerunPlayback({ title, symbol, config, strategyType, start, end }) {
   stopAdminRerunPlayback();
   adminRerunState = null;
-  if (adminRerunTitle) adminRerunTitle.textContent = `重新运行：${record.symbolName || record.symbol}（${record.presetLabel}）`;
+  if (adminRerunTitle) adminRerunTitle.textContent = title;
   if (adminRerunSubtitle) adminRerunSubtitle.textContent = "正在加载历史数据...";
   if (adminRerunChartSvg) adminRerunChartSvg.innerHTML = "";
   if (adminRerunTradeList) adminRerunTradeList.innerHTML = "";
@@ -1909,9 +1927,7 @@ async function openAdminRerun(scanId) {
   showDialog(adminRerunDialog);
 
   try {
-    const end = todayText();
-    const start = formatDate(shiftYears(new Date(), -5));
-    const params = new URLSearchParams({ code: record.symbol, start, end });
+    const params = new URLSearchParams({ code: symbol, start, end });
     const response = await fetch(`/api/klines?${params.toString()}`);
     const result = await readJsonResponse(response, "历史行情读取失败。");
     const rows = (result.rows || []).filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close)
@@ -1920,12 +1936,12 @@ async function openAdminRerun(scanId) {
       throw new Error("历史数据不足，无法回测。");
     }
 
-    const config = { initialCash: 2000000, tradeFee: 5, ...(record.bestConfig || {}) };
+    const fullConfig = { initialCash: 2000000, tradeFee: 5, ...config };
     const savedCode = codeInput.value;
-    codeInput.value = record.symbol;
+    codeInput.value = symbol;
     let states;
     try {
-      states = buildBacktestStates(rows, config);
+      states = buildBacktestStates(rows, fullConfig);
     } finally {
       codeInput.value = savedCode;
     }
@@ -1934,7 +1950,7 @@ async function openAdminRerun(scanId) {
     adminRerunState = {
       rows, states, index: 0, playing: false, timerId: null,
       lastRenderedTradeCount: -1, lastRenderedTrades: [],
-      allTrades: finalTrades, strategyType: record.strategyType || config.strategyType || "wave",
+      allTrades: finalTrades, strategyType: strategyType || fullConfig.strategyType || "wave",
     };
     adminRerunChartZoom = 1;
     if (adminRerunSubtitle) {
@@ -1945,6 +1961,40 @@ async function openAdminRerun(scanId) {
   } catch (error) {
     if (adminRerunSubtitle) adminRerunSubtitle.textContent = `加载失败：${error.message || "未知错误"}`;
   }
+}
+
+async function openAdminRerun(scanId) {
+  const record = adminScanCache.find((item) => item.id === scanId);
+  if (!record || !adminRerunDialog) return;
+  await runAdminRerunPlayback({
+    title: `重新运行：${record.symbolName || record.symbol}（${record.presetLabel}）`,
+    symbol: record.symbol,
+    config: record.bestConfig || {},
+    strategyType: record.strategyType,
+    start: formatDate(shiftYears(new Date(), -5)),
+    end: todayText(),
+  });
+}
+
+// Replays the EXACT config snapshot and date range that produced a 历史测试记录 row — not
+// today's 5-year window like openAdminRerun above — so the trades shown genuinely match the
+// return/drawdown numbers already displayed in that row, even if the underlying preset has
+// since been edited.
+async function openAdminRankingRerun(recordKey) {
+  const record = adminRankingCache.find((item) => item.key === recordKey);
+  if (!record || !adminRerunDialog) return;
+  if (!hasRankingPresetSnapshot(record)) {
+    setStatus("这条记录没有保存参数快照，无法查看交易记录。", true);
+    return;
+  }
+  await runAdminRerunPlayback({
+    title: `交易记录：${record.symbolName || record.symbol}（${record.presetLabel}）`,
+    symbol: record.symbol,
+    config: record.presetConfigSnapshot || {},
+    strategyType: record.strategyType,
+    start: record.startDate || formatDate(shiftYears(new Date(), -(record.periodYears || 5))),
+    end: record.endDate || todayText(),
+  });
 }
 
 if (closeAdminRerunButton) {
