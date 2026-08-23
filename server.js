@@ -2419,7 +2419,7 @@ async function handleAdminAutoGenerateRunApi(req, res) {
       ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
       : [];
     const limit = Math.max(0, Math.min(500, Math.round(Number(payload.limit)) || 0));
-    const attemptsPerSymbol = Math.max(1, Math.min(30, Math.round(Number(payload.attemptsPerSymbol)) || 5));
+    const attemptsPerSymbol = Math.max(1, Math.min(90, Math.round(Number(payload.attemptsPerSymbol)) || 5));
     const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
     const sessionStartedAt = new Date().toISOString();
 
