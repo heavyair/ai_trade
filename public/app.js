@@ -1388,13 +1388,55 @@ async function loadAdminPresets({ silent = false } = {}) {
   }
 }
 
-function renderAdminRankingList(records = []) {
+let adminRankingCache = [];
+let adminRankingSortKey = "updatedAt";
+let adminRankingSortDirection = "desc";
+
+const ADMIN_RANKING_COLUMNS = [
+  { key: "ownerEmail", label: "Owner" },
+  { key: "symbolName", label: "标的" },
+  { key: "periodLabel", label: "区间" },
+  { key: "presetLabel", label: "模型" },
+  { key: "strategyType", label: "类型" },
+  { key: "returnRate", label: "回报率" },
+  { key: "annualizedReturn", label: "年化" },
+  { key: "maxDrawdown", label: "最大回撤" },
+  { key: "excessReturn", label: "超额收益" },
+  { key: "trades", label: "交易次数" },
+  { key: "updatedAt", label: "更新时间" },
+];
+
+function getAdminRankingSortValue(record, key) {
+  if (key === "ownerEmail") return record.ownerEmail || "public";
+  if (key === "symbolName") return record.symbolName || record.symbol || "";
+  if (key === "periodLabel") return record.periodLabel || "";
+  if (key === "presetLabel") return record.presetLabel || record.presetName || "";
+  if (key === "strategyType") return getStrategyTypeLabel(record.strategyType || "wave");
+  if (key === "updatedAt") return record.updatedAt || "";
+  return Number(record[key]) || 0;
+}
+
+function sortAdminRankingRecords(records) {
+  const key = adminRankingSortKey;
+  const dir = adminRankingSortDirection === "asc" ? 1 : -1;
+  return [...records].sort((a, b) => {
+    const va = getAdminRankingSortValue(a, key);
+    const vb = getAdminRankingSortValue(b, key);
+    if (typeof va === "string" || typeof vb === "string") {
+      return dir * String(va).localeCompare(String(vb), "zh-CN");
+    }
+    return dir * (va - vb);
+  });
+}
+
+function renderAdminRankingList() {
   if (!adminRankingList) return;
-  if (!records.length) {
+  if (!adminRankingCache.length) {
     adminRankingList.innerHTML = '<div class="ranking-empty">还没有历史测试记录。</div>';
     return;
   }
-  const rows = records.map((record) => {
+  const sorted = sortAdminRankingRecords(adminRankingCache);
+  const rows = sorted.map((record) => {
     const returnClass = record.returnRate > 0 ? "up" : record.returnRate < 0 ? "down" : "";
     return `
       <tr>
@@ -1412,26 +1454,35 @@ function renderAdminRankingList(records = []) {
       </tr>
     `;
   }).join("");
+  const headerCells = ADMIN_RANKING_COLUMNS.map((column) => {
+    const active = adminRankingSortKey === column.key;
+    const arrow = active ? (adminRankingSortDirection === "asc" ? " ▲" : " ▼") : "";
+    return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-admin-ranking-sort-key="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
+  }).join("");
   adminRankingList.innerHTML = `
     <table class="admin-ranking-table">
       <thead>
-        <tr>
-          <th>Owner</th>
-          <th>标的</th>
-          <th>区间</th>
-          <th>模型</th>
-          <th>类型</th>
-          <th>回报率</th>
-          <th>年化</th>
-          <th>最大回撤</th>
-          <th>超额收益</th>
-          <th>交易次数</th>
-          <th>更新时间</th>
-        </tr>
+        <tr>${headerCells}</tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+if (adminRankingList) {
+  adminRankingList.addEventListener("click", (event) => {
+    const target = event.target;
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header[data-admin-ranking-sort-key]") : null;
+    if (!sortHeader) return;
+    const key = sortHeader.dataset.adminRankingSortKey;
+    if (adminRankingSortKey === key) {
+      adminRankingSortDirection = adminRankingSortDirection === "asc" ? "desc" : "asc";
+    } else {
+      adminRankingSortKey = key;
+      adminRankingSortDirection = "desc";
+    }
+    renderAdminRankingList();
+  });
 }
 
 async function loadAdminRankings() {
@@ -1440,7 +1491,8 @@ async function loadAdminRankings() {
   try {
     const response = await fetch("/api/admin/rankings", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取历史测试记录失败。");
-    renderAdminRankingList(Array.isArray(payload.records) ? payload.records : []);
+    adminRankingCache = Array.isArray(payload.records) ? payload.records : [];
+    renderAdminRankingList();
   } catch (error) {
     adminRankingList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
