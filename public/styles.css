@@ -1149,6 +1149,75 @@ button:disabled {
   accent-color: var(--accent);
 }
 
+.admin-symbol-picker {
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.admin-symbol-picker-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5ebf3;
+  background: #f8fafc;
+}
+
+.admin-symbol-picker-toolbar input[type="text"] {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.admin-symbol-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 6px;
+  padding: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.admin-symbol-picker-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d4e8ee;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.admin-symbol-picker-item input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.admin-symbol-picker-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-symbol-picker-item.selected {
+  border-color: var(--accent);
+  background: #eef8fa;
+}
+
+.admin-symbol-picker-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .model-preset-card {
   display: grid;
   grid-template-columns: minmax(220px, 1.45fr) 84px minmax(160px, 1fr) 78px 92px 70px;

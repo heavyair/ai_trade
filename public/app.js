@@ -122,7 +122,11 @@ const adminValidationApplyThresholdButton = document.querySelector("#adminValida
 const adminValidationList = document.querySelector("#adminValidationList");
 const adminAutoGenerateTabButton = document.querySelector("#adminAutoGenerateTabButton");
 const adminAutoGeneratePanel = document.querySelector("#adminAutoGeneratePanel");
-const adminAutoGenerateSymbolsInput = document.querySelector("#adminAutoGenerateSymbols");
+const adminAutoGenerateSymbolGrid = document.querySelector("#adminAutoGenerateSymbolGrid");
+const adminAutoGenerateSymbolSearchInput = document.querySelector("#adminAutoGenerateSymbolSearch");
+const adminAutoGenerateSymbolSelectAllButton = document.querySelector("#adminAutoGenerateSymbolSelectAllButton");
+const adminAutoGenerateSymbolClearButton = document.querySelector("#adminAutoGenerateSymbolClearButton");
+const adminAutoGenerateSymbolCount = document.querySelector("#adminAutoGenerateSymbolCount");
 const adminAutoGenerateLimitInput = document.querySelector("#adminAutoGenerateLimit");
 const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAutoGenerateAttemptsPerSymbol");
 const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
@@ -2601,18 +2605,74 @@ function formatAdminSymbolOptionLabel(symbol) {
   return description ? `${symbol} ${description}` : symbol;
 }
 
-function renderAdminAutoGenerateSymbolOptions() {
-  if (!adminAutoGenerateSymbolsInput) return;
-  const previouslySelected = new Set(
-    Array.from(adminAutoGenerateSymbolsInput.selectedOptions || []).map((opt) => opt.value)
-  );
+// Selection state lives here (a plain Set) instead of native <select multiple> option state —
+// the wider checkbox-grid picker needs selection to survive re-renders triggered by the search
+// filter (an option that's filtered out of view must not lose its checked state).
+let adminAutoGenerateSelectedSymbols = new Set();
+let adminAutoGenerateSymbolFilterText = "";
+
+function updateAdminAutoGenerateSymbolCount() {
+  if (adminAutoGenerateSymbolCount) {
+    adminAutoGenerateSymbolCount.textContent = adminAutoGenerateSelectedSymbols.size > 0
+      ? `已选择 ${adminAutoGenerateSelectedSymbols.size} 个`
+      : "未选择（将使用全市场清单）";
+  }
+}
+
+function getFilteredAdminSymbolOptionsList() {
   const allSymbols = getAdminSymbolOptionsList();
-  adminAutoGenerateSymbolsInput.innerHTML = allSymbols
-    .map((symbol) => {
-      const selectedAttr = previouslySelected.has(symbol) ? " selected" : "";
-      return `<option value="${symbol}"${selectedAttr}>${escapeHtml(formatAdminSymbolOptionLabel(symbol))}</option>`;
-    })
-    .join("");
+  const filter = adminAutoGenerateSymbolFilterText.trim().toLowerCase();
+  if (!filter) return allSymbols;
+  return allSymbols.filter((symbol) => formatAdminSymbolOptionLabel(symbol).toLowerCase().includes(filter));
+}
+
+function renderAdminAutoGenerateSymbolOptions() {
+  if (!adminAutoGenerateSymbolGrid) return;
+  const visibleSymbols = getFilteredAdminSymbolOptionsList();
+  adminAutoGenerateSymbolGrid.innerHTML = visibleSymbols.length === 0
+    ? '<div class="admin-symbol-picker-empty">没有匹配的股票代码。</div>'
+    : visibleSymbols.map((symbol) => {
+      const checked = adminAutoGenerateSelectedSymbols.has(symbol);
+      return `
+        <label class="admin-symbol-picker-item${checked ? " selected" : ""}">
+          <input type="checkbox" value="${escapeHtml(symbol)}"${checked ? " checked" : ""}>
+          <span>${escapeHtml(formatAdminSymbolOptionLabel(symbol))}</span>
+        </label>
+      `;
+    }).join("");
+  updateAdminAutoGenerateSymbolCount();
+}
+
+if (adminAutoGenerateSymbolGrid) {
+  adminAutoGenerateSymbolGrid.addEventListener("change", (event) => {
+    const checkbox = event.target.closest('input[type="checkbox"]');
+    if (!checkbox) return;
+    if (checkbox.checked) {
+      adminAutoGenerateSelectedSymbols.add(checkbox.value);
+    } else {
+      adminAutoGenerateSelectedSymbols.delete(checkbox.value);
+    }
+    checkbox.closest(".admin-symbol-picker-item").classList.toggle("selected", checkbox.checked);
+    updateAdminAutoGenerateSymbolCount();
+  });
+}
+if (adminAutoGenerateSymbolSearchInput) {
+  adminAutoGenerateSymbolSearchInput.addEventListener("input", () => {
+    adminAutoGenerateSymbolFilterText = adminAutoGenerateSymbolSearchInput.value;
+    renderAdminAutoGenerateSymbolOptions();
+  });
+}
+if (adminAutoGenerateSymbolSelectAllButton) {
+  adminAutoGenerateSymbolSelectAllButton.addEventListener("click", () => {
+    getFilteredAdminSymbolOptionsList().forEach((symbol) => adminAutoGenerateSelectedSymbols.add(symbol));
+    renderAdminAutoGenerateSymbolOptions();
+  });
+}
+if (adminAutoGenerateSymbolClearButton) {
+  adminAutoGenerateSymbolClearButton.addEventListener("click", () => {
+    adminAutoGenerateSelectedSymbols.clear();
+    renderAdminAutoGenerateSymbolOptions();
+  });
 }
 
 async function loadAdminAutoGenerate() {
@@ -2632,9 +2692,7 @@ async function loadAdminAutoGenerate() {
 }
 
 async function triggerAdminAutoGenerateRun() {
-  const symbols = adminAutoGenerateSymbolsInput
-    ? Array.from(adminAutoGenerateSymbolsInput.selectedOptions || []).map((opt) => opt.value)
-    : [];
+  const symbols = Array.from(adminAutoGenerateSelectedSymbols);
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
