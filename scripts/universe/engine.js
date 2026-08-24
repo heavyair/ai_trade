@@ -507,6 +507,27 @@ function getDaysSinceNewHighSeries(rows, lookbackDays) {
   return values;
 }
 
+// Unlike drawdownFromHigh (a fixed-width window recomputed fresh every day, so its
+// reference high silently "forgets" a breakout once that candle slides out of the
+// window), this anchors on a specific breakout event and holds that anchor indefinitely:
+// whenever today's high exceeds the preceding lookbackDays-day high, the anchor freezes
+// at that PRE-breakout high price; the anchor only ever moves again on a fresh, higher
+// breakout. The result stays <=0 for as long as price hasn't closed back below the level
+// it broke out from, even long after that breakout candle would have exited a rolling
+// window — this is what "创新高后有没有跌破那次突破的高点" actually needs.
+function getDrawdownFromBreakoutHighSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  const previousHighIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, true);
+  let anchor = null;
+  rows.forEach((row, index) => {
+    if (previousHighIndices[index] === null) return;
+    const previousHigh = rows[previousHighIndices[index]];
+    if (row.high > previousHigh.high) anchor = previousHigh.high;
+    values[index] = anchor > 0 ? ((anchor - row.close) / anchor) * 100 : null;
+  });
+  return values;
+}
+
 
 function getDaysSinceNewLowSeries(rows, lookbackDays) {
   const values = new Array(rows.length).fill(null);
@@ -1732,6 +1753,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, waveThreshold || 5);
+    else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
@@ -1838,6 +1860,7 @@ function getBlockIndicatorLabel(indicator) {
   const labels = {
     drawdownFromHigh: "距N日滚动高点回撤%",
     drawdownFromWaveHigh: "距波浪确认高点回撤%",
+    drawdownFromBreakoutHigh: "距最近一次突破高点回撤%",
     riseFromLow: "距低点反弹%",
     maValue: "均线偏离%",
     maLevel: "均线数值",
@@ -1853,6 +1876,7 @@ function getBlockIndicatorLabel(indicator) {
     candleBody: "K线阳阴%",
     positionRatio: "当前仓位%",
     holdingDays: "持仓天数",
+    formula: "自定义公式",
   };
   return labels[indicator] || indicator;
 }

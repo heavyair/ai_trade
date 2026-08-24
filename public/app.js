@@ -626,9 +626,9 @@ const defaultStagnationReversalRule = {
 };
 
 const blockRuleIndicators = [
-  "drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maLevel", "maSlope", "rsi", "atrPercent",
-  "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount", "maCompare", "candleBody",
-  "positionRatio", "holdingDays",
+  "drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "maValue", "maLevel",
+  "maSlope", "rsi", "atrPercent", "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
+  "maCompare", "candleBody", "positionRatio", "holdingDays", "formula",
 ];
 // risingStreak/fallingStreak are special: instead of comparing the indicator's value
 // against `value` as a threshold, they check whether the indicator's own series has moved
@@ -5004,6 +5004,27 @@ function getDaysSinceNewHighSeries(rows, lookbackDays) {
   return values;
 }
 
+// Unlike drawdownFromHigh (a fixed-width window recomputed fresh every day, so its
+// reference high silently "forgets" a breakout once that candle slides out of the
+// window), this anchors on a specific breakout event and holds that anchor indefinitely:
+// whenever today's high exceeds the preceding lookbackDays-day high, the anchor freezes
+// at that PRE-breakout high price; the anchor only ever moves again on a fresh, higher
+// breakout. The result stays <=0 for as long as price hasn't closed back below the level
+// it broke out from, even long after that breakout candle would have exited a rolling
+// window — this is what "创新高后有没有跌破那次突破的高点" actually needs.
+function getDrawdownFromBreakoutHighSeries(rows, lookbackDays) {
+  const values = new Array(rows.length).fill(null);
+  const previousHighIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, true);
+  let anchor = null;
+  rows.forEach((row, index) => {
+    if (previousHighIndices[index] === null) return;
+    const previousHigh = rows[previousHighIndices[index]];
+    if (row.high > previousHigh.high) anchor = previousHigh.high;
+    values[index] = anchor > 0 ? ((anchor - row.close) / anchor) * 100 : null;
+  });
+  return values;
+}
+
 function getDaysSinceNewLowSeries(rows, lookbackDays) {
   const values = new Array(rows.length).fill(null);
   const previousLowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, true);
@@ -6397,6 +6418,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, waveThreshold || 5);
+    else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
@@ -6497,6 +6519,7 @@ function getBlockIndicatorLabel(indicator) {
   const labels = {
     drawdownFromHigh: "距N日滚动高点回撤%",
     drawdownFromWaveHigh: "距波浪确认高点回撤%",
+    drawdownFromBreakoutHigh: "距最近一次突破高点回撤%",
     riseFromLow: "距低点反弹%",
     maValue: "均线偏离%",
     maLevel: "均线数值",
@@ -6512,6 +6535,7 @@ function getBlockIndicatorLabel(indicator) {
     candleBody: "K线阳阴%",
     positionRatio: "当前仓位%",
     holdingDays: "持仓天数",
+    formula: "自定义公式",
   };
   return labels[indicator] || indicator;
 }
@@ -7470,13 +7494,15 @@ const RULE_FIELD_LABELS = {
 
 function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex) {
   const showSlopeWindow = condition.indicator === "maSlope";
+  const showFormula = condition.indicator === "formula";
   const numOrEmpty = (value) => (value === null || value === undefined ? "" : value);
   return `
     <div class="block-rule-condition-row" data-condition-index="${conditionIndex}">
       <select data-role="indicator">
         ${blockRuleIndicators.map((ind) => `<option value="${ind}" ${condition.indicator === ind ? "selected" : ""}>${escapeHtml(getBlockIndicatorLabel(ind))}</option>`).join("")}
       </select>
-      <input type="number" data-role="lookbackDays" value="${numOrEmpty(condition.lookbackDays)}" placeholder="回看天数" min="1" step="1">
+      <input type="text" data-role="formula" value="${escapeHtml(condition.formula || "")}" placeholder="公式，如 peTtm 或 close/sma(close,20)" ${showFormula ? "" : "disabled"}>
+      <input type="number" data-role="lookbackDays" value="${numOrEmpty(condition.lookbackDays)}" placeholder="回看天数" min="1" step="1" ${showFormula ? "disabled" : ""}>
       <select data-role="comparator">
         ${blockRuleComparators.map((c) => `<option value="${escapeHtml(c)}" ${condition.comparator === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
       </select>
@@ -7554,6 +7580,7 @@ function collectBlockRuleFormState() {
         const indicator = rowEl.querySelector('[data-role="indicator"]').value;
         const comparator = rowEl.querySelector('[data-role="comparator"]').value;
         const value = Number(rowEl.querySelector('[data-role="value"]').value);
+        const formulaRaw = rowEl.querySelector('[data-role="formula"]').value;
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
@@ -7561,7 +7588,8 @@ function collectBlockRuleFormState() {
           indicator,
           comparator,
           value: Number.isFinite(value) ? value : 0,
-          lookbackDays: lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
+          formula: indicator === "formula" ? formulaRaw.trim() : null,
+          lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
         };
@@ -7821,6 +7849,11 @@ if (blockRuleFormEditor) {
       const row = target.closest(".block-rule-condition-row");
       const slopeInput = row && row.querySelector('[data-role="slopeWindowDays"]');
       if (slopeInput) slopeInput.disabled = target.value !== "maSlope";
+      const isFormula = target.value === "formula";
+      const formulaInput = row && row.querySelector('[data-role="formula"]');
+      if (formulaInput) formulaInput.disabled = !isFormula;
+      const lookbackInput = row && row.querySelector('[data-role="lookbackDays"]');
+      if (lookbackInput) lookbackInput.disabled = isFormula;
     }
     if (target && target.dataset && target.dataset.role === "action-type") {
       const actionRow = target.closest(".block-rule-action-row");
@@ -8377,7 +8410,7 @@ const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "su
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
 const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
-const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
+const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
 const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 
 // Shared by discoverBlockRuleParameters and discoverScoreRuleParameters — walking a
