@@ -342,10 +342,12 @@ async function initializeDatabase() {
       scanned_symbols INTEGER NOT NULL DEFAULT 0,
       match_count INTEGER NOT NULL DEFAULT 0,
       matches JSONB NOT NULL DEFAULT '[]'::jsonb,
+      preset_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
       error TEXT NOT NULL DEFAULT '',
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ
     );
+    ALTER TABLE stock_screen_runs ADD COLUMN IF NOT EXISTS preset_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
     CREATE INDEX IF NOT EXISTS stock_screen_runs_owner_idx ON stock_screen_runs(owner_user_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS stock_screen_runs_started_idx ON stock_screen_runs(started_at DESC);
   `);
@@ -2490,6 +2492,7 @@ function mapStockScreenRunRow(row) {
     scannedSymbols: row.scanned_symbols,
     matchCount: row.match_count,
     matches: Array.isArray(row.matches) ? row.matches : [],
+    presetConfigSnapshot: row.preset_config_snapshot && typeof row.preset_config_snapshot === "object" ? row.preset_config_snapshot : {},
     error: row.error || "",
     startedAt: row.started_at ? new Date(row.started_at).toISOString() : "",
     completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : "",

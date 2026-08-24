@@ -54,6 +54,10 @@ async function loadPreset(presetId) {
     id: row.id,
     label: row.label,
     strategyType: row.strategy_type,
+    // rawConfig is stored as-is into stock_screen_runs.preset_config_snapshot so the client's
+    // "查看模拟" replay uses the EXACT config that produced each match, even if the preset is
+    // later edited — same reasoning as ranking_records.preset_config_snapshot elsewhere.
+    rawConfig: row.config && typeof row.config === "object" ? row.config : {},
     ...row.config,
   };
 }
@@ -94,7 +98,8 @@ async function syncRun(patch) {
       matches = COALESCE($5::jsonb, matches),
       status = COALESCE($6, status),
       error = COALESCE($7, error),
-      completed_at = COALESCE($8, completed_at)
+      completed_at = COALESCE($8, completed_at),
+      preset_config_snapshot = COALESCE($9::jsonb, preset_config_snapshot)
     WHERE id = $1
   `, [
     RUN_ID,
@@ -105,6 +110,7 @@ async function syncRun(patch) {
     orNull(patch.status),
     orNull(patch.error),
     orNull(patch.completedAt),
+    patch.presetConfigSnapshot ? JSON.stringify(patch.presetConfigSnapshot) : null,
   ]);
 }
 
@@ -121,7 +127,7 @@ async function main() {
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
   console.log(`[stock-screen] runId=${RUN_ID} preset=${preset.label} (${preset.strategyType}) market=${MARKET} symbols=${symbols.length}`);
 
-  await syncRun({ totalSymbols: symbols.length, scannedSymbols: 0, matchCount: 0, matches: [] });
+  await syncRun({ totalSymbols: symbols.length, scannedSymbols: 0, matchCount: 0, matches: [], presetConfigSnapshot: preset.rawConfig });
 
   const baseConfig = engine.buildConfigFromPresetObject(preset, { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: preset.strategyType });
   const matches = [];

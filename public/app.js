@@ -2689,11 +2689,11 @@ function renderScreenPresetOptions() {
   }
 }
 
-function renderScreenMatchesTable(matches) {
+function renderScreenMatchesTable(matches, runId) {
   if (!Array.isArray(matches) || matches.length === 0) {
     return '<div class="ranking-empty">暂无符合条件的股票。</div>';
   }
-  const rows = matches.map((m) => `
+  const rows = matches.map((m, index) => `
     <tr>
       <td>${escapeHtml(m.code || "")}</td>
       <td>${escapeHtml(m.name || "")}</td>
@@ -2702,12 +2702,13 @@ function renderScreenMatchesTable(matches) {
       <td>${Number.isFinite(m.positionRatio) ? `${m.positionRatio.toFixed(1)}%` : ""}</td>
       <td>${escapeHtml(m.reason || "")}</td>
       <td>${escapeHtml(m.date || "")}</td>
+      <td><button type="button" class="ghost-button screen-match-rerun-button" data-screen-run-id="${escapeHtml(runId || "")}" data-screen-match-index="${index}">查看模拟</button></td>
     </tr>
   `).join("");
   return `
     <table class="admin-ranking-table">
       <thead>
-        <tr><th>代码</th><th>名称</th><th>方向</th><th>价格</th><th>目标仓位</th><th>触发原因</th><th>日期</th></tr>
+        <tr><th>代码</th><th>名称</th><th>方向</th><th>价格</th><th>目标仓位</th><th>触发原因</th><th>日期</th><th></th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -2734,9 +2735,55 @@ function renderScreenRunEntry(run, options = {}) {
   return `
     <details class="admin-scan-details">
       <summary>${summary}</summary>
-      ${renderScreenMatchesTable(run.matches)}
+      ${renderScreenMatchesTable(run.matches, run.id)}
     </details>
   `;
+}
+
+// Opens the shared 重新运行 playback dialog (adminRerunDialog / runAdminRerunPlayback) loaded
+// with this match's exact model config, using LIVE data (runAdminRerunPlayback fetches via
+// /api/klines, which always live-fetches from third parties, same as regular 历史模拟) rather
+// than the scan's own cached local data — then jumps straight to today and highlights the
+// trade that made this stock show up as a match, instead of animating from day one.
+async function openScreenMatchRerun(run, match) {
+  if (!adminRerunDialog || !run || !match) return;
+  const config = run.presetConfigSnapshot;
+  if (!config || Object.keys(config).length === 0) {
+    setStatus("这条扫描记录没有保存模型参数快照，无法查看模拟。", true);
+    return;
+  }
+  await runAdminRerunPlayback({
+    title: `选股结果：${match.name || match.code}（${run.presetLabel || ""}）`,
+    symbol: match.code,
+    config,
+    strategyType: config.strategyType,
+    start: formatDate(shiftYears(new Date(), -2)),
+    end: todayText(),
+  });
+  skipAdminRerunToEnd();
+  if (adminRerunState && adminRerunState.allTrades && adminRerunState.allTrades.length > 0) {
+    openAdminRerunTradeDetail(adminRerunState.allTrades[adminRerunState.allTrades.length - 1]);
+  }
+}
+
+let screenRunsCache = [];
+let adminStockScreenRunsCache = [];
+
+function handleScreenMatchRerunClick(event, runsCache) {
+  const button = event.target.closest(".screen-match-rerun-button");
+  if (!button) return;
+  const run = runsCache.find((item) => item.id === button.dataset.screenRunId);
+  if (!run) return;
+  const match = (run.matches || [])[Number(button.dataset.screenMatchIndex)];
+  if (!match) return;
+  openScreenMatchRerun(run, match);
+}
+
+if (screenRunList) {
+  screenRunList.addEventListener("click", (event) => handleScreenMatchRerunClick(event, screenRunsCache));
+}
+if (adminStockScreenList) {
+  adminStockScreenList.addEventListener("click", (event) => handleScreenMatchRerunClick(event, adminStockScreenRunsCache));
 }
 
 let screenPollTimer = null;
@@ -2762,6 +2809,7 @@ function stopScreenPoll() {
 
 function renderScreenStatus(payload) {
   const runs = Array.isArray(payload.runs) ? payload.runs : [];
+  screenRunsCache = runs;
   const runningRun = runs.find((run) => run.status === "running");
 
   if (screenStartButton) screenStartButton.disabled = Boolean(runningRun) || Boolean(payload.systemBusy);
@@ -2876,6 +2924,7 @@ async function loadAdminStockScreen() {
     const response = await fetch("/api/admin/stock-screen", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取选股记录失败。");
     const runs = Array.isArray(payload.runs) ? payload.runs : [];
+    adminStockScreenRunsCache = runs;
     adminStockScreenList.innerHTML = runs.length === 0
       ? '<div class="ranking-empty">还没有选股扫描记录。</div>'
       : runs.map((run) => renderScreenRunEntry(run, { showOwner: true })).join("");
