@@ -850,6 +850,7 @@ function sanitizeStoredPreset(name, preset) {
     ? preset.strategyType
     : "wave";
   return {
+    id: preset.id ? String(preset.id).slice(0, 200) : undefined,
     label: String(preset.label || name).slice(0, 80),
     strategyType,
     waveThreshold: Math.max(0.1, Number(preset.waveThreshold || 5)),
@@ -1047,6 +1048,7 @@ async function initializeServerCustomPresets() {
     const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
     const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
     renderStrategyPresetOptions(selectedType, selectedPreset);
+    renderScreenPresetOptions();
   } catch (error) {
     setStatus(`服务器预设读取失败：${error.message}`, true);
   }
