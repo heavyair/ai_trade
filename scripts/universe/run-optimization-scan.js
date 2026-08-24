@@ -1,8 +1,16 @@
-// Batch parameter-optimization scan: for every symbol in universe/symbols.json and every
-// currently-active (non-hidden) saved strategy preset, re-optimizes that preset's own
-// parameters against that symbol's 5-year history (using engine.js, the same engine the
-// live app uses) and records the best-found config, ranked by return rate / max drawdown,
-// into the optimization_scan_results table.
+// Batch parameter-optimization scan: for every symbol in the universe and every currently-
+// active (non-hidden) saved strategy preset, re-optimizes that preset's own parameters — but
+// with a train/test split instead of optimizing and evaluating on the same data:
+//
+//   - TRAIN window: [trainYearsAgo years ago, testYearsAgo years ago) — parameter search runs
+//     here, picking the best-scoring config.
+//   - TEST window: [testYearsAgo years ago, today] — that SAME (unchanged) config is then run
+//     once more against this out-of-sample data the search never saw, purely to measure it.
+//
+// Both the train-period and test-period annualized returns get saved, along with their
+// absolute difference (annualized_diff) — the smaller that difference, the more consistent
+// the model's real-world behavior was with what the parameter search "promised", which is
+// what the admin list defaults to sorting by (ascending) instead of raw return.
 //
 // This is intentionally decoupled from server.js/app.js: it reads directly from the
 // symbols/daily_prices/strategy_presets tables that already exist for the live app, and
@@ -10,9 +18,12 @@
 //
 // Long-running (candidate count x symbol count x preset count). Meant to run detached in
 // the background and be safely re-run/resumed: each (symbol, preset) result is upserted,
-// and already-scanned pairs are skipped unless --rescan is passed.
+// and already-scanned pairs are skipped unless --rescan is passed — a pair whose existing
+// row predates the train/test methodology (no train_start_date) is always treated as
+// unscanned regardless, so normal runs incrementally upgrade old rows over time.
 //
-// Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minRows=250] [--rescan] [--presetIds=id1,id2]
+// Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minTrainRows=200]
+//   [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1] [--rescan] [--presetIds=id1,id2]
 //   --presetIds restricts the scan to specific (already-active) preset IDs, e.g. for an
 //   admin-triggered "rescan just this model" run instead of the full active set.
 
@@ -21,6 +32,9 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
 const { loadExpandedUniverse } = require("../shared/universe-loader.js");
+const { annualizedReturnRate } = require("../shared/annualize.js");
+const { splitTrainTestRows } = require("../shared/train-test-window.js");
+const { ensureResultsTable, saveOptimizationResult, needsScan } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -35,7 +49,13 @@ const getArgString = (name) => {
   return found ? found.split("=").slice(1).join("=") : "";
 };
 const CANDIDATES_PER_PAIR = Math.max(1, getArg("candidates", 300));
-const MIN_ROWS = Math.max(30, getArg("minRows", 250));
+const MIN_TRAIN_ROWS = Math.max(30, getArg("minTrainRows", 200));
+const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
+// Whole years only — shiftYears (scripts/shared/train-test-window.js) uses Date.setFullYear,
+// which truncates a fractional argument rather than applying it proportionally, so a
+// fractional value here wouldn't do what it looks like it does.
+const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
+const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
 const SYMBOL_LIMIT = getArg("limit", 0);
 const RESCAN = args.includes("--rescan");
 const PRESET_IDS_FILTER = getArgString("presetIds").split(",").map((s) => s.trim()).filter(Boolean);
@@ -47,33 +67,9 @@ const SESSION_SINCE = getArgString("sessionSince") || null;
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
-async function ensureResultsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS optimization_scan_results (
-      id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      market TEXT NOT NULL,
-      symbol_name TEXT NOT NULL DEFAULT '',
-      preset_id TEXT NOT NULL,
-      preset_label TEXT NOT NULL,
-      strategy_type TEXT NOT NULL,
-      rows_tested INTEGER NOT NULL DEFAULT 0,
-      baseline_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
-      baseline_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
-      best_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
-      best_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
-      best_score DOUBLE PRECISION NOT NULL DEFAULT 0,
-      best_trades INTEGER NOT NULL DEFAULT 0,
-      tested_candidates INTEGER NOT NULL DEFAULT 0,
-      best_config JSONB NOT NULL DEFAULT '{}'::jsonb,
-      buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
-      buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0,
-      scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(symbol, market, preset_id)
-    );
-    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS buy_hold_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
-    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS buy_hold_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0;
-  `);
+if (TRAIN_YEARS_AGO <= TEST_YEARS_AGO) {
+  console.error(`usage error: --trainYearsAgo (${TRAIN_YEARS_AGO}) must be greater than --testYearsAgo (${TEST_YEARS_AGO})`);
+  process.exit(1);
 }
 
 // Source of truth for "which presets does the batch scan test" is
@@ -121,69 +117,17 @@ async function loadRows(symbol, market) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
-async function alreadyScanned(symbol, market, presetId) {
-  if (!RESCAN) {
-    const result = await pool.query(
-      "SELECT 1 FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3",
-      [symbol, market, presetId]
-    );
-    return result.rowCount > 0;
-  }
-  if (!SESSION_SINCE) return false;
-  // Resuming: only skip a pair if it was already redone since THIS rescan session
-  // started, not merely because a (possibly stale/pre-fix) row exists from earlier.
-  const result = await pool.query(
-    "SELECT 1 FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3 AND scanned_at >= $4",
-    [symbol, market, presetId, SESSION_SINCE]
-  );
-  return result.rowCount > 0;
-}
-
-async function saveResult(row) {
-  const id = `scan_${row.symbol}_${row.market}_${row.presetId}`.replace(/[^a-zA-Z0-9_]/g, "_");
-  await pool.query(`
-    INSERT INTO optimization_scan_results (
-      id, symbol, market, symbol_name, preset_id, preset_label, strategy_type, rows_tested,
-      baseline_return_rate, baseline_max_drawdown, best_return_rate, best_max_drawdown,
-      best_score, best_trades, tested_candidates, best_config,
-      buy_hold_return_rate, buy_hold_max_drawdown, scanned_at
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,NOW())
-    ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
-      symbol_name = EXCLUDED.symbol_name,
-      preset_label = EXCLUDED.preset_label,
-      rows_tested = EXCLUDED.rows_tested,
-      baseline_return_rate = EXCLUDED.baseline_return_rate,
-      baseline_max_drawdown = EXCLUDED.baseline_max_drawdown,
-      best_return_rate = EXCLUDED.best_return_rate,
-      best_max_drawdown = EXCLUDED.best_max_drawdown,
-      best_score = EXCLUDED.best_score,
-      best_trades = EXCLUDED.best_trades,
-      tested_candidates = EXCLUDED.tested_candidates,
-      best_config = EXCLUDED.best_config,
-      buy_hold_return_rate = EXCLUDED.buy_hold_return_rate,
-      buy_hold_max_drawdown = EXCLUDED.buy_hold_max_drawdown,
-      scanned_at = NOW()
-  `, [
-    id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
-    row.baselineReturnRate, row.baselineMaxDrawdown, row.bestReturnRate, row.bestMaxDrawdown,
-    row.bestScore, row.bestTrades, row.testedCandidates, JSON.stringify(row.bestConfig),
-    row.buyHoldReturnRate, row.buyHoldMaxDrawdown,
-  ]);
-}
-
 async function main() {
-  await ensureResultsTable();
+  await ensureResultsTable(pool);
 
   const universe = await loadExpandedUniverse(pool);
   const symbols = SYMBOL_LIMIT > 0 ? universe.slice(0, SYMBOL_LIMIT) : universe;
   const presetIdFilterSet = PRESET_IDS_FILTER.length > 0 ? new Set(PRESET_IDS_FILTER) : null;
   const presets = (await loadActivePresets()).filter((p) => !presetIdFilterSet || presetIdFilterSet.has(p.id));
-  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minRows=${MIN_ROWS} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}`);
+  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}`);
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
-  const rowsCache = new Map();
-  const buyHoldCache = new Map();
+  const windowCache = new Map(); // symbol:market -> { trainRows, testRows, trainStartDate, testStartDate, buyHold }
   let pairIndex = 0;
   let skipped = 0;
   let dataSkipped = 0;
@@ -198,31 +142,33 @@ async function main() {
     // below even starts) would otherwise be an uncaught rejection that kills the whole
     // process — catch it, skip this one symbol, and keep going instead of crashing a
     // multi-hour run over what's usually a momentary connection blip.
-    let rows;
-    let buyHold;
+    let window;
     try {
-      rows = rowsCache.get(`${symbolEntry.code}:${dbMarket}`);
-      if (rows === undefined) {
+      const cacheKey = `${symbolEntry.code}:${dbMarket}`;
+      window = windowCache.get(cacheKey);
+      if (window === undefined) {
         const freshness = await ensureFreshData(pool, symbolEntry.code, dbMarket);
         if (freshness.refreshed) {
           console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before scanning`);
         }
-        rows = await loadRows(symbolEntry.code, dbMarket);
-        rowsCache.set(`${symbolEntry.code}:${dbMarket}`, rows);
+        const rows = await loadRows(symbolEntry.code, dbMarket);
+        const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(rows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
+
+        if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
+          window = { insufficientData: true, trainRows, testRows };
+        } else {
+          const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
+          const buyHold = buyHoldStates[buyHoldStates.length - 1];
+          window = { trainRows, testRows, trainStartDate, testStartDate, buyHold };
+        }
+        windowCache.set(cacheKey, window);
       }
 
-      if (rows.length < MIN_ROWS) {
+      if (window.insufficientData) {
         dataSkipped += presets.length;
         pairIndex += presets.length;
-        console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS}), skipping all presets`);
+        console.log(`[skip-data] ${symbolEntry.code} trainRows=${window.trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${window.testRows.length} (<${MIN_TEST_ROWS}?), skipping all presets`);
         continue;
-      }
-
-      buyHold = buyHoldCache.get(`${symbolEntry.code}:${dbMarket}`);
-      if (buyHold === undefined) {
-        const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
-        buyHold = buyHoldStates[buyHoldStates.length - 1];
-        buyHoldCache.set(`${symbolEntry.code}:${dbMarket}`, buyHold);
       }
     } catch (error) {
       console.error(`[error] loading ${symbolEntry.code}: ${error.message}`);
@@ -230,6 +176,7 @@ async function main() {
       continue;
     }
 
+    const { trainRows, testRows, trainStartDate, testStartDate, buyHold } = window;
     engine.setActiveLotSizeSymbol(symbolEntry.code);
     const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: "wave" };
 
@@ -237,30 +184,39 @@ async function main() {
       pairIndex += 1;
 
       try {
-        if (await alreadyScanned(symbolEntry.code, dbMarket, preset.id)) {
+        if (!(await needsScan(pool, symbolEntry.code, dbMarket, preset.id, { rescan: RESCAN, sessionSince: SESSION_SINCE }))) {
           skipped += 1;
           continue;
         }
 
         const config0 = engine.buildConfigFromPresetObject(preset, { ...baseConfig, strategyType: preset.strategyType });
-        const baselineStates = engine.buildBacktestStates(rows, config0);
+        const baselineStates = engine.buildBacktestStates(trainRows, config0);
         const baselineLast = baselineStates[baselineStates.length - 1];
 
-        const best = searchBestConfig(engine, preset, rows, { ...baseConfig, strategyType: preset.strategyType }, CANDIDATES_PER_PAIR);
+        const best = searchBestConfig(engine, preset, trainRows, { ...baseConfig, strategyType: preset.strategyType }, CANDIDATES_PER_PAIR);
         if (!best) {
           console.error(`[error] ${symbolEntry.code} x ${preset.label}: no candidate produced a valid backtest`);
           continue;
         }
         const bestScore = best.score;
 
-        await saveResult({
+        // Out-of-sample: run the EXACT found config (unchanged) against the test window,
+        // which the parameter search above never saw.
+        const testStates = engine.buildBacktestStates(testRows, best.config);
+        const testLast = testStates[testStates.length - 1];
+
+        const trainAnnualizedReturn = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
+        const testAnnualizedReturn = annualizedReturnRate(testLast.returnRate, testRows.length) || 0;
+        const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
+
+        await saveOptimizationResult(pool, {
           symbol: symbolEntry.code,
           market: dbMarket,
           symbolName: symbolEntry.name,
           presetId: preset.id,
           presetLabel: preset.label,
           strategyType: preset.strategyType,
-          rowsTested: rows.length,
+          rowsTested: trainRows.length,
           baselineReturnRate: baselineLast.returnRate,
           baselineMaxDrawdown: baselineLast.maxDrawdown,
           bestReturnRate: best.last.returnRate,
@@ -271,10 +227,19 @@ async function main() {
           bestConfig: best.config,
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
+          trainAnnualizedReturn,
+          testReturnRate: testLast.returnRate,
+          testMaxDrawdown: testLast.maxDrawdown,
+          testAnnualizedReturn,
+          testTrades: testLast.trades.length,
+          testRowsTested: testRows.length,
+          annualizedDiff,
+          trainStartDate,
+          testStartDate,
         });
 
         if (pairIndex % 20 === 0 || pairIndex === totalPairs) {
-          console.log(`[${pairIndex}/${totalPairs}] ${symbolEntry.code} x ${preset.label}: baseline=${baselineLast.returnRate.toFixed(1)}% best=${best.last.returnRate.toFixed(1)}% dd=${best.last.maxDrawdown.toFixed(1)}%`);
+          console.log(`[${pairIndex}/${totalPairs}] ${symbolEntry.code} x ${preset.label}: train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)}`);
         }
       } catch (error) {
         console.error(`[error] ${symbolEntry.code} x ${preset.label}: ${error.message}`);

@@ -24,8 +24,17 @@
 // per symbol — trying several ideas is about raising the chance of finding one good model,
 // not about saving every idea that happens to clear the bar.
 //
+// Train/test split (scripts/shared/train-test-window.js): the AI only ever sees the TRAIN
+// window's data profile, and parameter search only ever runs against the TRAIN window — the
+// TEST window (most recent --testYearsAgo years) is never shown to the AI or the optimizer,
+// so its out-of-sample result is a genuine, uncontaminated stability check. The winning
+// model's train/test annualized returns (and their difference) get saved into
+// optimization_scan_results — the same table run-optimization-scan.js writes — instead of
+// only ever existing as text baked into the saved preset's label.
+//
 // Usage: node scripts/universe/run-auto-generate.js [--symbols=513100,588000] [--limit=5]
-//   [--maxAttempts=20] [--attemptsPerSymbol=5] [--candidates=150] [--minRows=250]
+//   [--maxAttempts=20] [--attemptsPerSymbol=5] [--candidates=150] [--minTrainRows=200]
+//   [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1]
 
 const fs = require("fs");
 const path = require("path");
@@ -35,6 +44,9 @@ const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
 const ModelGenerator = require("../shared/model-generator.js");
 const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader.js");
+const { annualizedReturnRate } = require("../shared/annualize.js");
+const { splitTrainTestRows } = require("../shared/train-test-window.js");
+const { ensureResultsTable, saveOptimizationResult } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -52,7 +64,12 @@ const SYMBOL_LIMIT = Math.max(0, getArg("limit", 0));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 20));
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 5));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 150));
-const MIN_ROWS = Math.max(30, getArg("minRows", 250));
+const MIN_TRAIN_ROWS = Math.max(30, getArg("minTrainRows", 200));
+const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
+// Whole years only — shiftYears (scripts/shared/train-test-window.js) uses Date.setFullYear,
+// which truncates a fractional argument rather than applying it proportionally.
+const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
+const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 // Whoever triggered this run (the logged-in admin — only admins can reach the trigger
 // endpoint) owns the resulting presets, same as any other saved preset in this app. Falls
@@ -61,6 +78,11 @@ const OWNER_USER_ID = getArgString("ownerUserId") || null;
 const OWNER_EMAIL = getArgString("ownerEmail") || "";
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
+
+if (TRAIN_YEARS_AGO <= TEST_YEARS_AGO) {
+  console.error(`usage error: --trainYearsAgo (${TRAIN_YEARS_AGO}) must be greater than --testYearsAgo (${TEST_YEARS_AGO})`);
+  process.exit(1);
+}
 
 // Live progress, polled by server.js's /api/admin/auto-generate status endpoint so the admin
 // panel can show "currently trying model X, attempt N/M" instead of just "running" — same
@@ -103,19 +125,6 @@ async function loadRows(symbol, market) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
-// CAGR-style annualization: a 30% return over 2 years and a 30% return over 6 months aren't
-// comparable as raw numbers, but their annualized rates are — used both for the "best so far"
-// progress headline and for the saved model's display label, so return figures mean the same
-// thing regardless of how much history a given symbol happened to have.
-function annualizedReturnRate(returnRatePercent, tradingDays) {
-  if (!Number.isFinite(returnRatePercent) || !Number.isFinite(tradingDays) || tradingDays <= 0) return null;
-  const years = tradingDays / 252;
-  if (years <= 0) return null;
-  const totalMultiple = 1 + returnRatePercent / 100;
-  if (totalMultiple <= 0) return -100;
-  return (Math.pow(totalMultiple, 1 / years) - 1) * 100;
-}
-
 // The AI can still hand back a syntactically-valid-but-empty skeleton (e.g. every condition
 // it proposed got filtered out by normalizeGeneratedModel for using a disallowed field) —
 // this catches that before wasting a parameter search on a model with nothing to optimize.
@@ -135,6 +144,8 @@ function modelHasRules(model) {
 }
 
 async function main() {
+  await ensureResultsTable(pool);
+
   let symbols;
   if (SYMBOLS_FILTER.length > 0) {
     // Symbols coming from --symbols= are whatever the admin picked out of their query history
@@ -148,7 +159,7 @@ async function main() {
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 
-  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minRows=${MIN_ROWS}`);
+  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO}`);
   if (symbols.length === 0) {
     console.log("[warn] no symbols to process (empty --symbols list or empty universe manifest) — exiting without doing anything.");
   }
@@ -200,19 +211,23 @@ async function main() {
       if (freshness.refreshed) {
         console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before generating`);
       }
-      const rows = await loadRows(symbolEntry.code, dbMarket);
-      if (rows.length < MIN_ROWS) {
-        console.log(`[skip-data] ${symbolEntry.code} only has ${rows.length} rows (< ${MIN_ROWS})`);
+      const allRows = await loadRows(symbolEntry.code, dbMarket);
+      const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(allRows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
+      if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
+        console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${testRows.length} (<${MIN_TEST_ROWS}?)`);
         dataSkipped += 1;
-        writeProgress({ dataSkipped, currentReason: `历史数据不足（${rows.length} 行 < ${MIN_ROWS}），跳过` });
+        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testRows.length}行），跳过` });
         continue;
       }
 
-      const profile = ModelGenerator.buildSymbolDataProfile(rows);
-      console.log(`[${symbolEntry.code}] profile: return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
+      // The AI only ever sees the TRAIN window's profile — the test window must stay
+      // completely unseen by both the model design and the parameter search for its later
+      // out-of-sample result to mean anything.
+      const profile = ModelGenerator.buildSymbolDataProfile(trainRows);
+      console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${testStartDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
 
       engine.setActiveLotSizeSymbol(symbolEntry.code);
-      const buyHoldStates = engine.buildBuyHoldStates(rows, INITIAL_CASH, TRADE_FEE);
+      const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
       const buyHold = buyHoldStates[buyHoldStates.length - 1];
 
       const previousAttempts = [];
@@ -251,7 +266,7 @@ async function main() {
         }
 
         const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: model.strategyType };
-        const best = searchBestConfig(engine, model, rows, baseConfig, CANDIDATES_PER_SYMBOL);
+        const best = searchBestConfig(engine, model, trainRows, baseConfig, CANDIDATES_PER_SYMBOL);
         if (!best) {
           console.log(`[no-candidate] ${symbolEntry.code} attempt ${attempt + 1}: parameter search produced no valid backtest`);
           continue;
@@ -261,7 +276,7 @@ async function main() {
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} best=${best.last.returnRate.toFixed(1)}%/dd${best.last.maxDrawdown.toFixed(1)}% vs buyHold=${buyHold.returnRate.toFixed(1)}%/dd${buyHold.maxDrawdown.toFixed(1)}% beatsReturn=${beatsReturn} beatsDrawdown=${beatsDrawdown}`);
 
-        const attemptAnnualized = annualizedReturnRate(best.last.returnRate, rows.length);
+        const attemptAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length);
         if (attemptAnnualized !== null && (bestAnnualizedReturn === null || attemptAnnualized > bestAnnualizedReturn)) {
           bestAnnualizedReturn = attemptAnnualized;
           bestAnnualizedSymbol = symbolEntry.code;
@@ -284,7 +299,7 @@ async function main() {
         // Label carries the symbol code and the annualized return so it's immediately
         // scannable in a list of many saved models without opening each one — falls back to
         // the raw (non-annualized) return if there isn't enough history to annualize from.
-        const savedAnnualized = annualizedReturnRate(bestQualifying.best.last.returnRate, rows.length);
+        const savedAnnualized = annualizedReturnRate(bestQualifying.best.last.returnRate, trainRows.length);
         const returnLabel = savedAnnualized !== null
           ? `${savedAnnualized >= 0 ? "+" : ""}${savedAnnualized.toFixed(1)}%年化`
           : `${bestQualifying.best.last.returnRate.toFixed(1)}%`;
@@ -298,7 +313,47 @@ async function main() {
           ownerUserId: OWNER_USER_ID,
           ownerEmail: OWNER_EMAIL,
         });
-        console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType})`);
+
+        // Out-of-sample: run the EXACT winning config (unchanged) against the test window,
+        // which neither the AI nor the parameter search ever saw — then record both periods'
+        // annualized returns into the SAME results table run-optimization-scan.js writes, so
+        // this model is rankable by "train/test consistency" the same way as any other.
+        const testStates = engine.buildBacktestStates(testRows, bestQualifying.best.config);
+        const testLast = testStates[testStates.length - 1];
+        const trainAnnualizedReturn = savedAnnualized || 0;
+        const testAnnualizedReturn = annualizedReturnRate(testLast.returnRate, testRows.length) || 0;
+        const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
+
+        await saveOptimizationResult(pool, {
+          symbol: symbolEntry.code,
+          market: dbMarket,
+          symbolName: symbolEntry.name,
+          presetId,
+          presetLabel: label,
+          strategyType: bestQualifying.model.strategyType,
+          rowsTested: trainRows.length,
+          baselineReturnRate: 0,
+          baselineMaxDrawdown: 0,
+          bestReturnRate: bestQualifying.best.last.returnRate,
+          bestMaxDrawdown: bestQualifying.best.last.maxDrawdown,
+          bestScore: bestQualifying.best.score,
+          bestTrades: bestQualifying.best.last.trades.length,
+          testedCandidates: bestQualifying.best.testedCandidates,
+          bestConfig: bestQualifying.best.config,
+          buyHoldReturnRate: buyHold.returnRate,
+          buyHoldMaxDrawdown: buyHold.maxDrawdown,
+          trainAnnualizedReturn,
+          testReturnRate: testLast.returnRate,
+          testMaxDrawdown: testLast.maxDrawdown,
+          testAnnualizedReturn,
+          testTrades: testLast.trades.length,
+          testRowsTested: testRows.length,
+          annualizedDiff,
+          trainStartDate,
+          testStartDate,
+        });
+
+        console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType}, train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)})`);
         saved += 1;
         writeProgress({ saved, currentReason: `已保存：${label}（${bestQualifying.model.strategyType}）` });
       } else if (attemptedAny) {

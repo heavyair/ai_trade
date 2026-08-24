@@ -130,6 +130,8 @@ const adminAutoGenerateSymbolCount = document.querySelector("#adminAutoGenerateS
 const adminAutoGenerateLimitInput = document.querySelector("#adminAutoGenerateLimit");
 const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAutoGenerateAttemptsPerSymbol");
 const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
+const adminAutoGenerateTrainYearsAgoInput = document.querySelector("#adminAutoGenerateTrainYearsAgo");
+const adminAutoGenerateTestYearsAgoInput = document.querySelector("#adminAutoGenerateTestYearsAgo");
 const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRunButton");
 const adminAutoGenerateRunStatus = document.querySelector("#adminAutoGenerateRunStatus");
 const adminAutoGenerateProgressBanner = document.querySelector("#adminAutoGenerateProgressBanner");
@@ -1537,8 +1539,11 @@ async function loadAdminRankings() {
 let adminScanCache = [];
 let adminScanPage = 0;
 const adminScanPageSize = 10;
-let adminScanSortKey = "bestReturnRate";
-let adminScanSortDirection = "desc";
+// Default sort is "most stable first" — smallest gap between train-period and test-period
+// annualized return, not highest raw return (see scripts/universe/run-optimization-scan.js's
+// train/test split methodology).
+let adminScanSortKey = "annualizedDiff";
+let adminScanSortDirection = "asc";
 let adminScanFilterBuyHoldMax = 50;
 let adminScanFilterBestReturnMin = 100;
 
@@ -1552,6 +1557,9 @@ const ADMIN_SCAN_COLUMNS = [
   { key: "bestMaxDrawdown", label: "最大回撤" },
   { key: "buyHoldReturnRate", label: "全仓买入持有收益率" },
   { key: "vsBuyHold", label: "跑赢买入持有" },
+  { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
+  { key: "testAnnualizedReturn", label: "验证期年化收益率" },
+  { key: "annualizedDiff", label: "年化差异" },
   { key: "bestTrades", label: "交易次数" },
   { key: "testedCandidates", label: "测试组合数" },
   { key: "scannedAt", label: "扫描时间" },
@@ -1575,10 +1583,23 @@ function filterAdminScanRecords(records) {
   });
 }
 
+// A record whose trainStartDate is empty has never been scanned under the train/test
+// methodology — its trainAnnualizedReturn/testAnnualizedReturn/annualizedDiff are just
+// unset-default zeros, not a genuine "diff of 0" (which would misleadingly look like the
+// most stable result of all). Sorting by any of those three columns pushes such records to
+// the end regardless of direction, matching the server's own default ORDER BY.
+const ADMIN_TRAIN_TEST_SORT_KEYS = new Set(["trainAnnualizedReturn", "testAnnualizedReturn", "annualizedDiff"]);
+
 function sortAdminScanRecords(records) {
   const key = adminScanSortKey;
   const dir = adminScanSortDirection === "asc" ? 1 : -1;
+  const isTrainTestKey = ADMIN_TRAIN_TEST_SORT_KEYS.has(key);
   return [...records].sort((a, b) => {
+    if (isTrainTestKey) {
+      const aMigrated = Boolean(a.trainStartDate);
+      const bMigrated = Boolean(b.trainStartDate);
+      if (aMigrated !== bMigrated) return aMigrated ? -1 : 1;
+    }
     const va = getAdminScanSortValue(a, key);
     const vb = getAdminScanSortValue(b, key);
     if (typeof va === "string" || typeof vb === "string") {
@@ -1628,6 +1649,9 @@ function renderAdminScanList() {
     const bestClass = record.bestReturnRate > 0 ? "up" : record.bestReturnRate < 0 ? "down" : "";
     const vsBuyHold = record.bestReturnRate - record.buyHoldReturnRate;
     const vsBuyHoldClass = vsBuyHold > 0 ? "up" : vsBuyHold < 0 ? "down" : "";
+    const trainClass = record.trainAnnualizedReturn > 0 ? "up" : record.trainAnnualizedReturn < 0 ? "down" : "";
+    const testClass = record.testAnnualizedReturn > 0 ? "up" : record.testAnnualizedReturn < 0 ? "down" : "";
+    const hasTrainTest = Boolean(record.trainStartDate);
     return `
       <tr>
         <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
@@ -1639,6 +1663,9 @@ function renderAdminScanList() {
         <td>${formatPercent(record.bestMaxDrawdown)}</td>
         <td>${formatPercent(record.buyHoldReturnRate)}</td>
         <td class="${vsBuyHoldClass}">${formatPercent(vsBuyHold)}</td>
+        <td class="${trainClass}">${hasTrainTest ? formatPercent(record.trainAnnualizedReturn) : "待重新扫描"}</td>
+        <td class="${testClass}">${hasTrainTest ? formatPercent(record.testAnnualizedReturn) : "待重新扫描"}</td>
+        <td>${hasTrainTest ? formatPercent(record.annualizedDiff) : "--"}</td>
         <td>${record.bestTrades || 0}</td>
         <td>${record.testedCandidates || 0}</td>
         <td>${escapeHtml(formatAdminDate(record.scannedAt))}</td>
@@ -2093,6 +2120,23 @@ if (adminScanList) {
   });
 }
 
+if (adminAutoGenerateList) {
+  adminAutoGenerateList.addEventListener("click", (event) => {
+    const target = event.target;
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header") : null;
+    if (sortHeader) {
+      const key = sortHeader.dataset.adminAutoGenerateSortKey;
+      if (adminAutoGenerateSortKey === key) {
+        adminAutoGenerateSortDirection = adminAutoGenerateSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        adminAutoGenerateSortKey = key;
+        adminAutoGenerateSortDirection = "desc";
+      }
+      if (adminAutoGenerateLastPayload) renderAdminAutoGenerateList(adminAutoGenerateLastPayload);
+    }
+  });
+}
+
 function readAdminScanFilterInput(input) {
   if (!input || input.value.trim() === "") return null;
   const value = Number(input.value);
@@ -2259,16 +2303,26 @@ async function loadAdminScanStatus() {
 
 async function triggerAdminScanRun(presetIds, options = {}) {
   if (adminScanRunStatus) adminScanRunStatus.textContent = options.resume ? "正在继续上次中断的扫描..." : "正在启动扫描...";
+  const trainYearsAgoInput = document.querySelector("#adminScanTrainYearsAgo");
+  const testYearsAgoInput = document.querySelector("#adminScanTestYearsAgo");
+  const requested = {
+    trainYearsAgo: trainYearsAgoInput ? Number(trainYearsAgoInput.value) || 5 : 5,
+    testYearsAgo: testYearsAgoInput ? Number(testYearsAgoInput.value) || 1 : 1,
+  };
   try {
     const response = await fetch("/api/admin/optimization-scan/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ presetIds, resume: Boolean(options.resume) }),
+      body: JSON.stringify({ presetIds, resume: Boolean(options.resume), ...requested }),
     });
-    await readJsonResponse(response, "启动扫描失败。");
-    setStatus(options.resume
+    const result = await readJsonResponse(response, "启动扫描失败。");
+    const adjustments = ["trainYearsAgo", "testYearsAgo"]
+      .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
+      .map((key) => `${key} ${requested[key]}→${result[key]}`);
+    const baseMessage = options.resume
       ? "已继续上次中断的扫描。"
-      : (presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。"));
+      : (presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。");
+    setStatus(adjustments.length > 0 ? `${baseMessage}（参数超出允许范围，已调整：${adjustments.join("，")}）` : baseMessage);
     await loadAdminScanStatus();
   } catch (error) {
     if (adminScanRunStatus) adminScanRunStatus.textContent = "";
@@ -2460,6 +2514,50 @@ function formatAdminAutoGenerateReason(reason) {
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
+// Same "smallest train/test annualized-return gap first" default as adminScanList — see
+// scripts/universe/run-auto-generate.js's train/test split methodology.
+let adminAutoGenerateSortKey = "annualizedDiff";
+let adminAutoGenerateSortDirection = "asc";
+
+const ADMIN_AUTO_GENERATE_COLUMNS = [
+  { key: "targetSymbol", label: "股票" },
+  { key: "label", label: "模型名称" },
+  { key: "strategyType", label: "策略类型" },
+  { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
+  { key: "testAnnualizedReturn", label: "验证期年化收益率" },
+  { key: "annualizedDiff", label: "年化差异" },
+  { key: "reason", label: "AI 生成理由" },
+  { key: "updatedAt", label: "更新时间" },
+];
+
+function getAdminAutoGenerateSortValue(record, key) {
+  if (key === "targetSymbol") return record.targetSymbol || "";
+  if (key === "label") return record.label || "";
+  if (key === "strategyType") return getStrategyTypeLabel(record.strategyType);
+  if (key === "reason") return record.reason || "";
+  if (key === "updatedAt") return record.updatedAt || "";
+  return Number(record[key]) || 0;
+}
+
+function sortAdminAutoGenerateRecords(records) {
+  const key = adminAutoGenerateSortKey;
+  const dir = adminAutoGenerateSortDirection === "asc" ? 1 : -1;
+  const isTrainTestKey = ADMIN_TRAIN_TEST_SORT_KEYS.has(key);
+  return [...records].sort((a, b) => {
+    if (isTrainTestKey) {
+      const aMigrated = Boolean(a.trainStartDate);
+      const bMigrated = Boolean(b.trainStartDate);
+      if (aMigrated !== bMigrated) return aMigrated ? -1 : 1;
+    }
+    const va = getAdminAutoGenerateSortValue(a, key);
+    const vb = getAdminAutoGenerateSortValue(b, key);
+    if (typeof va === "string" || typeof vb === "string") {
+      return dir * String(va).localeCompare(String(vb), "zh-CN");
+    }
+    return dir * (va - vb);
+  });
+}
+
 function renderAdminAutoGenerateList(payload) {
   adminAutoGenerateLastPayload = payload;
   const presets = Array.isArray(payload.presets) ? payload.presets : [];
@@ -2467,25 +2565,33 @@ function renderAdminAutoGenerateList(payload) {
     if (presets.length === 0) {
       adminAutoGenerateList.innerHTML = '<div class="ranking-empty">还没有自动生成并保存的模型。</div>';
     } else {
-      const rows = presets.map((p) => `
+      const sorted = sortAdminAutoGenerateRecords(presets);
+      const rows = sorted.map((p) => {
+        const hasTrainTest = Boolean(p.trainStartDate);
+        const trainClass = p.trainAnnualizedReturn > 0 ? "up" : p.trainAnnualizedReturn < 0 ? "down" : "";
+        const testClass = p.testAnnualizedReturn > 0 ? "up" : p.testAnnualizedReturn < 0 ? "down" : "";
+        return `
         <tr>
           <td>${escapeHtml(p.targetSymbol || "")}</td>
           <td>${escapeHtml(p.label || "")}</td>
           <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
+          <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
+          <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
+          <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
           <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
           <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
         </tr>
-      `).join("");
+      `;
+      }).join("");
+      const headerCells = ADMIN_AUTO_GENERATE_COLUMNS.map((column) => {
+        const active = adminAutoGenerateSortKey === column.key;
+        const arrow = active ? (adminAutoGenerateSortDirection === "asc" ? " ▲" : " ▼") : "";
+        return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-admin-auto-generate-sort-key="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
+      }).join("");
       adminAutoGenerateList.innerHTML = `
         <table class="admin-ranking-table">
           <thead>
-            <tr>
-              <th>股票</th>
-              <th>模型名称</th>
-              <th>策略类型</th>
-              <th>AI 生成理由</th>
-              <th>更新时间</th>
-            </tr>
+            <tr>${headerCells}</tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
@@ -2696,10 +2802,14 @@ async function triggerAdminAutoGenerateRun() {
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
+  const trainYearsAgo = Number(adminAutoGenerateTrainYearsAgoInput && adminAutoGenerateTrainYearsAgoInput.value);
+  const testYearsAgo = Number(adminAutoGenerateTestYearsAgoInput && adminAutoGenerateTestYearsAgoInput.value);
   const requested = {
     limit: Number.isFinite(limit) ? limit : 0,
     attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 5,
     maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
+    trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
+    testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
   };
   if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "正在启动自动生成...";
   try {
@@ -2709,11 +2819,12 @@ async function triggerAdminAutoGenerateRun() {
       body: JSON.stringify({ symbols, ...requested }),
     });
     const result = await readJsonResponse(response, "启动自动生成失败。");
-    // The server clamps limit/attemptsPerSymbol/maxAttempts to sane ranges — if what actually
-    // got used differs from what was typed, say so explicitly instead of silently running with
-    // a different number than the admin asked for (that's exactly what caused this to be
-    // confusing before: the cap existed but nothing ever told you your input got adjusted).
-    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts"]
+    // The server clamps limit/attemptsPerSymbol/maxAttempts/trainYearsAgo/testYearsAgo to
+    // sane ranges — if what actually got used differs from what was typed, say so explicitly
+    // instead of silently running with a different number than the admin asked for (that's
+    // exactly what caused this to be confusing before: the cap existed but nothing ever told
+    // you your input got adjusted).
+    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts", "trainYearsAgo", "testYearsAgo"]
       .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0

@@ -2024,6 +2024,15 @@ function mapAdminOptimizationScanRow(row) {
     bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
     buyHoldReturnRate: Number(row.buy_hold_return_rate) || 0,
     buyHoldMaxDrawdown: Number(row.buy_hold_max_drawdown) || 0,
+    trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+    testReturnRate: Number(row.test_return_rate) || 0,
+    testMaxDrawdown: Number(row.test_max_drawdown) || 0,
+    testAnnualizedReturn: Number(row.test_annualized_return) || 0,
+    testTrades: row.test_trades || 0,
+    testRowsTested: row.test_rows_tested || 0,
+    annualizedDiff: Number(row.annualized_diff) || 0,
+    trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+    testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
     scannedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
   };
 }
@@ -2044,7 +2053,7 @@ async function handleAdminOptimizationScanApi(req, res) {
     }
     const result = await dbQuery(`
       SELECT * FROM optimization_scan_results
-      ORDER BY best_return_rate DESC
+      ORDER BY (train_start_date IS NULL) ASC, annualized_diff ASC
       LIMIT 3000
     `);
     sendJson(res, 200, {
@@ -2160,8 +2169,11 @@ function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt
   });
 }
 
-function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
-  const scriptArgs = ["--rescan", "--candidates=300", "--minRows=250", `--sessionSince=${sessionStartedAt}`];
+function launchScanProcess({ presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy }) {
+  const scriptArgs = [
+    "--rescan", "--candidates=300", "--minTrainRows=200", "--minTestRows=50",
+    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, `--sessionSince=${sessionStartedAt}`,
+  ];
   if (presetIds.length > 0) scriptArgs.push(`--presetIds=${presetIds.join(",")}`);
   launchBackgroundJob({
     jobType: "scan",
@@ -2169,7 +2181,7 @@ function launchScanProcess({ presetIds, sessionStartedAt, triggeredBy }) {
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { presetIds },
+    extra: { presetIds, trainYearsAgo, testYearsAgo },
   });
 }
 
@@ -2181,7 +2193,7 @@ function readAutoGenerateProgress() {
   }
 }
 
-function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   // Clear any progress left over from a previous run so the panel doesn't briefly show stale
   // "currently trying..." detail before the freshly-spawned process writes its first update.
   try {
@@ -2189,7 +2201,10 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   } catch (error) {
     // fine if it didn't exist yet
   }
-  const scriptArgs = [`--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`];
+  const scriptArgs = [
+    `--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`,
+    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`,
+  ];
   if (limit > 0) scriptArgs.push(`--limit=${limit}`);
   if (symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
   if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
@@ -2200,7 +2215,7 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols, limit, attemptsPerSymbol, maxAttempts },
+    extra: { symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo },
   });
 }
 
@@ -2247,6 +2262,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
 
     let presetIds;
     let sessionStartedAt;
+    let trainYearsAgo;
+    let testYearsAgo;
     if (payload.resume) {
       if (!lastScanResult || lastScanResult.exitCode === 0) {
         sendJson(res, 400, { error: "没有可以继续的中断扫描（上一次不是异常退出）。" });
@@ -2254,15 +2271,21 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       }
       presetIds = lastScanResult.presetIds;
       sessionStartedAt = lastScanResult.sessionStartedAt;
+      // Keep a resumed run consistent with the interrupted one rather than picking up
+      // whatever the train/test inputs happen to say right now.
+      trainYearsAgo = lastScanResult.trainYearsAgo || 5;
+      testYearsAgo = lastScanResult.testYearsAgo || 1;
     } else {
       presetIds = Array.isArray(payload.presetIds)
         ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
         : [];
       sessionStartedAt = new Date().toISOString();
+      trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
+      testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
     }
 
-    launchScanProcess({ presetIds, sessionStartedAt, triggeredBy: admin.email });
-    sendJson(res, 200, { started: true, presetIds, sessionStartedAt, resumed: Boolean(payload.resume) });
+    launchScanProcess({ presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
   }
@@ -2415,13 +2438,30 @@ async function handleAdminAutoGenerateListApi(req, res) {
       return;
     }
 
-    const result = await dbQuery(`
-      SELECT id, label, strategy_type, meta, created_at, updated_at
-      FROM strategy_presets
-      WHERE meta->>'creator' = 'ai-auto'
-      ORDER BY updated_at DESC
-      LIMIT 500
+    const hasResultsTable = await dbQuery(`
+      SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
     `);
+    // LEFT JOIN (not INNER) so a preset that hasn't made it into optimization_scan_results
+    // yet (e.g. saved by an older build, before this table existed) still shows up instead
+    // of silently disappearing — its train/test fields just come back as defaults below.
+    const result = hasResultsTable.rows.length > 0
+      ? await dbQuery(`
+        SELECT sp.id, sp.label, sp.strategy_type, sp.meta, sp.created_at, sp.updated_at,
+          osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
+          osr.train_start_date, osr.test_start_date
+        FROM strategy_presets sp
+        LEFT JOIN optimization_scan_results osr ON osr.preset_id = sp.id
+        WHERE sp.meta->>'creator' = 'ai-auto'
+        ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff ASC, sp.updated_at DESC
+        LIMIT 500
+      `)
+      : await dbQuery(`
+        SELECT id, label, strategy_type, meta, created_at, updated_at
+        FROM strategy_presets
+        WHERE meta->>'creator' = 'ai-auto'
+        ORDER BY updated_at DESC
+        LIMIT 500
+      `);
     const presets = result.rows.map((row) => {
       const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
       return {
@@ -2432,6 +2472,11 @@ async function handleAdminAutoGenerateListApi(req, res) {
         reason: meta.originalText || "",
         createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
         updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+        trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+        testAnnualizedReturn: Number(row.test_annualized_return) || 0,
+        annualizedDiff: Number(row.annualized_diff) || 0,
+        trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+        testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
       };
     });
 
@@ -2468,15 +2513,17 @@ async function handleAdminAutoGenerateRunApi(req, res) {
     const limit = Math.max(0, Math.min(500, Math.round(Number(payload.limit)) || 0));
     const attemptsPerSymbol = Math.max(1, Math.min(90, Math.round(Number(payload.attemptsPerSymbol)) || 5));
     const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
+    const trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
+    const testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
     const sessionStartedAt = new Date().toISOString();
 
     launchAutoGenerateProcess({
-      symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt,
+      symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt,
       triggeredBy: admin.email,
       ownerUserId: userIdForEmail(admin.email),
       ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt });
+    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });
   }

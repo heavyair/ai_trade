@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260824-breakout-indicator">
+    <link rel="stylesheet" href="/styles.css?v=20260824-train-test-sort-fix">
   </head>
   <body>
     <main class="shell">
@@ -170,6 +170,14 @@
             <div id="adminScanStatusSummary" class="optimization-report"></div>
             <div class="section-label">按模型拆分的测试完成率（勾选后可对选中模型重新扫描全部股票）</div>
             <div id="adminScanStatusModelList" class="admin-ranking-list"></div>
+            <div id="adminScanTrainTestRow" class="admin-scan-filter-row">
+              <label>训练起点（N年前）
+                <input id="adminScanTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              </label>
+              <label>验证起点（最近N年，也是训练终点）
+                <input id="adminScanTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
+              </label>
+            </div>
             <div class="admin-rerun-controls">
               <button type="button" id="adminScanRunSelectedButton" class="ghost-button">对勾选的模型重新扫描</button>
               <button type="button" id="adminScanRunAllButton" class="ghost-button">对全部模型重新扫描</button>
@@ -224,6 +232,12 @@
               </label>
               <label>总 AI 调用次数上限
                 <input id="adminAutoGenerateMaxAttempts" type="number" step="1" min="1" max="200" value="20">
+              </label>
+              <label>训练起点（N年前）
+                <input id="adminAutoGenerateTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              </label>
+              <label>验证起点（最近N年，也是训练终点）
+                <input id="adminAutoGenerateTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
               </label>
               <button type="button" id="adminAutoGenerateRunButton" class="ghost-button">启动自动生成</button>
               <span id="adminAutoGenerateRunStatus" class="field-hint"></span>
@@ -1165,7 +1179,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260824-breakout-indicator"></script>
-    <script src="/app.js?v=20260824-breakout-indicator"></script>
+    <script src="/formula-engine.js?v=20260824-train-test-sort-fix"></script>
+    <script src="/app.js?v=20260824-train-test-sort-fix"></script>
   </body>
 </html>
