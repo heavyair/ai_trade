@@ -1,21 +1,21 @@
 // "选股" (stock screening) batch job: given ONE already-selected saved model (no parameter
 // search, no AI) and a market (CN or US), runs a single deterministic backtest per symbol in
-// that market's symbols.json universe over its trailing ~2 years of history, and checks
-// whether the MOST RECENT trading day produced an actual buy/sell trade under that model —
-// i.e. whether the stock currently qualifies for placing an order.
+// that market's universe (symbols.json's fixed list, expanded with every stock any user has
+// ever queried — see scripts/shared/universe-loader.js) over its trailing ~2 years of
+// history, and checks whether the MOST RECENT trading day produced an actual buy/sell trade
+// under that model — i.e. whether the stock currently qualifies for placing an order.
 //
 // Progress and final results both live in a single stock_screen_runs row (see server.js's
 // initializeDatabase()), updated incrementally as symbols are processed, so polling clients
 // see live progress and the finished run's history in the same place. server.js creates the
 // row (status='running') before spawning this script and passes its id via --runId.
 //
-// Usage: node scripts/universe/run-stock-screen.js --runId=<id> --presetId=<id> --market=CN|US [--limit=N]
+// Usage: node scripts/universe/run-stock-screen.js --runId=<id> --presetId=<id> --market=CN|US [--ownerUserId=<id>] [--limit=N]
 
-const fs = require("fs");
-const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
+const { loadExpandedUniverse } = require("../shared/universe-loader.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -33,6 +33,7 @@ const getArgString = (name) => {
 const RUN_ID = getArgString("runId");
 const PRESET_ID = getArgString("presetId");
 const MARKET = getArgString("market").toUpperCase();
+const OWNER_USER_ID = getArgString("ownerUserId") || null;
 const SYMBOL_LIMIT = getArg("limit", 0);
 const MIN_ROWS = 90;
 const SIMULATION_WINDOW_ROWS = 504; // ~2 trading years, gives indicator lookback (up to 250 days) room to warm up
@@ -114,6 +115,29 @@ async function syncRun(patch) {
   ]);
 }
 
+// A matched stock is worth remembering the same way a manually-typed 历史模拟 code is —
+// it's what actually made the user look twice, unlike the hundreds of scanned-but-not-matched
+// stocks in the same run — so it feeds the same symbol_query_history table server.js's
+// recordSymbolQuery uses, keyed the same way ("user:<id>"), which is also what
+// loadExpandedUniverse reads back from for future full-market batch jobs.
+async function recordMatchedSymbol(code, name) {
+  if (!OWNER_USER_ID) return;
+  const normalizedCode = String(code || "").trim().toUpperCase().slice(0, 16);
+  if (!normalizedCode) return;
+  const description = String(name || "").trim().slice(0, 23);
+  try {
+    await pool.query(`
+      INSERT INTO symbol_query_history (owner_key, code, description, last_used_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (owner_key, code) DO UPDATE SET
+        description = CASE WHEN EXCLUDED.description <> '' THEN EXCLUDED.description ELSE symbol_query_history.description END,
+        last_used_at = NOW()
+    `, [`user:${OWNER_USER_ID}`, normalizedCode, description]);
+  } catch (error) {
+    console.error(`[warn] failed to record matched symbol ${normalizedCode} into history: ${error.message}`);
+  }
+}
+
 async function main() {
   const preset = await loadPreset(PRESET_ID);
   if (!preset) {
@@ -122,8 +146,8 @@ async function main() {
     return;
   }
 
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
-  let symbols = manifest.symbols.filter((s) => s.market === MARKET);
+  const universe = await loadExpandedUniverse(pool);
+  let symbols = universe.filter((s) => s.market === MARKET);
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
   console.log(`[stock-screen] runId=${RUN_ID} preset=${preset.label} (${preset.strategyType}) market=${MARKET} symbols=${symbols.length}`);
 
@@ -174,6 +198,7 @@ async function main() {
           });
         }
         console.log(`[match] ${symbolEntry.code} ${symbolEntry.name}: ${todaysTrades.map((t) => t.label).join(", ")}`);
+        await recordMatchedSymbol(symbolEntry.code, symbolEntry.name);
       }
     } catch (error) {
       console.error(`[error] ${symbolEntry.code}: ${error.message}`);

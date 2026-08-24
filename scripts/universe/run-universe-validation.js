@@ -20,11 +20,10 @@
 //
 // Usage: node scripts/universe/run-universe-validation.js [--buyHoldMax=50] [--bestReturnMin=100] [--minRows=250] [--rescan] [--limit=20]
 
-const fs = require("fs");
-const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
+const { loadExpandedUniverse } = require("../shared/universe-loader.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -154,8 +153,8 @@ async function saveResult(row) {
 async function main() {
   await ensureResultsTable();
 
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
-  const symbols = manifest.symbols.map((entry) => ({
+  const universe = await loadExpandedUniverse(pool);
+  const symbols = universe.map((entry) => ({
     ...entry,
     dbMarket: entry.market === "CN" ? (/^[569]/.test(entry.code) ? "1" : "0") : "US",
   }));

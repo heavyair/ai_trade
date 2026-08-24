@@ -34,6 +34,7 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
 const ModelGenerator = require("../shared/model-generator.js");
+const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -133,23 +134,17 @@ function modelHasRules(model) {
   return key ? Boolean(model[key]) : true;
 }
 
-// A CN code is always 6 digits; anything else (NET, QQQ, AMD, ...) is US. Symbols coming
-// from --symbols= are whatever the admin picked out of their query history (see
-// scripts/shared model-generator's saveGeneratedPreset / server.js symbol_query_history) —
-// that pool is much broader than the fixed batch-scan universe list in symbols.json (which
-// is just CSI300/Nasdaq100-ish index constituents), so an explicitly-requested symbol must
-// never be silently dropped just because it isn't ALSO a universe constituent.
-function inferMarket(code) {
-  return /^\d{6}$/.test(code) ? "CN" : "US";
-}
-
 async function main() {
   let symbols;
   if (SYMBOLS_FILTER.length > 0) {
+    // Symbols coming from --symbols= are whatever the admin picked out of their query history
+    // (see scripts/shared/model-generator's saveGeneratedPreset / server.js
+    // symbol_query_history) — that pool is much broader than the fixed batch-scan universe
+    // list in symbols.json, so an explicitly-requested symbol must never be silently dropped
+    // just because it isn't ALSO a universe constituent.
     symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
   } else {
-    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
-    symbols = manifest.symbols;
+    symbols = await loadExpandedUniverse(pool);
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 

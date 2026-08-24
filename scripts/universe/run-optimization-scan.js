@@ -16,12 +16,11 @@
 //   --presetIds restricts the scan to specific (already-active) preset IDs, e.g. for an
 //   admin-triggered "rescan just this model" run instead of the full active set.
 
-const fs = require("fs");
-const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
+const { loadExpandedUniverse } = require("../shared/universe-loader.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -176,8 +175,8 @@ async function saveResult(row) {
 async function main() {
   await ensureResultsTable();
 
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "symbols.json"), "utf8"));
-  const symbols = SYMBOL_LIMIT > 0 ? manifest.symbols.slice(0, SYMBOL_LIMIT) : manifest.symbols;
+  const universe = await loadExpandedUniverse(pool);
+  const symbols = SYMBOL_LIMIT > 0 ? universe.slice(0, SYMBOL_LIMIT) : universe;
   const presetIdFilterSet = PRESET_IDS_FILTER.length > 0 ? new Set(PRESET_IDS_FILTER) : null;
   const presets = (await loadActivePresets()).filter((p) => !presetIdFilterSet || presetIdFilterSet.has(p.id));
   console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minRows=${MIN_ROWS} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}`);

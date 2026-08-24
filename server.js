@@ -2204,11 +2204,13 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   });
 }
 
-function launchStockScreenProcess({ runId, presetId, market, sessionStartedAt, triggeredBy }) {
+function launchStockScreenProcess({ runId, presetId, market, ownerUserId, sessionStartedAt, triggeredBy }) {
+  const scriptArgs = [`--runId=${runId}`, `--presetId=${presetId}`, `--market=${market}`];
+  if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
   launchBackgroundJob({
     jobType: "stockScreen",
     scriptPath: path.join(__dirname, "scripts", "universe", "run-stock-screen.js"),
-    scriptArgs: [`--runId=${runId}`, `--presetId=${presetId}`, `--market=${market}`],
+    scriptArgs,
     sessionStartedAt,
     triggeredBy,
     extra: { runId, presetId, market },
@@ -2551,7 +2553,7 @@ async function handleStockScreenRunApi(req, res) {
       VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
     `, [runId, ownerUserId, user.email, presetId, presetRow.label, market, sessionStartedAt]);
 
-    launchStockScreenProcess({ runId, presetId, market, sessionStartedAt, triggeredBy: user.email });
+    launchStockScreenProcess({ runId, presetId, market, ownerUserId, sessionStartedAt, triggeredBy: user.email });
     sendJson(res, 200, { started: true, runId, presetId, market, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动选股扫描失败。" });
