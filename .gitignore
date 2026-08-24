@@ -3,5 +3,6 @@ app-server.err
 server-smoke.out
 server-smoke.err
 node_modules/
+__pycache__/
 data/*.json
 data/*.tmp
