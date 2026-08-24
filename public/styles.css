@@ -57,7 +57,7 @@ body {
 
 .wizard-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 12px;
 }
 
@@ -1739,6 +1739,24 @@ button:disabled {
 
 .admin-ranking-list {
   overflow-x: auto;
+}
+
+.admin-scan-details {
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.admin-scan-details summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.admin-scan-details .admin-ranking-table {
+  margin: 0 10px 10px;
+  width: calc(100% - 20px);
 }
 
 .admin-ranking-table {

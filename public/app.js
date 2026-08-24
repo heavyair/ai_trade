@@ -130,6 +130,15 @@ const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRun
 const adminAutoGenerateRunStatus = document.querySelector("#adminAutoGenerateRunStatus");
 const adminAutoGenerateProgressBanner = document.querySelector("#adminAutoGenerateProgressBanner");
 const adminAutoGenerateList = document.querySelector("#adminAutoGenerateList");
+const adminStockScreenTabButton = document.querySelector("#adminStockScreenTabButton");
+const adminStockScreenPanel = document.querySelector("#adminStockScreenPanel");
+const adminStockScreenList = document.querySelector("#adminStockScreenList");
+const screenPresetSelect = document.querySelector("#screenPresetSelect");
+const screenMarketSelect = document.querySelector("#screenMarketSelect");
+const screenStartButton = document.querySelector("#screenStartButton");
+const screenStatusText = document.querySelector("#screenStatusText");
+const screenProgressBanner = document.querySelector("#screenProgressBanner");
+const screenRunList = document.querySelector("#screenRunList");
 const adminParamPatternModelSelect = document.querySelector("#adminParamPatternModelSelect");
 const adminParamPatternViewButton = document.querySelector("#adminParamPatternViewButton");
 const adminParamPatternDialog = document.querySelector("#adminParamPatternDialog");
@@ -2657,6 +2666,231 @@ async function triggerAdminAutoGenerateRun() {
   }
 }
 
+// "选股": pick a saved model + a market, server scans that market's whole symbols.json
+// universe for stocks whose most recent trading day triggered a buy/sell signal under that
+// model. Only server-persisted presets have a database id (built-in hardcoded defaults in
+// strategyPresets don't, unless a same-named preset was also saved server-side), and a
+// presetId is required to launch a scan, so the picker only lists presets that have one.
+function renderScreenPresetOptions() {
+  if (!screenPresetSelect) return;
+  const entries = Object.entries(strategyPresets).filter(([, preset]) => preset && preset.id);
+  if (entries.length === 0) {
+    screenPresetSelect.innerHTML = '<option value="">暂无可用模型（请先保存一个模型）</option>';
+    return;
+  }
+  const previousValue = screenPresetSelect.value;
+  screenPresetSelect.innerHTML = entries
+    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || name)}</option>`)
+    .join("");
+  if (previousValue && entries.some(([, preset]) => preset.id === previousValue)) {
+    screenPresetSelect.value = previousValue;
+  }
+}
+
+function renderScreenMatchesTable(matches) {
+  if (!Array.isArray(matches) || matches.length === 0) {
+    return '<div class="ranking-empty">暂无符合条件的股票。</div>';
+  }
+  const rows = matches.map((m) => `
+    <tr>
+      <td>${escapeHtml(m.code || "")}</td>
+      <td>${escapeHtml(m.name || "")}</td>
+      <td class="${m.action === "buy" ? "up" : "down"}">${escapeHtml(m.label || (m.action === "buy" ? "买入" : "卖出"))}</td>
+      <td>${Number.isFinite(m.price) ? m.price.toFixed(2) : ""}</td>
+      <td>${Number.isFinite(m.positionRatio) ? `${m.positionRatio.toFixed(1)}%` : ""}</td>
+      <td>${escapeHtml(m.reason || "")}</td>
+      <td>${escapeHtml(m.date || "")}</td>
+    </tr>
+  `).join("");
+  return `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr><th>代码</th><th>名称</th><th>方向</th><th>价格</th><th>目标仓位</th><th>触发原因</th><th>日期</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function formatScreenStatusLabel(status) {
+  if (status === "running") return "进行中";
+  if (status === "done") return "已完成";
+  if (status === "crashed") return "出错";
+  return status || "";
+}
+
+// Shared by both the main-page "选股" list (own runs only) and the admin "选股记录" list
+// (all users' runs) — a <details> block keeps the (potentially long) matches table collapsed
+// by default without needing separate click-to-expand wiring.
+function renderScreenRunEntry(run, options = {}) {
+  const marketLabel = run.market === "US" ? "美股" : "A股";
+  const statusLabel = formatScreenStatusLabel(run.status);
+  const progress = `${run.scannedSymbols || 0}/${run.totalSymbols || "?"}`;
+  const ownerPart = options.showOwner ? `${escapeHtml(run.ownerEmail || "")} · ` : "";
+  const errorPart = run.error ? ` · ${escapeHtml(run.error)}` : "";
+  const summary = `${ownerPart}${escapeHtml(run.presetLabel || run.presetId || "")} · ${marketLabel} · ${statusLabel} · 已扫描 ${progress} · 命中 ${run.matchCount || 0} · ${escapeHtml(formatAdminDate(run.startedAt))}${errorPart}`;
+  return `
+    <details class="admin-scan-details">
+      <summary>${summary}</summary>
+      ${renderScreenMatchesTable(run.matches)}
+    </details>
+  `;
+}
+
+let screenPollTimer = null;
+
+function scheduleScreenPoll() {
+  if (screenPollTimer) return;
+  screenPollTimer = window.setInterval(() => {
+    const screenPage = document.querySelector('[data-wizard-page="screen"]');
+    if (!screenPage || !screenPage.classList.contains("active")) {
+      stopScreenPoll();
+      return;
+    }
+    loadStockScreen();
+  }, 5000);
+}
+
+function stopScreenPoll() {
+  if (screenPollTimer) {
+    window.clearInterval(screenPollTimer);
+    screenPollTimer = null;
+  }
+}
+
+function renderScreenStatus(payload) {
+  const runs = Array.isArray(payload.runs) ? payload.runs : [];
+  const runningRun = runs.find((run) => run.status === "running");
+
+  if (screenStartButton) screenStartButton.disabled = Boolean(runningRun) || Boolean(payload.systemBusy);
+  if (screenStatusText) {
+    if (runningRun) {
+      screenStatusText.textContent = "扫描进行中...";
+    } else if (payload.systemBusy) {
+      screenStatusText.textContent = "系统正在处理其他后台任务，请稍后再试。";
+    } else {
+      screenStatusText.textContent = "";
+    }
+  }
+
+  if (screenProgressBanner) {
+    if (runningRun) {
+      const marketLabel = runningRun.market === "US" ? "美股" : "A股";
+      screenProgressBanner.classList.remove("hidden");
+      screenProgressBanner.innerHTML = `
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>选股扫描进行中</div>
+        <div class="admin-progress-banner-detail">模型：${escapeHtml(runningRun.presetLabel || "")} · 市场：${marketLabel}</div>
+        <div class="admin-progress-banner-stats">
+          <span>已扫描 <strong>${runningRun.scannedSymbols || 0}</strong>/${runningRun.totalSymbols || "?"}</span>
+          <span>已发现 <strong>${runningRun.matchCount || 0}</strong> 只</span>
+        </div>
+      `;
+    } else {
+      screenProgressBanner.classList.add("hidden");
+      screenProgressBanner.innerHTML = "";
+    }
+  }
+
+  if (screenRunList) {
+    screenRunList.innerHTML = runs.length === 0
+      ? '<div class="ranking-empty">还没有扫描记录。</div>'
+      : runs.map((run) => renderScreenRunEntry(run)).join("");
+  }
+
+  if (runningRun) {
+    scheduleScreenPoll();
+  } else {
+    stopScreenPoll();
+  }
+}
+
+async function loadStockScreen() {
+  if (!screenRunList) return;
+  if (!screenRunList.innerHTML.trim()) {
+    screenRunList.innerHTML = '<div class="ranking-empty">正在读取扫描记录...</div>';
+  }
+  try {
+    const response = await fetch("/api/stock-screen", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取选股结果失败。");
+    renderScreenStatus(payload);
+  } catch (error) {
+    screenRunList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function triggerStockScreenRun() {
+  const presetId = screenPresetSelect && screenPresetSelect.value;
+  const market = screenMarketSelect && screenMarketSelect.value;
+  if (!presetId) {
+    setStatus("请先选择一个模型。", true);
+    return;
+  }
+  if (screenStatusText) screenStatusText.textContent = "正在启动扫描...";
+  try {
+    const response = await fetch("/api/stock-screen/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presetId, market }),
+    });
+    await readJsonResponse(response, "启动选股扫描失败。");
+    setStatus("已启动选股扫描。");
+    await loadStockScreen();
+  } catch (error) {
+    if (screenStatusText) screenStatusText.textContent = "";
+    setStatus(`启动选股扫描失败：${error.message}`, true);
+  }
+}
+
+if (screenStartButton) {
+  screenStartButton.addEventListener("click", () => triggerStockScreenRun());
+}
+
+let adminStockScreenPollTimer = null;
+
+function scheduleAdminStockScreenPoll() {
+  if (adminStockScreenPollTimer) return;
+  adminStockScreenPollTimer = window.setInterval(() => {
+    if (!adminStockScreenPanel || adminStockScreenPanel.classList.contains("hidden")) {
+      stopAdminStockScreenPoll();
+      return;
+    }
+    loadAdminStockScreen();
+  }, 5000);
+}
+
+function stopAdminStockScreenPoll() {
+  if (adminStockScreenPollTimer) {
+    window.clearInterval(adminStockScreenPollTimer);
+    adminStockScreenPollTimer = null;
+  }
+}
+
+async function loadAdminStockScreen() {
+  if (!adminStockScreenList) return;
+  if (!adminStockScreenList.innerHTML.trim()) {
+    adminStockScreenList.innerHTML = '<div class="ranking-empty">正在读取选股记录...</div>';
+  }
+  try {
+    const response = await fetch("/api/admin/stock-screen", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取选股记录失败。");
+    const runs = Array.isArray(payload.runs) ? payload.runs : [];
+    adminStockScreenList.innerHTML = runs.length === 0
+      ? '<div class="ranking-empty">还没有选股扫描记录。</div>'
+      : runs.map((run) => renderScreenRunEntry(run, { showOwner: true })).join("");
+    if (runs.some((run) => run.status === "running")) {
+      scheduleAdminStockScreenPoll();
+    } else {
+      stopAdminStockScreenPoll();
+    }
+  } catch (error) {
+    adminStockScreenList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+if (adminStockScreenTabButton) {
+  adminStockScreenTabButton.addEventListener("click", () => setAdminTab("stockScreen"));
+}
+
 function openAdminValidationParamViewer(sourceScanResultId) {
   const candidate = adminValidationCache.find((item) => item.sourceScanResultId === sourceScanResultId);
   if (!candidate) return;
@@ -2765,24 +2999,28 @@ function setAdminTab(tab) {
   const showScanStatus = tab === "scanStatus";
   const showValidation = tab === "validation";
   const showAutoGenerate = tab === "autoGenerate";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate;
+  const showStockScreen = tab === "stockScreen";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
   if (adminScanStatusTabButton) adminScanStatusTabButton.classList.toggle("active", showScanStatus);
   if (adminValidationTabButton) adminValidationTabButton.classList.toggle("active", showValidation);
   if (adminAutoGenerateTabButton) adminAutoGenerateTabButton.classList.toggle("active", showAutoGenerate);
+  if (adminStockScreenTabButton) adminStockScreenTabButton.classList.toggle("active", showStockScreen);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
   if (adminScanStatusPanel) adminScanStatusPanel.classList.toggle("hidden", !showScanStatus);
   if (adminValidationPanel) adminValidationPanel.classList.toggle("hidden", !showValidation);
   if (adminAutoGeneratePanel) adminAutoGeneratePanel.classList.toggle("hidden", !showAutoGenerate);
+  if (adminStockScreenPanel) adminStockScreenPanel.classList.toggle("hidden", !showStockScreen);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
   if (showValidation) loadAdminValidation();
   if (showAutoGenerate) loadAdminAutoGenerate();
+  if (showStockScreen) loadAdminStockScreen();
 }
 
 if (adminPresetsTabButton) {
@@ -3475,6 +3713,10 @@ function setWizardPage(pageName) {
     window.setTimeout(() => {
       openModelSelectorDialog();
     }, 80);
+  }
+  if (nextPage === "screen") {
+    renderScreenPresetOptions();
+    loadStockScreen();
   }
 
   window.requestAnimationFrame(() => {

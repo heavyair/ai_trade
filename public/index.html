@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-save-as-model">
+    <link rel="stylesheet" href="/styles.css?v=20260823-stock-screen">
   </head>
   <body>
     <main class="shell">
@@ -20,6 +20,7 @@
           <button id="wizardRankButton" class="wizard-action" type="button" data-wizard-target="ranking" aria-selected="false" data-i18n="rankModels">模型排行</button>
           <button id="wizardNewModelButton" class="wizard-action" type="button" data-wizard-target="new-model" aria-selected="false" data-i18n="newModel">新建模型</button>
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false" data-i18n="historySimulation">历史模拟</button>
+          <button id="wizardScreenButton" class="wizard-action" type="button" data-wizard-target="screen" aria-selected="false">选股</button>
         </div>
         <div class="auth-panel" aria-live="polite">
           <div>
@@ -140,6 +141,7 @@
             <button id="adminScanStatusTabButton" type="button">后台计算状态</button>
             <button id="adminValidationTabButton" type="button">全市场验证</button>
             <button id="adminAutoGenerateTabButton" type="button">AI自动生成</button>
+            <button id="adminStockScreenTabButton" type="button">选股记录</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -221,6 +223,10 @@
             </div>
             <div id="adminAutoGenerateProgressBanner" class="admin-progress-banner hidden"></div>
             <div id="adminAutoGenerateList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminStockScreenPanel" class="hidden">
+            <p class="field-hint">所有用户触发过的"选股"扫描记录，按开始时间排序。</p>
+            <div id="adminStockScreenList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1126,8 +1132,33 @@
         </div>
       </section>
       </div>
+
+      <section id="screenPage" class="wizard-page" data-wizard-page="screen" aria-label="选股">
+        <div class="section-head">
+          <div>
+            <h2>选股</h2>
+            <p class="field-hint">选择一个模型和市场，扫描该市场全部股票，找出最近数据显示今天符合下单条件的股票。</p>
+          </div>
+        </div>
+        <div id="screenTriggerRow" class="admin-scan-filter-row">
+          <label>选择模型
+            <select id="screenPresetSelect"></select>
+          </label>
+          <label>选择市场
+            <select id="screenMarketSelect">
+              <option value="CN">A股</option>
+              <option value="US">美股</option>
+            </select>
+          </label>
+          <button type="button" id="screenStartButton" class="ghost-button">开始扫描</button>
+          <span id="screenStatusText" class="field-hint"></span>
+        </div>
+        <div id="screenProgressBanner" class="admin-progress-banner hidden"></div>
+        <div class="section-label">扫描记录（仅自己可见，最近 20 次）</div>
+        <div id="screenRunList" class="admin-ranking-list"></div>
+      </section>
     </main>
-    <script src="/formula-engine.js?v=20260823-save-as-model"></script>
-    <script src="/app.js?v=20260823-save-as-model"></script>
+    <script src="/formula-engine.js?v=20260823-stock-screen"></script>
+    <script src="/app.js?v=20260823-stock-screen"></script>
   </body>
 </html>

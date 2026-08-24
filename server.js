@@ -325,6 +325,29 @@ async function initializeDatabase() {
     );
 
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS original_model_id TEXT NOT NULL DEFAULT '0';
+
+    -- One row per "选股" scan run. A single row carries both the live in-progress state
+    -- (status='running', scanned_symbols/matches updated incrementally by the batch script)
+    -- and the permanent historical record once done — private to owner_user_id, except the
+    -- admin endpoint queries this table with no owner filter to see everyone's runs.
+    CREATE TABLE IF NOT EXISTS stock_screen_runs (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+      owner_email TEXT NOT NULL,
+      preset_id TEXT,
+      preset_label TEXT NOT NULL DEFAULT '',
+      market TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      total_symbols INTEGER NOT NULL DEFAULT 0,
+      scanned_symbols INTEGER NOT NULL DEFAULT 0,
+      match_count INTEGER NOT NULL DEFAULT 0,
+      matches JSONB NOT NULL DEFAULT '[]'::jsonb,
+      error TEXT NOT NULL DEFAULT '',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS stock_screen_runs_owner_idx ON stock_screen_runs(owner_user_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS stock_screen_runs_started_idx ON stock_screen_runs(started_at DESC);
   `);
 
   await normalizeExistingPresetLabels();
@@ -1003,6 +1026,7 @@ function presetRowsToMap(rows) {
     const rowMeta = row.meta && typeof row.meta === "object" ? row.meta : {};
     next[row.name] = sanitizeServerPreset(row.name, {
       ...preset,
+      id: row.id,
       label: row.label,
       strategyType: row.strategy_type,
       meta: {
@@ -1022,14 +1046,14 @@ function presetRowsToMap(rows) {
 
 async function readUserPresets(email) {
   const legacyResult = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+    SELECT id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL AND hidden_at IS NULL
     ORDER BY updated_at DESC
   `, [PUBLIC_OWNER_LABEL]);
   const userResult = await dbQuery(`
-    SELECT strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
+    SELECT strategy_presets.id, strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
       strategy_presets.meta, strategy_presets.original_text, strategy_presets.model_text, strategy_presets.is_legacy,
       users.email AS owner_email, TRUE AS is_owner, FALSE AS is_public
     FROM strategy_presets
@@ -1051,7 +1075,7 @@ async function readUserPresets(email) {
 
 async function readVisiblePresetsForAnonymous() {
   const result = await dbQuery(`
-    SELECT name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+    SELECT id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL AND hidden_at IS NULL
@@ -2178,6 +2202,17 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   });
 }
 
+function launchStockScreenProcess({ runId, presetId, market, sessionStartedAt, triggeredBy }) {
+  launchBackgroundJob({
+    jobType: "stockScreen",
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-stock-screen.js"),
+    scriptArgs: [`--runId=${runId}`, `--presetId=${presetId}`, `--market=${market}`],
+    sessionStartedAt,
+    triggeredBy,
+    extra: { runId, presetId, market },
+  });
+}
+
 function launchUniverseValidationProcess({ buyHoldMax, bestReturnMin, rescan, sessionStartedAt, triggeredBy }) {
   const scriptArgs = [`--buyHoldMax=${buyHoldMax}`, `--bestReturnMin=${bestReturnMin}`, `--minRows=250`, `--sessionSince=${sessionStartedAt}`];
   if (rescan) scriptArgs.push("--rescan");
@@ -2440,6 +2475,124 @@ async function handleAdminAutoGenerateRunApi(req, res) {
     sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });
+  }
+}
+
+function mapStockScreenRunRow(row) {
+  return {
+    id: row.id,
+    ownerEmail: row.owner_email,
+    presetId: row.preset_id,
+    presetLabel: row.preset_label,
+    market: row.market,
+    status: row.status,
+    totalSymbols: row.total_symbols,
+    scannedSymbols: row.scanned_symbols,
+    matchCount: row.match_count,
+    matches: Array.isArray(row.matches) ? row.matches : [],
+    error: row.error || "",
+    startedAt: row.started_at ? new Date(row.started_at).toISOString() : "",
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : "",
+  };
+}
+
+// Main-interface (non-admin) "选股" feature: any logged-in user picks a saved model + a
+// market, and the server batch-scans that market's whole symbols.json universe looking for
+// stocks whose most recent trading day triggered a buy/sell signal under that model. Reuses
+// the SAME global isScanRunning() lock as the admin batch jobs (scan/validation/autoGenerate)
+// rather than a separate lock — this app already learned the hard way that concurrent
+// background batch jobs cause real problems, so every batch job shares one system-wide slot.
+async function handleStockScreenRunApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "系统正在处理其他后台任务，请稍后再试。" });
+      return;
+    }
+
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const presetId = String(payload.presetId || "").trim();
+    const market = String(payload.market || "").trim().toUpperCase();
+    if (!presetId) {
+      sendJson(res, 400, { error: "请选择一个模型。" });
+      return;
+    }
+    if (market !== "CN" && market !== "US") {
+      sendJson(res, 400, { error: "请选择 A股 或 美股。" });
+      return;
+    }
+
+    const ownerUserId = userIdForEmail(user.email);
+    const presetResult = await dbQuery(`
+      SELECT id, label, owner_user_id FROM strategy_presets WHERE id = $1
+    `, [presetId]);
+    if (presetResult.rows.length === 0) {
+      sendJson(res, 404, { error: "模型不存在。" });
+      return;
+    }
+    const presetRow = presetResult.rows[0];
+    if (presetRow.owner_user_id && presetRow.owner_user_id !== ownerUserId) {
+      sendJson(res, 403, { error: "无权使用该模型。" });
+      return;
+    }
+
+    const runId = randomId("screen");
+    const sessionStartedAt = new Date().toISOString();
+    await dbQuery(`
+      INSERT INTO stock_screen_runs (id, owner_user_id, owner_email, preset_id, preset_label, market, status, started_at)
+      VALUES ($1, $2, $3, $4, $5, $6, 'running', $7)
+    `, [runId, ownerUserId, user.email, presetId, presetRow.label, market, sessionStartedAt]);
+
+    launchStockScreenProcess({ runId, presetId, market, sessionStartedAt, triggeredBy: user.email });
+    sendJson(res, 200, { started: true, runId, presetId, market, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动选股扫描失败。" });
+  }
+}
+
+async function handleStockScreenApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ownerUserId = userIdForEmail(user.email);
+    const result = await dbQuery(`
+      SELECT * FROM stock_screen_runs WHERE owner_user_id = $1 ORDER BY started_at DESC LIMIT 20
+    `, [ownerUserId]);
+    sendJson(res, 200, {
+      runs: result.rows.map(mapStockScreenRunRow),
+      systemBusy: isScanRunning(),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取选股结果失败。" });
+  }
+}
+
+async function handleAdminStockScreenApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT * FROM stock_screen_runs ORDER BY started_at DESC LIMIT 100
+    `);
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      runs: result.rows.map(mapStockScreenRunRow),
+      systemBusy: isScanRunning(),
+      scanInfo: activeScanInfo,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
   }
 }
 
@@ -3800,6 +3953,21 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/backtests") {
     handleBacktestsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/stock-screen") {
+    handleStockScreenApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/stock-screen/run") {
+    handleStockScreenRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/stock-screen") {
+    handleAdminStockScreenApi(req, res);
     return;
   }
 
