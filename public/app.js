@@ -1907,6 +1907,7 @@ function renderAdminRerunFrame() {
     adminRerunMetrics.innerHTML = `
       <article><span>当前日期</span><strong>${escapeHtml(rows[index].date)}</strong></article>
       <article><span>收益率</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong></article>
+      <article><span>年化收益率</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(annualizeReturnByTradingDays(state.returnRate, index + 1))}</strong></article>
       <article><span>最大回撤</span><strong>${formatPercent(state.maxDrawdown)}</strong></article>
       <article><span>持仓比例</span><strong>${formatPercent(state.positionRatio)}</strong></article>
       <article><span>总资产</span><strong>${formatMoney(state.equity)}</strong></article>
@@ -4457,9 +4458,10 @@ function renderSelectedResultSummary() {
   }
 
   const leading = comparisonResults[0];
+  const leadingAnnualized = annualizeReturnByTradingDays(leading.finalState.returnRate, leading.states.length);
   selectedResultSummary.innerHTML = `
     <strong>${escapeHtml(leading.label)}</strong>
-    <span>收益 ${formatPercent(leading.finalState.returnRate)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
+    <span>收益 ${formatPercent(leading.finalState.returnRate)} · 年化 ${formatPercent(leadingAnnualized)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
   `;
   if (openResultsDialogButton) openResultsDialogButton.disabled = false;
 }
@@ -4503,7 +4505,7 @@ function renderModelCompareOptions() {
     .map(({ name, preset, record, displayDate }) => {
       const checked = selectedNames.has(name) ? " checked" : "";
       const rangeText = getPresetTestRangeText(record);
-      const returnText = record ? formatPercent(record.returnRate) : "--";
+      const returnText = record ? `${formatPercent(record.returnRate)}（年化 ${formatPercent(record.annualizedReturn)}）` : "--";
       const drawdownText = record ? formatPercent(record.maxDrawdown) : "--";
       const returnClass = record && record.returnRate >= 0 ? "up" : "down";
       const ownedActions = isOwnedEditablePreset(name)
@@ -7120,6 +7122,10 @@ function renderModelComparisonTable(results) {
               <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong>
             </div>
             <div>
+              <span>年化收益</span>
+              <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(annualizeReturnByTradingDays(state.returnRate, result.states.length))}</strong>
+            </div>
+            <div>
               <span>最大回撤</span>
               <strong>${formatPercent(state.maxDrawdown)}</strong>
             </div>
@@ -7212,6 +7218,14 @@ function annualizeReturn(returnRate, years) {
   if (!Number.isFinite(returnRate) || years <= 0) return 0;
   if (returnRate <= -100) return -100;
   return (Math.pow(1 + returnRate / 100, 1 / years) - 1) * 100;
+}
+
+// Same CAGR formula as annualizeReturn, but for the common case where what's on hand is a
+// trading-day count (rows.length / states array position) rather than a calendar year count
+// — 252 trading days/year matches scripts/shared/annualize.js's annualizedReturnRate so a
+// single-backtest result annualizes the same way here as it does in the batch scan scripts.
+function annualizeReturnByTradingDays(returnRate, tradingDays) {
+  return annualizeReturn(returnRate, tradingDays / 252);
 }
 
 function buildRankingPresetSnapshot(preset, config) {
@@ -9542,6 +9556,10 @@ function renderSelectedModelDetail(result) {
         <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong>
       </article>
       <article>
+        <span>年化收益</span>
+        <strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(annualizeReturnByTradingDays(state.returnRate, result.states.length))}</strong>
+      </article>
+      <article>
         <span>最大回撤</span>
         <strong>${formatPercent(state.maxDrawdown)}</strong>
       </article>
@@ -9597,16 +9615,18 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
 
   if (optimizationTitle) optimizationTitle.textContent = `${sourcePreset.label || "模型"} 参数优化报告`;
   if (optimizationSubtitle) optimizationSubtitle.textContent = `${verdict}；共测试 ${testedCount} 组参数。`;
+  const baseAnnualized = annualizeReturnByTradingDays(baseResult.finalState.returnRate, baseResult.states.length);
+  const bestAnnualized = annualizeReturnByTradingDays(bestResult.finalState.returnRate, bestResult.states.length);
   optimizationReport.innerHTML = `
     <article>
       <span>原参数收益 / 回撤</span>
       <strong>${formatPercent(baseResult.finalState.returnRate)} / ${formatPercent(baseResult.finalState.maxDrawdown)}</strong>
-      <p>交易 ${baseResult.finalState.trades.length} 次；评分 ${baseResult.score.toFixed(2)}</p>
+      <p>年化收益 ${formatPercent(baseAnnualized)}；交易 ${baseResult.finalState.trades.length} 次；评分 ${baseResult.score.toFixed(2)}</p>
     </article>
     <article>
       <span>最佳参数收益 / 回撤</span>
       <strong>${formatPercent(bestResult.finalState.returnRate)} / ${formatPercent(bestResult.finalState.maxDrawdown)}</strong>
-      <p>交易 ${bestResult.finalState.trades.length} 次；评分 ${bestResult.score.toFixed(2)}</p>
+      <p>年化收益 ${formatPercent(bestAnnualized)}；交易 ${bestResult.finalState.trades.length} 次；评分 ${bestResult.score.toFixed(2)}</p>
     </article>
     <article>
       <span>收益变化</span>
@@ -9918,6 +9938,7 @@ function renderModelTradesDetail(result) {
     </div>
     <div class="selected-model-metrics">
       <article><span>模型收益</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong></article>
+      <article><span>年化收益</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(annualizeReturnByTradingDays(state.returnRate, result.states.length))}</strong></article>
       <article><span>最大回撤</span><strong>${formatPercent(state.maxDrawdown)}</strong></article>
       <article><span>全仓收益</span><strong>${formatPercent(state.buyHold.returnRate)}</strong></article>
       <article><span>超额收益</span><strong class="${state.excessReturn >= 0 ? "up" : "down"}">${formatPercent(state.excessReturn)}</strong></article>
