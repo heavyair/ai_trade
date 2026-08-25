@@ -2500,7 +2500,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
     // of silently disappearing — its train/test fields just come back as defaults below.
     const result = hasResultsTable.rows.length > 0
       ? await dbQuery(`
-        SELECT sp.id, sp.label, sp.strategy_type, sp.meta, sp.created_at, sp.updated_at,
+        SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
           osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
           osr.train_start_date, osr.test_start_date
         FROM strategy_presets sp
@@ -2510,7 +2510,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
         LIMIT 500
       `)
       : await dbQuery(`
-        SELECT id, label, strategy_type, meta, created_at, updated_at
+        SELECT id, label, strategy_type, config, meta, created_at, updated_at
         FROM strategy_presets
         WHERE meta->>'creator' = 'ai-auto'
         ORDER BY updated_at DESC
@@ -2522,6 +2522,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
         id: row.id,
         label: row.label,
         strategyType: row.strategy_type,
+        bestConfig: row.config && typeof row.config === "object" ? row.config : {},
         targetSymbol: meta.targetSymbol || "",
         reason: meta.originalText || "",
         createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",

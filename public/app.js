@@ -2137,6 +2137,16 @@ if (adminScanList) {
 if (adminAutoGenerateList) {
   adminAutoGenerateList.addEventListener("click", (event) => {
     const target = event.target;
+    const viewParamsButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
+    if (viewParamsButton) {
+      openAdminAutoGenerateParamViewer(viewParamsButton.dataset.presetId);
+      return;
+    }
+    const rerunButton = target && target.closest ? target.closest(".admin-auto-generate-rerun-button") : null;
+    if (rerunButton) {
+      openAdminAutoGenerateRerun(rerunButton.dataset.presetId);
+      return;
+    }
     const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header") : null;
     if (sortHeader) {
       const key = sortHeader.dataset.adminAutoGenerateSortKey;
@@ -2557,6 +2567,51 @@ async function triggerAdminValidationRun() {
   }
 }
 
+function findAdminAutoGenerateRecord(presetId) {
+  const presets = adminAutoGenerateLastPayload && Array.isArray(adminAutoGenerateLastPayload.presets)
+    ? adminAutoGenerateLastPayload.presets
+    : [];
+  return presets.find((item) => item.id === presetId);
+}
+
+// Mirrors openAdminScanParamViewer's readonly-viewer pattern, but sets preset.meta.targetSymbol
+// explicitly (openAdminScanParamViewer doesn't, so its own save-as silently falls back to
+// whatever symbol happens to be typed in the main page's code input) so "另存为个人模型" here
+// always defaults to the AI-generated model's actual target stock, not an unrelated one.
+function openAdminAutoGenerateParamViewer(presetId) {
+  const record = findAdminAutoGenerateRecord(presetId);
+  if (!record) return;
+  const config = record.bestConfig && typeof record.bestConfig === "object" ? record.bestConfig : {};
+  const viewPreset = {
+    ...config,
+    label: record.label,
+    strategyType: record.strategyType || config.strategyType || "wave",
+    meta: {
+      targetSymbol: record.targetSymbol,
+      originalText: record.reason || "",
+    },
+  };
+  openPresetParamEditor(presetId, {
+    preset: viewPreset,
+    readonly: true,
+    title: `查看 AI 自动生成参数：${record.targetSymbol}（${record.label}）`,
+    subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率 ${formatPercent(record.testAnnualizedReturn)} · 只读`,
+  });
+}
+
+async function openAdminAutoGenerateRerun(presetId) {
+  const record = findAdminAutoGenerateRecord(presetId);
+  if (!record || !adminRerunDialog) return;
+  await runAdminRerunPlayback({
+    title: `交易记录：${record.targetSymbol}（${record.label}）`,
+    symbol: record.targetSymbol,
+    config: record.bestConfig || {},
+    strategyType: record.strategyType,
+    start: formatDate(shiftYears(new Date(), -5)),
+    end: todayText(),
+  });
+}
+
 function formatAdminAutoGenerateReason(reason) {
   const text = String(reason || "").trim();
   if (!text) return "";
@@ -2629,6 +2684,10 @@ function renderAdminAutoGenerateList(payload) {
           <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
           <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
           <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
+          <td class="admin-scan-actions">
+            <button type="button" class="admin-view-params-button" data-preset-id="${escapeHtml(p.id)}">查看参数</button>
+            <button type="button" class="admin-auto-generate-rerun-button" data-preset-id="${escapeHtml(p.id)}">查看交易记录</button>
+          </td>
         </tr>
       `;
       }).join("");
@@ -2640,7 +2699,7 @@ function renderAdminAutoGenerateList(payload) {
       adminAutoGenerateList.innerHTML = `
         <table class="admin-ranking-table">
           <thead>
-            <tr>${headerCells}</tr>
+            <tr>${headerCells}<th></th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
