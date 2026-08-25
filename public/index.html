@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260825-annualized-return">
+    <link rel="stylesheet" href="/styles.css?v=20260825-scan-filters">
   </head>
   <body>
     <main class="shell">
@@ -158,6 +158,25 @@
               </label>
               <label>优化后收益率下限(%)
                 <input id="adminScanFilterBestReturnMin" type="number" step="1" placeholder="不限" value="100">
+              </label>
+              <label>市场
+                <select id="adminScanFilterMarket">
+                  <option value="">不限</option>
+                  <option value="CN">A股</option>
+                  <option value="US">美股</option>
+                </select>
+              </label>
+              <label>
+                <input id="adminScanFilterChip" type="checkbox">
+                芯片股
+              </label>
+              <label>
+                <input id="adminScanFilterTech" type="checkbox">
+                high tech 股
+              </label>
+              <label>
+                <input id="adminScanFilterQqq" type="checkbox">
+                QQQ成分股
               </label>
               <button type="button" id="adminScanApplyFilterButton" class="ghost-button">应用筛选</button>
               <button type="button" id="adminScanClearFilterButton" class="ghost-button">清除筛选</button>
@@ -1179,7 +1198,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260825-annualized-return"></script>
-    <script src="/app.js?v=20260825-annualized-return"></script>
+    <script src="/formula-engine.js?v=20260825-scan-filters"></script>
+    <script src="/app.js?v=20260825-scan-filters"></script>
   </body>
 </html>

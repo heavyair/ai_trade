@@ -155,6 +155,10 @@ const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
 const adminScanFilterBuyHoldMaxInput = document.querySelector("#adminScanFilterBuyHoldMax");
 const adminScanFilterBestReturnMinInput = document.querySelector("#adminScanFilterBestReturnMin");
+const adminScanFilterMarketInput = document.querySelector("#adminScanFilterMarket");
+const adminScanFilterChipInput = document.querySelector("#adminScanFilterChip");
+const adminScanFilterTechInput = document.querySelector("#adminScanFilterTech");
+const adminScanFilterQqqInput = document.querySelector("#adminScanFilterQqq");
 const adminScanApplyFilterButton = document.querySelector("#adminScanApplyFilterButton");
 const adminScanClearFilterButton = document.querySelector("#adminScanClearFilterButton");
 const adminScanFilterSummary = document.querySelector("#adminScanFilterSummary");
@@ -1546,6 +1550,10 @@ let adminScanSortKey = "annualizedDiff";
 let adminScanSortDirection = "asc";
 let adminScanFilterBuyHoldMax = 50;
 let adminScanFilterBestReturnMin = 100;
+let adminScanFilterMarket = "";
+let adminScanFilterChip = false;
+let adminScanFilterTech = false;
+let adminScanFilterQqq = false;
 
 const ADMIN_SCAN_COLUMNS = [
   { key: "symbolName", label: "标的" },
@@ -1579,6 +1587,10 @@ function filterAdminScanRecords(records) {
   return records.filter((record) => {
     if (Number.isFinite(adminScanFilterBuyHoldMax) && !(record.buyHoldReturnRate < adminScanFilterBuyHoldMax)) return false;
     if (Number.isFinite(adminScanFilterBestReturnMin) && !(record.bestReturnRate > adminScanFilterBestReturnMin)) return false;
+    if (adminScanFilterMarket && record.market !== adminScanFilterMarket) return false;
+    if (adminScanFilterChip && !record.isChip) return false;
+    if (adminScanFilterTech && !record.isTech) return false;
+    if (adminScanFilterQqq && !record.isQqq) return false;
     return true;
   });
 }
@@ -1626,7 +1638,8 @@ function renderAdminScanList() {
   if (!adminScanList) return;
 
   if (adminScanFilterSummary) {
-    const activeFilters = Number.isFinite(adminScanFilterBuyHoldMax) || Number.isFinite(adminScanFilterBestReturnMin);
+    const activeFilters = Number.isFinite(adminScanFilterBuyHoldMax) || Number.isFinite(adminScanFilterBestReturnMin)
+      || Boolean(adminScanFilterMarket) || adminScanFilterChip || adminScanFilterTech || adminScanFilterQqq;
     adminScanFilterSummary.textContent = activeFilters
       ? `共 ${adminScanCache.length} 条，符合筛选条件 ${filterAdminScanRecords(adminScanCache).length} 条`
       : `共 ${adminScanCache.length} 条`;
@@ -2148,6 +2161,10 @@ if (adminScanApplyFilterButton) {
   adminScanApplyFilterButton.addEventListener("click", () => {
     adminScanFilterBuyHoldMax = readAdminScanFilterInput(adminScanFilterBuyHoldMaxInput);
     adminScanFilterBestReturnMin = readAdminScanFilterInput(adminScanFilterBestReturnMinInput);
+    adminScanFilterMarket = adminScanFilterMarketInput ? adminScanFilterMarketInput.value : "";
+    adminScanFilterChip = Boolean(adminScanFilterChipInput && adminScanFilterChipInput.checked);
+    adminScanFilterTech = Boolean(adminScanFilterTechInput && adminScanFilterTechInput.checked);
+    adminScanFilterQqq = Boolean(adminScanFilterQqqInput && adminScanFilterQqqInput.checked);
     adminScanPage = 0;
     renderAdminScanList();
   });
@@ -2157,8 +2174,16 @@ if (adminScanClearFilterButton) {
   adminScanClearFilterButton.addEventListener("click", () => {
     adminScanFilterBuyHoldMax = null;
     adminScanFilterBestReturnMin = null;
+    adminScanFilterMarket = "";
+    adminScanFilterChip = false;
+    adminScanFilterTech = false;
+    adminScanFilterQqq = false;
     if (adminScanFilterBuyHoldMaxInput) adminScanFilterBuyHoldMaxInput.value = "";
     if (adminScanFilterBestReturnMinInput) adminScanFilterBestReturnMinInput.value = "";
+    if (adminScanFilterMarketInput) adminScanFilterMarketInput.value = "";
+    if (adminScanFilterChipInput) adminScanFilterChipInput.checked = false;
+    if (adminScanFilterTechInput) adminScanFilterTechInput.checked = false;
+    if (adminScanFilterQqqInput) adminScanFilterQqqInput.checked = false;
     adminScanPage = 0;
     renderAdminScanList();
   });

@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
 const { Pool } = require("pg");
 const ModelGenerator = require("./scripts/shared/model-generator.js");
+const { getStockCategories } = require("./scripts/shared/stock-categories.js");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -2004,12 +2005,21 @@ async function handleAdminRankingsApi(req, res) {
   }
 }
 
-function mapAdminOptimizationScanRow(row) {
+function mapAdminOptimizationScanRow(row, universeIndexByCode) {
+  const categories = getStockCategories(row.symbol, universeIndexByCode);
+  // optimization_scan_results.market stores the data-provider's raw exchange code for CN
+  // stocks ("1" Shanghai / "0" Shenzhen — see run-optimization-scan.js/run-auto-generate.js's
+  // dbMarket computation) and "US" for US stocks, never "CN" — normalize to CN/US here so the
+  // client filter (and anything else comparing against "CN"/"US") sees a consistent value.
+  const marketLabel = row.market === "US" ? "US" : "CN";
   return {
     id: row.id,
     symbol: row.symbol,
-    market: row.market,
+    market: marketLabel,
     symbolName: row.symbol_name,
+    isChip: categories.isChip,
+    isTech: categories.isTech,
+    isQqq: categories.isQqq,
     presetId: row.preset_id,
     presetLabel: row.preset_label,
     strategyType: row.strategy_type,
@@ -2056,9 +2066,12 @@ async function handleAdminOptimizationScanApi(req, res) {
       ORDER BY (train_start_date IS NULL) ASC, annualized_diff ASC
       LIMIT 3000
     `);
+    const universeIndexByCode = new Map(
+      loadOptimizationUniverse().map((entry) => [String(entry.code || "").toUpperCase(), entry])
+    );
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
-      records: result.rows.map(mapAdminOptimizationScanRow),
+      records: result.rows.map((row) => mapAdminOptimizationScanRow(row, universeIndexByCode)),
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
