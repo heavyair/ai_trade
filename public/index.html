@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260824-train-test-sort-fix">
+    <link rel="stylesheet" href="/styles.css?v=20260824-scan-pause-resume">
   </head>
   <body>
     <main class="shell">
@@ -181,7 +181,7 @@
             <div class="admin-rerun-controls">
               <button type="button" id="adminScanRunSelectedButton" class="ghost-button">对勾选的模型重新扫描</button>
               <button type="button" id="adminScanRunAllButton" class="ghost-button">对全部模型重新扫描</button>
-              <button type="button" id="adminScanResumeButton" class="ghost-button hidden">继续上次中断的扫描</button>
+              <button type="button" id="adminScanPauseResumeButton" class="ghost-button hidden">暂停扫描</button>
               <span id="adminScanRunStatus" class="field-hint"></span>
             </div>
           </div>
@@ -1179,7 +1179,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260824-train-test-sort-fix"></script>
-    <script src="/app.js?v=20260824-train-test-sort-fix"></script>
+    <script src="/formula-engine.js?v=20260824-scan-pause-resume"></script>
+    <script src="/app.js?v=20260824-scan-pause-resume"></script>
   </body>
 </html>

@@ -2282,12 +2282,53 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       sessionStartedAt = new Date().toISOString();
       trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
       testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+
+      // A fresh (non-resume) trigger means "rescan from scratch", not "pick up where
+      // the last run left off" — clear old rows for the presets in scope up front so the
+      // admin never sees a stale mix of this-run and previous-run results mid-scan.
+      if (presetIds.length > 0) {
+        await dbQuery(`DELETE FROM optimization_scan_results WHERE preset_id = ANY($1)`, [presetIds]);
+      } else {
+        await dbQuery(`
+          DELETE FROM optimization_scan_results
+          WHERE preset_id IN (SELECT id FROM strategy_presets WHERE original_model_id = '0' AND hidden_at IS NULL)
+        `);
+      }
+
+      // A fresh trigger also starts a clean slate on the pause/crash flag itself — don't
+      // wait for the new child's own exit to overwrite it, since that leaves a window where
+      // a leftover "上次中断" flag from a previous, now-discarded session could still be read.
+      lastScanResult = null;
+      writeScanSessionState({ status: "idle", result: null });
     }
 
     launchScanProcess({ presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy: admin.email });
     sendJson(res, 200, { started: true, presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
+  }
+}
+
+// Killing activeScanProcess (default SIGTERM) makes Node fire the SAME child.on("exit")
+// handler that any other crash goes through, with code=null (signal-terminated), which
+// launchBackgroundJob already treats as "crashed" and persists via writeScanSessionState —
+// so a pause is just a deliberate crash, and the existing resume flow (lastScanResult +
+// "resume" branch above) picks it back up with zero new state-tracking needed.
+async function handleAdminOptimizationScanPauseApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!isScanRunning() || !activeScanInfo || activeScanInfo.jobType !== "scan") {
+      sendJson(res, 400, { error: "当前没有正在运行的后台模型排行扫描，无法暂停。" });
+      return;
+    }
+    activeScanProcess.kill();
+    sendJson(res, 200, { paused: true });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "暂停扫描失败。" });
   }
 }
 
@@ -3970,6 +4011,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/optimization-scan/run") {
     handleAdminOptimizationScanRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/optimization-scan/pause") {
+    handleAdminOptimizationScanPauseApi(req, res);
     return;
   }
 

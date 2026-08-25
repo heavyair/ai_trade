@@ -162,7 +162,7 @@ const adminScanStatusSummary = document.querySelector("#adminScanStatusSummary")
 const adminScanStatusModelList = document.querySelector("#adminScanStatusModelList");
 const adminScanRunSelectedButton = document.querySelector("#adminScanRunSelectedButton");
 const adminScanRunAllButton = document.querySelector("#adminScanRunAllButton");
-const adminScanResumeButton = document.querySelector("#adminScanResumeButton");
+const adminScanPauseResumeButton = document.querySelector("#adminScanPauseResumeButton");
 const adminScanRunStatus = document.querySelector("#adminScanRunStatus");
 const adminRerunDialog = document.querySelector("#adminRerunDialog");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
@@ -2241,16 +2241,26 @@ function renderAdminScanStatus(status) {
 
   const last = status.lastScanResult;
   const crashed = Boolean(last && last.exitCode !== 0);
-  if (adminScanResumeButton) {
-    adminScanResumeButton.classList.toggle("hidden", running || !crashed);
-    adminScanResumeButton.disabled = running;
+  // One button, two modes: while a scan is running it pauses it; once paused/crashed and
+  // idle, the same button resumes it — matches how the resume flow already works, a pause
+  // is just a deliberate crash (see handleAdminOptimizationScanPauseApi).
+  if (adminScanPauseResumeButton) {
+    adminScanPauseResumeButton.classList.toggle("hidden", !running && !crashed);
+    adminScanPauseResumeButton.disabled = false;
+    if (running) {
+      adminScanPauseResumeButton.textContent = "暂停扫描";
+      adminScanPauseResumeButton.dataset.mode = "pause";
+    } else if (crashed) {
+      adminScanPauseResumeButton.textContent = "继续上次中断";
+      adminScanPauseResumeButton.dataset.mode = "resume";
+    }
   }
 
   if (adminScanRunStatus) {
     if (running) {
       adminScanRunStatus.textContent = `扫描进行中（由 ${status.scanInfo && status.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(status.scanInfo && status.scanInfo.startedAt))} 启动）...`;
     } else if (crashed) {
-      adminScanRunStatus.textContent = `上次扫描异常退出（退出码 ${last.exitCode}，${escapeHtml(formatAdminDate(last.endedAt))}）——可以点"继续上次中断的扫描"接着跑，不会重复已经完成的部分。`;
+      adminScanRunStatus.textContent = `上次扫描已暂停/中断（退出码 ${last.exitCode}，${escapeHtml(formatAdminDate(last.endedAt))}）——可以点"继续上次中断"接着跑，不会重复已经完成的部分。`;
     } else if (last) {
       adminScanRunStatus.textContent = `上次扫描已正常完成（${escapeHtml(formatAdminDate(last.endedAt))}）。`;
     } else {
@@ -2327,6 +2337,19 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   } catch (error) {
     if (adminScanRunStatus) adminScanRunStatus.textContent = "";
     setStatus(`启动扫描失败：${error.message}`, true);
+  }
+}
+
+async function pauseAdminScan() {
+  if (adminScanRunStatus) adminScanRunStatus.textContent = "正在暂停扫描...";
+  try {
+    const response = await fetch("/api/admin/optimization-scan/pause", { method: "POST" });
+    await readJsonResponse(response, "暂停扫描失败。");
+    setStatus("扫描已暂停。可以点“继续上次中断”接着跑。");
+    await loadAdminScanStatus();
+  } catch (error) {
+    if (adminScanRunStatus) adminScanRunStatus.textContent = "";
+    setStatus(`暂停扫描失败：${error.message}`, true);
   }
 }
 
@@ -3335,9 +3358,13 @@ if (adminScanRunAllButton) {
     triggerAdminScanRun([]);
   });
 }
-if (adminScanResumeButton) {
-  adminScanResumeButton.addEventListener("click", () => {
-    triggerAdminScanRun([], { resume: true });
+if (adminScanPauseResumeButton) {
+  adminScanPauseResumeButton.addEventListener("click", () => {
+    if (adminScanPauseResumeButton.dataset.mode === "pause") {
+      pauseAdminScan();
+    } else {
+      triggerAdminScanRun([], { resume: true });
+    }
   });
 }
 
