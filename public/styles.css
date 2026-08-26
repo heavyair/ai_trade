@@ -1923,6 +1923,10 @@ button:disabled {
   width: auto;
 }
 
+.admin-scan-filter-row input[type="text"] {
+  width: 160px;
+}
+
 .admin-scan-filter-row select {
   padding: 5px 8px;
   border: 1px solid #d6dfe8;

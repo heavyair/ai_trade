@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260825-autogen-params-trades">
+    <link rel="stylesheet" href="/styles.css?v=20260825-scan-symbol-filter">
   </head>
   <body>
     <main class="shell">
@@ -153,6 +153,9 @@
           <div id="adminScanPanel" class="hidden">
             <p class="field-hint">后台批量参数优化扫描结果：对每只标的用现有模型重新优化参数。点击表头可排序。</p>
             <div id="adminScanFilterRow" class="admin-scan-filter-row">
+              <label>股票代码或名称
+                <input id="adminScanFilterSymbol" type="text" placeholder="不限，如 NVDA 或 贵州茅台">
+              </label>
               <label>全仓买入持有收益率上限(%)
                 <input id="adminScanFilterBuyHoldMax" type="number" step="1" placeholder="不限" value="50">
               </label>
@@ -1198,7 +1201,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260825-autogen-params-trades"></script>
-    <script src="/app.js?v=20260825-autogen-params-trades"></script>
+    <script src="/formula-engine.js?v=20260825-scan-symbol-filter"></script>
+    <script src="/app.js?v=20260825-scan-symbol-filter"></script>
   </body>
 </html>

@@ -153,6 +153,7 @@ const closeAdminParamPatternButton = document.querySelector("#closeAdminParamPat
 const adminParamPatternList = document.querySelector("#adminParamPatternList");
 const adminRankingList = document.querySelector("#adminRankingList");
 const adminScanList = document.querySelector("#adminScanList");
+const adminScanFilterSymbolInput = document.querySelector("#adminScanFilterSymbol");
 const adminScanFilterBuyHoldMaxInput = document.querySelector("#adminScanFilterBuyHoldMax");
 const adminScanFilterBestReturnMinInput = document.querySelector("#adminScanFilterBestReturnMin");
 const adminScanFilterMarketInput = document.querySelector("#adminScanFilterMarket");
@@ -1548,6 +1549,7 @@ const adminScanPageSize = 10;
 // train/test split methodology).
 let adminScanSortKey = "annualizedDiff";
 let adminScanSortDirection = "asc";
+let adminScanFilterSymbol = "";
 let adminScanFilterBuyHoldMax = 50;
 let adminScanFilterBestReturnMin = 100;
 let adminScanFilterMarket = "";
@@ -1584,7 +1586,12 @@ function getAdminScanSortValue(record, key) {
 }
 
 function filterAdminScanRecords(records) {
+  const symbolQuery = adminScanFilterSymbol.trim().toUpperCase();
   return records.filter((record) => {
+    if (symbolQuery) {
+      const haystack = `${record.symbol || ""} ${record.symbolName || ""}`.toUpperCase();
+      if (!haystack.includes(symbolQuery)) return false;
+    }
     if (Number.isFinite(adminScanFilterBuyHoldMax) && !(record.buyHoldReturnRate < adminScanFilterBuyHoldMax)) return false;
     if (Number.isFinite(adminScanFilterBestReturnMin) && !(record.bestReturnRate > adminScanFilterBestReturnMin)) return false;
     if (adminScanFilterMarket && record.market !== adminScanFilterMarket) return false;
@@ -1638,7 +1645,7 @@ function renderAdminScanList() {
   if (!adminScanList) return;
 
   if (adminScanFilterSummary) {
-    const activeFilters = Number.isFinite(adminScanFilterBuyHoldMax) || Number.isFinite(adminScanFilterBestReturnMin)
+    const activeFilters = Boolean(adminScanFilterSymbol) || Number.isFinite(adminScanFilterBuyHoldMax) || Number.isFinite(adminScanFilterBestReturnMin)
       || Boolean(adminScanFilterMarket) || adminScanFilterChip || adminScanFilterTech || adminScanFilterQqq;
     adminScanFilterSummary.textContent = activeFilters
       ? `共 ${adminScanCache.length} 条，符合筛选条件 ${filterAdminScanRecords(adminScanCache).length} 条`
@@ -2169,6 +2176,7 @@ function readAdminScanFilterInput(input) {
 
 if (adminScanApplyFilterButton) {
   adminScanApplyFilterButton.addEventListener("click", () => {
+    adminScanFilterSymbol = adminScanFilterSymbolInput ? adminScanFilterSymbolInput.value : "";
     adminScanFilterBuyHoldMax = readAdminScanFilterInput(adminScanFilterBuyHoldMaxInput);
     adminScanFilterBestReturnMin = readAdminScanFilterInput(adminScanFilterBestReturnMinInput);
     adminScanFilterMarket = adminScanFilterMarketInput ? adminScanFilterMarketInput.value : "";
@@ -2182,12 +2190,14 @@ if (adminScanApplyFilterButton) {
 
 if (adminScanClearFilterButton) {
   adminScanClearFilterButton.addEventListener("click", () => {
+    adminScanFilterSymbol = "";
     adminScanFilterBuyHoldMax = null;
     adminScanFilterBestReturnMin = null;
     adminScanFilterMarket = "";
     adminScanFilterChip = false;
     adminScanFilterTech = false;
     adminScanFilterQqq = false;
+    if (adminScanFilterSymbolInput) adminScanFilterSymbolInput.value = "";
     if (adminScanFilterBuyHoldMaxInput) adminScanFilterBuyHoldMaxInput.value = "";
     if (adminScanFilterBestReturnMinInput) adminScanFilterBestReturnMinInput.value = "";
     if (adminScanFilterMarketInput) adminScanFilterMarketInput.value = "";
