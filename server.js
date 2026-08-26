@@ -2530,13 +2530,20 @@ async function handleAdminAutoGenerateListApi(req, res) {
     // LEFT JOIN (not INNER) so a preset that hasn't made it into optimization_scan_results
     // yet (e.g. saved by an older build, before this table existed) still shows up instead
     // of silently disappearing — its train/test fields just come back as defaults below.
+    // Also joined on osr.symbol = the preset's OWN targetSymbol, not just preset_id — once an
+    // AI自动生成 preset becomes a root model, "对全部模型重新扫描" scans it against every
+    // stock in the universe, leaving MANY optimization_scan_results rows per preset_id (one
+    // per stock). Without the symbol match, the JOIN fans out into duplicate rows for the
+    // same preset with different (and mostly irrelevant) numbers — this list should only ever
+    // show the one result that's actually about the stock this model was generated for.
     const result = hasResultsTable.rows.length > 0
       ? await dbQuery(`
         SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
           osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
-          osr.train_start_date, osr.test_start_date
+          osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates
         FROM strategy_presets sp
-        LEFT JOIN optimization_scan_results osr ON osr.preset_id = sp.id
+        LEFT JOIN optimization_scan_results osr
+          ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
         WHERE sp.meta->>'creator' = 'ai-auto'
         ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff ASC, sp.updated_at DESC
         LIMIT 500
@@ -2564,6 +2571,8 @@ async function handleAdminAutoGenerateListApi(req, res) {
         annualizedDiff: Number(row.annualized_diff) || 0,
         trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
         testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
+        bestTrades: row.best_trades || 0,
+        testedCandidates: row.tested_candidates || 0,
       };
     });
 

@@ -2681,6 +2681,8 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
   { key: "testAnnualizedReturn", label: "验证期年化收益率" },
   { key: "annualizedDiff", label: "年化差异" },
+  { key: "bestTrades", label: "交易次数" },
+  { key: "testedCandidates", label: "测试组合数" },
   { key: "reason", label: "AI 生成理由" },
   { key: "updatedAt", label: "更新时间" },
 ];
@@ -2733,6 +2735,8 @@ function renderAdminAutoGenerateList(payload) {
           <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
           <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
           <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
+          <td>${p.bestTrades || 0}</td>
+          <td>${p.testedCandidates || 0}</td>
           <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
           <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
           <td class="admin-scan-actions">
