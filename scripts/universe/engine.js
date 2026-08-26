@@ -2128,9 +2128,20 @@ const DEFAULT_OPTIMIZATION_POINT_COUNT = 5;
 const MAX_OPTIMIZATION_POINT_COUNT = 200;
 const MAX_OPTIMIZATION_COMBINATIONS = 10000;
 
+// Lets a batch caller (run-auto-generate.js) control how many discrete values each freshly-
+// discovered parameter range gets tested at, without threading an extra argument through
+// every discoverXxxParameters/computeDefaultParamRange call site — same module-level
+// "current run context" convention as setActiveLotSizeSymbol above. 0 means "no override,
+// use DEFAULT_OPTIMIZATION_POINT_COUNT" (the pre-existing behavior every other caller keeps).
+let optimizationPointCountOverride = 0;
+function setOptimizationPointCountOverride(pointCount) {
+  optimizationPointCountOverride = Math.max(0, Math.round(Number(pointCount)) || 0);
+}
+
 function computeDefaultParamRange(value, isInteger, isPercent) {
+  const pointCount = optimizationPointCountOverride > 0 ? optimizationPointCountOverride : DEFAULT_OPTIMIZATION_POINT_COUNT;
   if (isPercent) {
-    return { min: 1, max: 100, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
+    return { min: 1, max: 100, pointCount };
   }
   const current = Number(value) || 0;
   const min = 1;
@@ -2140,7 +2151,7 @@ function computeDefaultParamRange(value, isInteger, isPercent) {
   } else {
     max = Math.round(max * 100) / 100;
   }
-  return { min, max, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT };
+  return { min, max, pointCount };
 }
 
 
@@ -2597,6 +2608,7 @@ module.exports = {
   MAX_OPTIMIZATION_COMBINATIONS,
   isStarMarketSymbol,
   setActiveLotSizeSymbol,
+  setOptimizationPointCountOverride,
   buildConfigFromPresetObject,
   buildBacktestStates,
   buildBuyHoldStates,

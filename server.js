@@ -2224,7 +2224,7 @@ function readScanProgress() {
   }
 }
 
-function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   // Clear any progress left over from a previous run so the panel doesn't briefly show stale
   // "currently trying..." detail before the freshly-spawned process writes its first update.
   try {
@@ -2233,7 +2233,7 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
     // fine if it didn't exist yet
   }
   const scriptArgs = [
-    `--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`,
+    `--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`, `--pointCount=${pointCount}`,
     `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`,
   ];
   if (limit > 0) scriptArgs.push(`--limit=${limit}`);
@@ -2246,7 +2246,7 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo },
+    extra: { symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo },
   });
 }
 
@@ -2598,19 +2598,20 @@ async function handleAdminAutoGenerateRunApi(req, res) {
       ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
       : [];
     const limit = Math.max(0, Math.min(500, Math.round(Number(payload.limit)) || 0));
-    const attemptsPerSymbol = Math.max(1, Math.min(90, Math.round(Number(payload.attemptsPerSymbol)) || 5));
+    const attemptsPerSymbol = Math.max(1, Math.min(90, Math.round(Number(payload.attemptsPerSymbol)) || 10));
     const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
+    const pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
     const trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
     const testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
     const sessionStartedAt = new Date().toISOString();
 
     launchAutoGenerateProcess({
-      symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt,
+      symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt,
       triggeredBy: admin.email,
       ownerUserId: userIdForEmail(admin.email),
       ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, trainYearsAgo, testYearsAgo, sessionStartedAt });
+    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });
   }

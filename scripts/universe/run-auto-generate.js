@@ -33,8 +33,10 @@
 // only ever existing as text baked into the saved preset's label.
 //
 // Usage: node scripts/universe/run-auto-generate.js [--symbols=513100,588000] [--limit=5]
-//   [--maxAttempts=20] [--attemptsPerSymbol=5] [--candidates=150] [--minTrainRows=200]
-//   [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1]
+//   [--maxAttempts=20] [--attemptsPerSymbol=10] [--candidates=400] [--pointCount=5]
+//   [--minTrainRows=200] [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1]
+//   --pointCount (3-10) controls how many discrete values each freshly-discovered parameter
+//   range gets tested at (engine.js's setOptimizationPointCountOverride).
 
 const fs = require("fs");
 const path = require("path");
@@ -62,8 +64,13 @@ const getArgString = (name) => {
 };
 const SYMBOL_LIMIT = Math.max(0, getArg("limit", 0));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 20));
-const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 5));
-const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 150));
+const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 10));
+const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
+// How many discrete values each freshly-discovered parameter range gets tested at during
+// the post-generation optimization search (engine.js's setOptimizationPointCountOverride) —
+// higher means a finer-grained search per parameter at the cost of more candidates needed
+// to cover the same combination space.
+const POINT_COUNT = Math.max(3, Math.min(10, Math.round(getArg("pointCount", 5))));
 const MIN_TRAIN_ROWS = Math.max(30, getArg("minTrainRows", 200));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 // Whole years only — shiftYears (scripts/shared/train-test-window.js) uses Date.setFullYear,
@@ -145,6 +152,7 @@ function modelHasRules(model) {
 
 async function main() {
   await ensureResultsTable(pool);
+  engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   let symbols;
   if (SYMBOLS_FILTER.length > 0) {
@@ -159,7 +167,7 @@ async function main() {
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 
-  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO}`);
+  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO}`);
   if (symbols.length === 0) {
     console.log("[warn] no symbols to process (empty --symbols list or empty universe manifest) — exiting without doing anything.");
   }

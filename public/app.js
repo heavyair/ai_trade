@@ -130,6 +130,7 @@ const adminAutoGenerateSymbolCount = document.querySelector("#adminAutoGenerateS
 const adminAutoGenerateLimitInput = document.querySelector("#adminAutoGenerateLimit");
 const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAutoGenerateAttemptsPerSymbol");
 const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
+const adminAutoGeneratePointCountInput = document.querySelector("#adminAutoGeneratePointCount");
 const adminAutoGenerateTrainYearsAgoInput = document.querySelector("#adminAutoGenerateTrainYearsAgo");
 const adminAutoGenerateTestYearsAgoInput = document.querySelector("#adminAutoGenerateTestYearsAgo");
 const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRunButton");
@@ -2960,12 +2961,14 @@ async function triggerAdminAutoGenerateRun() {
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
+  const pointCount = Number(adminAutoGeneratePointCountInput && adminAutoGeneratePointCountInput.value);
   const trainYearsAgo = Number(adminAutoGenerateTrainYearsAgoInput && adminAutoGenerateTrainYearsAgoInput.value);
   const testYearsAgo = Number(adminAutoGenerateTestYearsAgoInput && adminAutoGenerateTestYearsAgoInput.value);
   const requested = {
     limit: Number.isFinite(limit) ? limit : 0,
-    attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 5,
+    attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 10,
     maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
+    pointCount: Number.isFinite(pointCount) ? pointCount : 5,
     trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
     testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
   };
@@ -2982,7 +2985,7 @@ async function triggerAdminAutoGenerateRun() {
     // instead of silently running with a different number than the admin asked for (that's
     // exactly what caused this to be confusing before: the cap existed but nothing ever told
     // you your input got adjusted).
-    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts", "trainYearsAgo", "testYearsAgo"]
+    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts", "pointCount", "trainYearsAgo", "testYearsAgo"]
       .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0
