@@ -1733,6 +1733,18 @@ async function loadAdminScanResults() {
   }
 }
 
+// Shared default-naming rule for "另存为模型" across 后台模型排行 and AI自动生成: 股票代码
+// + 验证期年化收益 + 验证期交易次数 + 原模型名缩写(前6字符) — uses the TEST/validation-period
+// numbers (not train) since that's the out-of-sample figure that actually reflects whether
+// the model held up, and is what both lists sort by default.
+function buildAutoSaveLabel({ symbol, annualizedReturn, trades, modelLabel }) {
+  const symbolPart = String(symbol || "").trim();
+  const returnPart = Number.isFinite(annualizedReturn) ? `${annualizedReturn >= 0 ? "+" : ""}${annualizedReturn.toFixed(1)}%` : "";
+  const tradesPart = Number.isFinite(trades) ? `${trades}笔` : "";
+  const modelPart = String(modelLabel || "").trim().slice(0, 6);
+  return [symbolPart, returnPart, tradesPart, modelPart].filter(Boolean).join(" ").slice(0, 60);
+}
+
 function openAdminScanParamViewer(scanId) {
   const record = adminScanCache.find((item) => item.id === scanId);
   if (!record) return;
@@ -1747,13 +1759,24 @@ function openAdminScanParamViewer(scanId) {
     readonly: true,
     title: `查看优化后参数：${record.symbolName || record.symbol}（${record.presetLabel}）`,
     subtitle: `优化后收益率 ${formatPercent(record.bestReturnRate)} · 最大回撤 ${formatPercent(record.bestMaxDrawdown)} · 只读`,
+    saveDefaultLabel: buildAutoSaveLabel({
+      symbol: record.symbol,
+      annualizedReturn: record.testAnnualizedReturn,
+      trades: record.testTrades,
+      modelLabel: record.presetLabel,
+    }),
   });
 }
 
 async function saveAdminScanRecordAsPreset(scanId) {
   const record = adminScanCache.find((item) => item.id === scanId);
   if (!record) return;
-  const defaultLabel = `${record.symbolName || record.symbol} ${record.presetLabel} 后台优化`.slice(0, 60);
+  const defaultLabel = buildAutoSaveLabel({
+    symbol: record.symbol,
+    annualizedReturn: record.testAnnualizedReturn,
+    trades: record.testTrades,
+    modelLabel: record.presetLabel,
+  });
   const label = window.prompt("输入新模型名称：", defaultLabel);
   if (label === null) return;
   const trimmed = label.trim().slice(0, 80);
@@ -2647,6 +2670,12 @@ function openAdminAutoGenerateParamViewer(presetId) {
     readonly: true,
     title: `查看 AI 自动生成参数：${record.targetSymbol}（${record.label}）`,
     subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率 ${formatPercent(record.testAnnualizedReturn)} · 只读`,
+    saveDefaultLabel: buildAutoSaveLabel({
+      symbol: record.targetSymbol,
+      annualizedReturn: record.testAnnualizedReturn,
+      trades: record.testTrades,
+      modelLabel: record.label,
+    }),
   });
 }
 
@@ -8279,7 +8308,7 @@ function openPresetParamEditor(presetName, options = {}) {
   presetParamViewerSaveSource = readonly ? {
     config: editorPreset,
     targetSymbol: (preset.meta && preset.meta.targetSymbol) || normalizeSymbolInput(codeInput.value) || "通用",
-    defaultLabel: preset.label || presetName || "模型",
+    defaultLabel: options.saveDefaultLabel || preset.label || presetName || "模型",
     originalText: (preset.meta && (preset.meta.originalText || preset.meta.modelText)) || "",
     originalModelId: presetName || (preset.meta && preset.meta.originalModelId) || "0",
   } : null;

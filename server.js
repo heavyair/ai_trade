@@ -2540,7 +2540,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
       ? await dbQuery(`
         SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
           osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
-          osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates
+          osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates, osr.test_trades
         FROM strategy_presets sp
         LEFT JOIN optimization_scan_results osr
           ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
@@ -2573,6 +2573,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
         testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
         bestTrades: row.best_trades || 0,
         testedCandidates: row.tested_candidates || 0,
+        testTrades: row.test_trades || 0,
       };
     });
 
