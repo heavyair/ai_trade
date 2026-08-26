@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260826-autosave-naming">
+    <link rel="stylesheet" href="/styles.css?v=20260826-scan-symbol-picker">
   </head>
   <body>
     <main class="shell">
@@ -193,15 +193,22 @@
             <div id="adminScanStatusSummary" class="optimization-report"></div>
             <div class="section-label">按模型拆分的测试完成率（勾选后可对选中模型重新扫描全部股票）</div>
             <div id="adminScanStatusModelList" class="admin-ranking-list"></div>
+            <div class="field-hint">指定股票代码（不选=用全市场清单，可多选，来源和历史模拟的"常用代码"一致）</div>
+            <div id="adminScanSymbolPicker" class="admin-symbol-picker">
+              <div class="admin-symbol-picker-toolbar">
+                <input id="adminScanSymbolSearch" type="text" placeholder="搜索代码或名称...">
+                <button type="button" id="adminScanSymbolSelectAllButton" class="ghost-button">全选（当前筛选）</button>
+                <button type="button" id="adminScanSymbolClearButton" class="ghost-button">清除已选</button>
+                <span id="adminScanSymbolCount" class="field-hint"></span>
+              </div>
+              <div id="adminScanSymbolGrid" class="admin-symbol-picker-grid"></div>
+            </div>
             <div id="adminScanTrainTestRow" class="admin-scan-filter-row">
               <label>训练起点（N年前）
                 <input id="adminScanTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
               </label>
               <label>验证起点（最近N年，也是训练终点）
                 <input id="adminScanTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
-              </label>
-              <label>指定股票代码（留空则全市场，逗号分隔，如 NVDA,600519）
-                <input id="adminScanTargetSymbols" type="text" placeholder="留空则全市场">
               </label>
             </div>
             <div class="admin-rerun-controls">
@@ -1208,7 +1215,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260826-autosave-naming"></script>
-    <script src="/app.js?v=20260826-autosave-naming"></script>
+    <script src="/formula-engine.js?v=20260826-scan-symbol-picker"></script>
+    <script src="/app.js?v=20260826-scan-symbol-picker"></script>
   </body>
 </html>

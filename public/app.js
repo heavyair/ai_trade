@@ -127,6 +127,11 @@ const adminAutoGenerateSymbolSearchInput = document.querySelector("#adminAutoGen
 const adminAutoGenerateSymbolSelectAllButton = document.querySelector("#adminAutoGenerateSymbolSelectAllButton");
 const adminAutoGenerateSymbolClearButton = document.querySelector("#adminAutoGenerateSymbolClearButton");
 const adminAutoGenerateSymbolCount = document.querySelector("#adminAutoGenerateSymbolCount");
+const adminScanSymbolGrid = document.querySelector("#adminScanSymbolGrid");
+const adminScanSymbolSearchInput = document.querySelector("#adminScanSymbolSearch");
+const adminScanSymbolSelectAllButton = document.querySelector("#adminScanSymbolSelectAllButton");
+const adminScanSymbolClearButton = document.querySelector("#adminScanSymbolClearButton");
+const adminScanSymbolCount = document.querySelector("#adminScanSymbolCount");
 const adminAutoGenerateLimitInput = document.querySelector("#adminAutoGenerateLimit");
 const adminAutoGenerateAttemptsPerSymbolInput = document.querySelector("#adminAutoGenerateAttemptsPerSymbol");
 const adminAutoGenerateMaxAttemptsInput = document.querySelector("#adminAutoGenerateMaxAttempts");
@@ -2400,6 +2405,8 @@ function stopAdminScanStatusPoll() {
 }
 
 async function loadAdminScanStatus() {
+  adminScanSymbolPicker.render();
+  loadAdminSymbolHistory().then(() => adminScanSymbolPicker.render()).catch(() => {});
   if (!adminScanStatusSummary) return;
   // Skip the loading placeholder on background polls (while a scan is running) so the
   // already-rendered numbers don't flicker blank every 5 seconds — only show it on the
@@ -2420,10 +2427,7 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   if (adminScanRunStatus) adminScanRunStatus.textContent = options.resume ? "正在继续上次中断的扫描..." : "正在启动扫描...";
   const trainYearsAgoInput = document.querySelector("#adminScanTrainYearsAgo");
   const testYearsAgoInput = document.querySelector("#adminScanTestYearsAgo");
-  const targetSymbolsInput = document.querySelector("#adminScanTargetSymbols");
-  const symbols = targetSymbolsInput
-    ? targetSymbolsInput.value.split(",").map((s) => s.trim()).filter(Boolean)
-    : [];
+  const symbols = adminScanSymbolPicker.getSelected();
   const requested = {
     trainYearsAgo: trainYearsAgoInput ? Number(trainYearsAgoInput.value) || 5 : 5,
     testYearsAgo: testYearsAgoInput ? Number(testYearsAgoInput.value) || 1 : 1,
@@ -2903,79 +2907,104 @@ function formatAdminSymbolOptionLabel(symbol) {
   return description ? `${symbol} ${description}` : symbol;
 }
 
-// Selection state lives here (a plain Set) instead of native <select multiple> option state —
-// the wider checkbox-grid picker needs selection to survive re-renders triggered by the search
-// filter (an option that's filtered out of view must not lose its checked state).
-let adminAutoGenerateSelectedSymbols = new Set();
-let adminAutoGenerateSymbolFilterText = "";
+// Shared by every admin panel that needs a "pick some stock codes, or leave empty for the
+// full market list" control — AI自动生成 (which stock to design a model for) and 后台计算状态
+// (which stocks to target-rescan) both need the exact same search+grid+select-all+clear
+// widget, backed by the same known-symbol source (getAdminSymbolOptionsList), so a typed
+// code can only ever be one the app actually recognizes — no more free-typed codes of
+// unknown validity. Selection state is a plain Set (not native <select multiple> option
+// state) so it survives re-renders triggered by the search filter — an option filtered out
+// of view must not lose its checked state.
+function createAdminSymbolPicker({ gridEl, searchInput, selectAllButton, clearButton, countEl }) {
+  const selected = new Set();
+  let filterText = "";
 
-function updateAdminAutoGenerateSymbolCount() {
-  if (adminAutoGenerateSymbolCount) {
-    adminAutoGenerateSymbolCount.textContent = adminAutoGenerateSelectedSymbols.size > 0
-      ? `已选择 ${adminAutoGenerateSelectedSymbols.size} 个`
-      : "未选择（将使用全市场清单）";
-  }
-}
-
-function getFilteredAdminSymbolOptionsList() {
-  const allSymbols = getAdminSymbolOptionsList();
-  const filter = adminAutoGenerateSymbolFilterText.trim().toLowerCase();
-  if (!filter) return allSymbols;
-  return allSymbols.filter((symbol) => formatAdminSymbolOptionLabel(symbol).toLowerCase().includes(filter));
-}
-
-function renderAdminAutoGenerateSymbolOptions() {
-  if (!adminAutoGenerateSymbolGrid) return;
-  const visibleSymbols = getFilteredAdminSymbolOptionsList();
-  adminAutoGenerateSymbolGrid.innerHTML = visibleSymbols.length === 0
-    ? '<div class="admin-symbol-picker-empty">没有匹配的股票代码。</div>'
-    : visibleSymbols.map((symbol) => {
-      const checked = adminAutoGenerateSelectedSymbols.has(symbol);
-      return `
-        <label class="admin-symbol-picker-item${checked ? " selected" : ""}">
-          <input type="checkbox" value="${escapeHtml(symbol)}"${checked ? " checked" : ""}>
-          <span>${escapeHtml(formatAdminSymbolOptionLabel(symbol))}</span>
-        </label>
-      `;
-    }).join("");
-  updateAdminAutoGenerateSymbolCount();
-}
-
-if (adminAutoGenerateSymbolGrid) {
-  adminAutoGenerateSymbolGrid.addEventListener("change", (event) => {
-    const checkbox = event.target.closest('input[type="checkbox"]');
-    if (!checkbox) return;
-    if (checkbox.checked) {
-      adminAutoGenerateSelectedSymbols.add(checkbox.value);
-    } else {
-      adminAutoGenerateSelectedSymbols.delete(checkbox.value);
+  function updateCount() {
+    if (countEl) {
+      countEl.textContent = selected.size > 0
+        ? `已选择 ${selected.size} 个`
+        : "未选择（将使用全市场清单）";
     }
-    checkbox.closest(".admin-symbol-picker-item").classList.toggle("selected", checkbox.checked);
-    updateAdminAutoGenerateSymbolCount();
-  });
+  }
+
+  function getFilteredOptions() {
+    const allSymbols = getAdminSymbolOptionsList();
+    const filter = filterText.trim().toLowerCase();
+    if (!filter) return allSymbols;
+    return allSymbols.filter((symbol) => formatAdminSymbolOptionLabel(symbol).toLowerCase().includes(filter));
+  }
+
+  function render() {
+    if (!gridEl) return;
+    const visibleSymbols = getFilteredOptions();
+    gridEl.innerHTML = visibleSymbols.length === 0
+      ? '<div class="admin-symbol-picker-empty">没有匹配的股票代码。</div>'
+      : visibleSymbols.map((symbol) => {
+        const checked = selected.has(symbol);
+        return `
+          <label class="admin-symbol-picker-item${checked ? " selected" : ""}">
+            <input type="checkbox" value="${escapeHtml(symbol)}"${checked ? " checked" : ""}>
+            <span>${escapeHtml(formatAdminSymbolOptionLabel(symbol))}</span>
+          </label>
+        `;
+      }).join("");
+    updateCount();
+  }
+
+  if (gridEl) {
+    gridEl.addEventListener("change", (event) => {
+      const checkbox = event.target.closest('input[type="checkbox"]');
+      if (!checkbox) return;
+      if (checkbox.checked) {
+        selected.add(checkbox.value);
+      } else {
+        selected.delete(checkbox.value);
+      }
+      checkbox.closest(".admin-symbol-picker-item").classList.toggle("selected", checkbox.checked);
+      updateCount();
+    });
+  }
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      filterText = searchInput.value;
+      render();
+    });
+  }
+  if (selectAllButton) {
+    selectAllButton.addEventListener("click", () => {
+      getFilteredOptions().forEach((symbol) => selected.add(symbol));
+      render();
+    });
+  }
+  if (clearButton) {
+    clearButton.addEventListener("click", () => {
+      selected.clear();
+      render();
+    });
+  }
+
+  return { render, getSelected: () => Array.from(selected) };
 }
-if (adminAutoGenerateSymbolSearchInput) {
-  adminAutoGenerateSymbolSearchInput.addEventListener("input", () => {
-    adminAutoGenerateSymbolFilterText = adminAutoGenerateSymbolSearchInput.value;
-    renderAdminAutoGenerateSymbolOptions();
-  });
-}
-if (adminAutoGenerateSymbolSelectAllButton) {
-  adminAutoGenerateSymbolSelectAllButton.addEventListener("click", () => {
-    getFilteredAdminSymbolOptionsList().forEach((symbol) => adminAutoGenerateSelectedSymbols.add(symbol));
-    renderAdminAutoGenerateSymbolOptions();
-  });
-}
-if (adminAutoGenerateSymbolClearButton) {
-  adminAutoGenerateSymbolClearButton.addEventListener("click", () => {
-    adminAutoGenerateSelectedSymbols.clear();
-    renderAdminAutoGenerateSymbolOptions();
-  });
-}
+
+const adminAutoGenerateSymbolPicker = createAdminSymbolPicker({
+  gridEl: adminAutoGenerateSymbolGrid,
+  searchInput: adminAutoGenerateSymbolSearchInput,
+  selectAllButton: adminAutoGenerateSymbolSelectAllButton,
+  clearButton: adminAutoGenerateSymbolClearButton,
+  countEl: adminAutoGenerateSymbolCount,
+});
+
+const adminScanSymbolPicker = createAdminSymbolPicker({
+  gridEl: adminScanSymbolGrid,
+  searchInput: adminScanSymbolSearchInput,
+  selectAllButton: adminScanSymbolSelectAllButton,
+  clearButton: adminScanSymbolClearButton,
+  countEl: adminScanSymbolCount,
+});
 
 async function loadAdminAutoGenerate() {
-  renderAdminAutoGenerateSymbolOptions();
-  loadAdminSymbolHistory().then(renderAdminAutoGenerateSymbolOptions).catch(() => {});
+  adminAutoGenerateSymbolPicker.render();
+  loadAdminSymbolHistory().then(() => adminAutoGenerateSymbolPicker.render()).catch(() => {});
   if (!adminAutoGenerateList) return;
   if (!adminAutoGenerateList.innerHTML.trim()) {
     adminAutoGenerateList.innerHTML = '<div class="ranking-empty">正在读取自动生成的模型...</div>';
@@ -2990,7 +3019,7 @@ async function loadAdminAutoGenerate() {
 }
 
 async function triggerAdminAutoGenerateRun() {
-  const symbols = Array.from(adminAutoGenerateSelectedSymbols);
+  const symbols = adminAutoGenerateSymbolPicker.getSelected();
   const limit = Number(adminAutoGenerateLimitInput && adminAutoGenerateLimitInput.value);
   const attemptsPerSymbol = Number(adminAutoGenerateAttemptsPerSymbolInput && adminAutoGenerateAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminAutoGenerateMaxAttemptsInput && adminAutoGenerateMaxAttemptsInput.value);
@@ -3525,10 +3554,9 @@ if (adminScanRunSelectedButton) {
 }
 if (adminScanRunAllButton) {
   adminScanRunAllButton.addEventListener("click", () => {
-    const targetSymbolsInput = document.querySelector("#adminScanTargetSymbols");
-    const hasSymbolScope = Boolean(targetSymbolsInput && targetSymbolsInput.value.trim());
+    const hasSymbolScope = adminScanSymbolPicker.getSelected().length > 0;
     const confirmMessage = hasSymbolScope
-      ? "确定要对全部当前模型、限定你填写的股票代码重新扫描吗？这会覆盖这些股票已有的结果。"
+      ? "确定要对全部当前模型、限定你选择的股票代码重新扫描吗？这会覆盖这些股票已有的结果。"
       : "确定要对全部当前模型重新扫描全部股票吗？这会覆盖已有结果，且可能耗时较久。";
     if (!window.confirm(confirmMessage)) return;
     triggerAdminScanRun([]);
