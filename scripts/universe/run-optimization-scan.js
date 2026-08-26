@@ -31,6 +31,8 @@
 //   override mechanism as run-auto-generate.js's --symbols=) — an explicitly-requested symbol
 //   is always scanned even if it isn't part of symbols.json's fixed universe list.
 
+const fs = require("fs");
+const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
@@ -39,6 +41,22 @@ const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { splitTrainTestRows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult, needsScan } = require("../shared/optimization-results.js");
+
+// Live progress, polled by server.js's optimization-scan status endpoint so the admin panel
+// can show "currently on symbol X, trying model Y, N/M candidates" instead of just a raw
+// pair-count — same file-based reporting convention as run-auto-generate.js's own progress
+// file. server.js deletes this file right before spawning a new run (see launchScanProcess),
+// so a finished/crashed prior run's numbers never flash on screen before this run's first write.
+const PROGRESS_FILE = path.join(__dirname, "..", "..", "data", "scan-progress.json");
+let progressState = {};
+function writeProgress(patch) {
+  progressState = { ...progressState, ...patch, updatedAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progressState));
+  } catch (error) {
+    // Best-effort only — progress reporting must never take down the actual job.
+  }
+}
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -134,6 +152,19 @@ async function main() {
   console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}${SYMBOLS_FILTER.length > 0 ? ` symbolsFilter=${SYMBOLS_FILTER.join(",")}` : ""}`);
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
+  writeProgress({
+    status: "running",
+    totalPairs: symbols.length * presets.length,
+    totalSymbols: symbols.length,
+    modelsCount: presets.length,
+    candidatesPerPair: CANDIDATES_PER_PAIR,
+    pairIndex: 0,
+    symbolsStarted: 0,
+    sessionTestedCandidates: 0,
+    skipped: 0,
+    dataSkipped: 0,
+  });
+
   const windowCache = new Map(); // symbol:market -> { trainRows, testRows, trainStartDate, testStartDate, buyHold }
   let pairIndex = 0;
   let skipped = 0;
@@ -144,6 +175,11 @@ async function main() {
     const dbMarket = symbolEntry.market === "CN"
       ? (/^[569]/.test(symbolEntry.code) ? "1" : "0")
       : "US";
+    writeProgress({
+      symbolsStarted: progressState.symbolsStarted + 1,
+      currentSymbol: symbolEntry.code,
+      currentSymbolName: symbolEntry.name,
+    });
 
     // A transient DB hiccup here (or anywhere per-symbol, before the per-pair try/catch
     // below even starts) would otherwise be an uncaught rejection that kills the whole
@@ -174,12 +210,14 @@ async function main() {
       if (window.insufficientData) {
         dataSkipped += presets.length;
         pairIndex += presets.length;
+        writeProgress({ pairIndex, dataSkipped });
         console.log(`[skip-data] ${symbolEntry.code} trainRows=${window.trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${window.testRows.length} (<${MIN_TEST_ROWS}?), skipping all presets`);
         continue;
       }
     } catch (error) {
       console.error(`[error] loading ${symbolEntry.code}: ${error.message}`);
       pairIndex += presets.length;
+      writeProgress({ pairIndex });
       continue;
     }
 
@@ -193,8 +231,18 @@ async function main() {
       try {
         if (!(await needsScan(pool, symbolEntry.code, dbMarket, preset.id, { rescan: RESCAN, sessionSince: SESSION_SINCE }))) {
           skipped += 1;
+          writeProgress({ pairIndex, skipped });
           continue;
         }
+
+        writeProgress({
+          pairIndex,
+          currentSymbol: symbolEntry.code,
+          currentSymbolName: symbolEntry.name,
+          currentPresetId: preset.id,
+          currentPresetLabel: preset.label,
+          currentStrategyType: preset.strategyType,
+        });
 
         const config0 = engine.buildConfigFromPresetObject(preset, { ...baseConfig, strategyType: preset.strategyType });
         const baselineStates = engine.buildBacktestStates(trainRows, config0);
@@ -245,6 +293,8 @@ async function main() {
           testStartDate,
         });
 
+        writeProgress({ sessionTestedCandidates: progressState.sessionTestedCandidates + best.testedCandidates });
+
         if (pairIndex % 20 === 0 || pairIndex === totalPairs) {
           console.log(`[${pairIndex}/${totalPairs}] ${symbolEntry.code} x ${preset.label}: train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)}`);
         }
@@ -255,6 +305,7 @@ async function main() {
   }
 
   console.log(`\ndone. total pairs=${totalPairs} skipped(already scanned)=${skipped} skipped(insufficient data)=${dataSkipped}`);
+  writeProgress({ status: "done", pairIndex: totalPairs, skipped, dataSkipped });
   await pool.end();
 }
 

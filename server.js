@@ -20,6 +20,8 @@ const SCAN_SESSION_STATE_FILE = process.env.SCAN_SESSION_STATE_FILE || path.join
 // model X, attempt N/M" detail gets back to the admin panel instead of the panel only ever
 // seeing coarse running/not-running state.
 const AUTO_GENERATE_PROGRESS_FILE = process.env.AUTO_GENERATE_PROGRESS_FILE || path.join(DATA_DIR, "auto-generate-progress.json");
+// Same convention, written by run-optimization-scan.js itself — see its writeProgress helper.
+const SCAN_PROGRESS_FILE = process.env.SCAN_PROGRESS_FILE || path.join(DATA_DIR, "scan-progress.json");
 const AKSHARE_PYTHON = process.env.AKSHARE_PYTHON || "python3";
 const AKSHARE_TIMEOUT_MS = Math.max(3000, Number(process.env.AKSHARE_TIMEOUT_MS || 18000));
 const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
@@ -2183,6 +2185,13 @@ function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt
 }
 
 function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy }) {
+  // Clear any progress left over from a previous run so the panel doesn't briefly show stale
+  // "currently on symbol X..." detail before the freshly-spawned process writes its first update.
+  try {
+    fs.unlinkSync(SCAN_PROGRESS_FILE);
+  } catch (error) {
+    // fine if it didn't exist yet
+  }
   const scriptArgs = [
     "--rescan", "--candidates=300", "--minTrainRows=200", "--minTestRows=50",
     `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, `--sessionSince=${sessionStartedAt}`,
@@ -2202,6 +2211,14 @@ function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, se
 function readAutoGenerateProgress() {
   try {
     return JSON.parse(fs.readFileSync(AUTO_GENERATE_PROGRESS_FILE, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+function readScanProgress() {
+  try {
+    return JSON.parse(fs.readFileSync(SCAN_PROGRESS_FILE, "utf8"));
   } catch (error) {
     return null;
   }
@@ -2387,6 +2404,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
         scanRunning: isScanRunning(),
         scanInfo: activeScanInfo,
         lastScanResult,
+        progress: readScanProgress(),
       });
       return;
     }
@@ -2488,6 +2506,7 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
       scanInfo: activeScanInfo,
       lastScanResult,
       sessionProgress,
+      progress: readScanProgress(),
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260825-scan-target-symbols">
+    <link rel="stylesheet" href="/styles.css?v=20260825-scan-live-progress">
   </head>
   <body>
     <main class="shell">
@@ -189,6 +189,7 @@
           </div>
           <div id="adminScanStatusPanel" class="hidden">
             <p class="field-hint">后台批量优化扫描的整体进度：模型数、股票数、完成率、已尝试参数组合总次数。</p>
+            <div id="adminScanProgressBanner" class="admin-progress-banner hidden"></div>
             <div id="adminScanStatusSummary" class="optimization-report"></div>
             <div class="section-label">按模型拆分的测试完成率（勾选后可对选中模型重新扫描全部股票）</div>
             <div id="adminScanStatusModelList" class="admin-ranking-list"></div>
@@ -1204,7 +1205,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260825-scan-target-symbols"></script>
-    <script src="/app.js?v=20260825-scan-target-symbols"></script>
+    <script src="/formula-engine.js?v=20260825-scan-live-progress"></script>
+    <script src="/app.js?v=20260825-scan-live-progress"></script>
   </body>
 </html>

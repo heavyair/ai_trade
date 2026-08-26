@@ -135,6 +135,7 @@ const adminAutoGenerateTestYearsAgoInput = document.querySelector("#adminAutoGen
 const adminAutoGenerateRunButton = document.querySelector("#adminAutoGenerateRunButton");
 const adminAutoGenerateRunStatus = document.querySelector("#adminAutoGenerateRunStatus");
 const adminAutoGenerateProgressBanner = document.querySelector("#adminAutoGenerateProgressBanner");
+const adminScanProgressBanner = document.querySelector("#adminScanProgressBanner");
 const adminAutoGenerateList = document.querySelector("#adminAutoGenerateList");
 const adminStockScreenTabButton = document.querySelector("#adminStockScreenTabButton");
 const adminStockScreenPanel = document.querySelector("#adminStockScreenPanel");
@@ -2313,6 +2314,40 @@ function renderAdminScanStatus(status) {
       adminScanRunStatus.textContent = "";
     }
   }
+
+  // status.progress is written live by run-optimization-scan.js itself (see its
+  // writeProgress helper) and cleared by server.js right before a new run is spawned, so it
+  // only ever reflects THIS session — no stale "currently on symbol X" from a finished or
+  // crashed prior run can show through.
+  const runningIsScan = running && status.scanInfo && status.scanInfo.jobType === "scan";
+  if (adminScanProgressBanner) {
+    const progress = status.progress;
+    if (runningIsScan && progress) {
+      const symbolLabel = progress.currentSymbol
+        ? `股票 ${progress.symbolsStarted || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbolName || progress.currentSymbol)} ${escapeHtml(progress.currentSymbol)}）`
+        : `股票 ${progress.symbolsStarted || 0}/${progress.totalSymbols || "?"}`;
+      const modelLabel = progress.currentPresetLabel
+        ? `模型：${escapeHtml(progress.currentPresetLabel)}（${escapeHtml(getStrategyTypeLabel(progress.currentStrategyType))}）`
+        : "";
+      const detailParts = [symbolLabel, modelLabel].filter(Boolean).join(" · ");
+      adminScanProgressBanner.classList.remove("hidden");
+      adminScanProgressBanner.innerHTML = `
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>后台扫描进行中</div>
+        <div class="admin-progress-banner-detail">${detailParts}</div>
+        <div class="admin-progress-banner-stats">
+          <span>组合进度 <strong>${progress.pairIndex || 0}</strong>/${progress.totalPairs || "?"}</span>
+          <span>每组候选参数 <strong>${progress.candidatesPerPair || "?"}</strong></span>
+          <span>本次已测试参数组合 <strong>${formatCombinationCount(progress.sessionTestedCandidates || 0)}</strong></span>
+          <span>跳过（已扫描过） <strong>${progress.skipped || 0}</strong></span>
+          <span>跳过（数据不足） <strong>${progress.dataSkipped || 0}</strong></span>
+        </div>
+      `;
+    } else {
+      adminScanProgressBanner.classList.add("hidden");
+      adminScanProgressBanner.innerHTML = "";
+    }
+  }
+
   if (running) {
     scheduleAdminScanStatusPoll();
   } else {
