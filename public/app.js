@@ -2361,6 +2361,10 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   if (adminScanRunStatus) adminScanRunStatus.textContent = options.resume ? "正在继续上次中断的扫描..." : "正在启动扫描...";
   const trainYearsAgoInput = document.querySelector("#adminScanTrainYearsAgo");
   const testYearsAgoInput = document.querySelector("#adminScanTestYearsAgo");
+  const targetSymbolsInput = document.querySelector("#adminScanTargetSymbols");
+  const symbols = targetSymbolsInput
+    ? targetSymbolsInput.value.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
   const requested = {
     trainYearsAgo: trainYearsAgoInput ? Number(trainYearsAgoInput.value) || 5 : 5,
     testYearsAgo: testYearsAgoInput ? Number(testYearsAgoInput.value) || 1 : 1,
@@ -2369,16 +2373,17 @@ async function triggerAdminScanRun(presetIds, options = {}) {
     const response = await fetch("/api/admin/optimization-scan/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ presetIds, resume: Boolean(options.resume), ...requested }),
+      body: JSON.stringify({ presetIds, symbols, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动扫描失败。");
     const adjustments = ["trainYearsAgo", "testYearsAgo"]
       .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
-    const baseMessage = options.resume
+    const symbolsScopeText = symbols.length > 0 ? `（限定 ${symbols.length} 只股票：${symbols.join("、")}）` : "";
+    const scopeText = options.resume
       ? "已继续上次中断的扫描。"
-      : (presetIds.length ? `已对 ${presetIds.length} 个模型启动重新扫描。` : "已对全部模型启动重新扫描。");
-    setStatus(adjustments.length > 0 ? `${baseMessage}（参数超出允许范围，已调整：${adjustments.join("，")}）` : baseMessage);
+      : `${presetIds.length ? `已对 ${presetIds.length} 个模型` : "已对全部模型"}${symbolsScopeText}启动重新扫描。`;
+    setStatus(adjustments.length > 0 ? `${scopeText}（参数超出允许范围，已调整：${adjustments.join("，")}）` : scopeText);
     await loadAdminScanStatus();
   } catch (error) {
     if (adminScanRunStatus) adminScanRunStatus.textContent = "";
@@ -3449,7 +3454,12 @@ if (adminScanRunSelectedButton) {
 }
 if (adminScanRunAllButton) {
   adminScanRunAllButton.addEventListener("click", () => {
-    if (!window.confirm("确定要对全部当前模型重新扫描全部股票吗？这会覆盖已有结果，且可能耗时较久。")) return;
+    const targetSymbolsInput = document.querySelector("#adminScanTargetSymbols");
+    const hasSymbolScope = Boolean(targetSymbolsInput && targetSymbolsInput.value.trim());
+    const confirmMessage = hasSymbolScope
+      ? "确定要对全部当前模型、限定你填写的股票代码重新扫描吗？这会覆盖这些股票已有的结果。"
+      : "确定要对全部当前模型重新扫描全部股票吗？这会覆盖已有结果，且可能耗时较久。";
+    if (!window.confirm(confirmMessage)) return;
     triggerAdminScanRun([]);
   });
 }

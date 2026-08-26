@@ -24,14 +24,18 @@
 //
 // Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minTrainRows=200]
 //   [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1] [--rescan] [--presetIds=id1,id2]
+//   [--symbols=513100,AMD]
 //   --presetIds restricts the scan to specific (already-active) preset IDs, e.g. for an
 //   admin-triggered "rescan just this model" run instead of the full active set.
+//   --symbols restricts the scan to specific stock codes instead of the full universe (same
+//   override mechanism as run-auto-generate.js's --symbols=) — an explicitly-requested symbol
+//   is always scanned even if it isn't part of symbols.json's fixed universe list.
 
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
-const { loadExpandedUniverse } = require("../shared/universe-loader.js");
+const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { splitTrainTestRows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult, needsScan } = require("../shared/optimization-results.js");
@@ -59,6 +63,7 @@ const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
 const SYMBOL_LIMIT = getArg("limit", 0);
 const RESCAN = args.includes("--rescan");
 const PRESET_IDS_FILTER = getArgString("presetIds").split(",").map((s) => s.trim()).filter(Boolean);
+const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 // When resuming a --rescan run that crashed partway through, pass the ORIGINAL session's
 // start time here so pairs already redone since then are skipped instead of redone again
 // (plain --rescan with no session marker always redoes everything, since a fresh rescan
@@ -120,11 +125,13 @@ async function loadRows(symbol, market) {
 async function main() {
   await ensureResultsTable(pool);
 
-  const universe = await loadExpandedUniverse(pool);
+  const universe = SYMBOLS_FILTER.length > 0
+    ? SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }))
+    : await loadExpandedUniverse(pool);
   const symbols = SYMBOL_LIMIT > 0 ? universe.slice(0, SYMBOL_LIMIT) : universe;
   const presetIdFilterSet = PRESET_IDS_FILTER.length > 0 ? new Set(PRESET_IDS_FILTER) : null;
   const presets = (await loadActivePresets()).filter((p) => !presetIdFilterSet || presetIdFilterSet.has(p.id));
-  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}`);
+  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}${SYMBOLS_FILTER.length > 0 ? ` symbolsFilter=${SYMBOLS_FILTER.join(",")}` : ""}`);
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
   const windowCache = new Map(); // symbol:market -> { trainRows, testRows, trainStartDate, testStartDate, buyHold }

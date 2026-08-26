@@ -2182,19 +2182,20 @@ function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt
   });
 }
 
-function launchScanProcess({ presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy }) {
+function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy }) {
   const scriptArgs = [
     "--rescan", "--candidates=300", "--minTrainRows=200", "--minTestRows=50",
     `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, `--sessionSince=${sessionStartedAt}`,
   ];
   if (presetIds.length > 0) scriptArgs.push(`--presetIds=${presetIds.join(",")}`);
+  if (symbols && symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
   launchBackgroundJob({
     jobType: "scan",
     scriptPath: path.join(__dirname, "scripts", "universe", "run-optimization-scan.js"),
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { presetIds, trainYearsAgo, testYearsAgo },
+    extra: { presetIds, symbols: symbols || [], trainYearsAgo, testYearsAgo },
   });
 }
 
@@ -2274,6 +2275,7 @@ async function handleAdminOptimizationScanRunApi(req, res) {
     const payload = body ? JSON.parse(body) : {};
 
     let presetIds;
+    let symbols;
     let sessionStartedAt;
     let trainYearsAgo;
     let testYearsAgo;
@@ -2283,6 +2285,7 @@ async function handleAdminOptimizationScanRunApi(req, res) {
         return;
       }
       presetIds = lastScanResult.presetIds;
+      symbols = Array.isArray(lastScanResult.symbols) ? lastScanResult.symbols : [];
       sessionStartedAt = lastScanResult.sessionStartedAt;
       // Keep a resumed run consistent with the interrupted one rather than picking up
       // whatever the train/test inputs happen to say right now.
@@ -2292,20 +2295,30 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       presetIds = Array.isArray(payload.presetIds)
         ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
         : [];
+      symbols = Array.isArray(payload.symbols)
+        ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)
+        : [];
       sessionStartedAt = new Date().toISOString();
       trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
       testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
 
       // A fresh (non-resume) trigger means "rescan from scratch", not "pick up where
       // the last run left off" — clear old rows for the presets in scope up front so the
-      // admin never sees a stale mix of this-run and previous-run results mid-scan.
-      if (presetIds.length > 0) {
-        await dbQuery(`DELETE FROM optimization_scan_results WHERE preset_id = ANY($1)`, [presetIds]);
+      // admin never sees a stale mix of this-run and previous-run results mid-scan. When
+      // symbols is also scoped down, the clear must be scoped down the same way — otherwise
+      // targeting just a couple of stocks would wipe out every OTHER stock's existing results
+      // for those presets, even though the run itself will only repopulate the requested ones.
+      const presetFilterSql = presetIds.length > 0
+        ? "preset_id = ANY($1)"
+        : "preset_id IN (SELECT id FROM strategy_presets WHERE original_model_id = '0' AND hidden_at IS NULL)";
+      const presetFilterParams = presetIds.length > 0 ? [presetIds] : [];
+      if (symbols.length > 0) {
+        await dbQuery(
+          `DELETE FROM optimization_scan_results WHERE ${presetFilterSql} AND symbol = ANY($${presetFilterParams.length + 1})`,
+          [...presetFilterParams, symbols]
+        );
       } else {
-        await dbQuery(`
-          DELETE FROM optimization_scan_results
-          WHERE preset_id IN (SELECT id FROM strategy_presets WHERE original_model_id = '0' AND hidden_at IS NULL)
-        `);
+        await dbQuery(`DELETE FROM optimization_scan_results WHERE ${presetFilterSql}`, presetFilterParams);
       }
 
       // A fresh trigger also starts a clean slate on the pause/crash flag itself — don't
@@ -2315,8 +2328,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       writeScanSessionState({ status: "idle", result: null });
     }
 
-    launchScanProcess({ presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy: admin.email });
-    sendJson(res, 200, { started: true, presetIds, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
+    launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
   }
