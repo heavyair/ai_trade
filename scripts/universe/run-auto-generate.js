@@ -325,11 +325,13 @@ async function main() {
         // Out-of-sample: run the EXACT winning config (unchanged) against the test window,
         // which neither the AI nor the parameter search ever saw — then record both periods'
         // annualized returns into the SAME results table run-optimization-scan.js writes, so
-        // this model is rankable by "train/test consistency" the same way as any other.
-        const testStates = engine.buildBacktestStates(testRows, bestQualifying.best.config);
-        const testLast = testStates[testStates.length - 1];
+        // this model is rankable by "train/test consistency" the same way as any other. Scored
+        // against the FULL history (not just testRows) so rolling-window indicators have real
+        // warmup data instead of being starved by a test window shorter than their own
+        // lookback — see engine.js's buildScoredBacktestStates comment for why this matters.
+        const scoredTest = engine.buildScoredBacktestStates(allRows, bestQualifying.best.config, testStartDate);
         const trainAnnualizedReturn = savedAnnualized || 0;
-        const testAnnualizedReturn = annualizedReturnRate(testLast.returnRate, testRows.length) || 0;
+        const testAnnualizedReturn = annualizedReturnRate(scoredTest.returnRate, scoredTest.rowsScored) || 0;
         const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
 
         await saveOptimizationResult(pool, {
@@ -351,11 +353,11 @@ async function main() {
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
           trainAnnualizedReturn,
-          testReturnRate: testLast.returnRate,
-          testMaxDrawdown: testLast.maxDrawdown,
+          testReturnRate: scoredTest.returnRate,
+          testMaxDrawdown: scoredTest.maxDrawdown,
           testAnnualizedReturn,
-          testTrades: testLast.trades.length,
-          testRowsTested: testRows.length,
+          testTrades: scoredTest.trades.length,
+          testRowsTested: scoredTest.rowsScored,
           annualizedDiff,
           trainStartDate,
           testStartDate,

@@ -2049,6 +2049,52 @@ function buildScoreRuleBacktestStates(rows, config) {
 }
 
 
+// Runs the backtest over the FULL rows array (which the caller is expected to include
+// history well before scoringStartDate) so rolling-window indicators — moving averages,
+// N-day highs/lows, breakout lookbacks, etc — have real data to compute from, then reports
+// performance as if scoring only started at scoringStartDate: equity change is measured
+// from the state immediately before scoringStartDate (not from config.initialCash, which
+// would double-count whatever happened during the warmup period), drawdown is re-peaked at
+// that same baseline, and trades are filtered to those on/after scoringStartDate. Without
+// this, a strategy whose lookback period exceeds the scored window's own row count (e.g. a
+// 357-day moving average measured over a 1-year test window) can never produce a valid
+// signal at all — its 0% "result" would be a warmup artifact, not a real backtest outcome.
+function buildScoredBacktestStates(rows, config, scoringStartDate) {
+  const states = buildBacktestStates(rows, config);
+  if (states.length === 0) {
+    return { returnRate: 0, maxDrawdown: 0, trades: [], rowsScored: 0, equity: config.initialCash || 0 };
+  }
+  const scoringStartIndex = rows.findIndex((row) => row.date >= scoringStartDate);
+  const effectiveStartIndex = scoringStartIndex < 0 ? states.length : scoringStartIndex;
+  const baselineEquity = effectiveStartIndex > 0
+    ? states[effectiveStartIndex - 1].equity
+    : (Number(config.initialCash) || 0);
+
+  const finalState = states[states.length - 1];
+  const finalEquity = finalState.equity;
+  const returnRate = baselineEquity > 0 ? ((finalEquity - baselineEquity) / baselineEquity) * 100 : 0;
+
+  let peakEquity = baselineEquity;
+  let maxDrawdown = 0;
+  for (let i = effectiveStartIndex; i < states.length; i += 1) {
+    const equity = states[i].equity;
+    peakEquity = Math.max(peakEquity, equity);
+    const drawdown = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
+    maxDrawdown = Math.max(maxDrawdown, drawdown);
+  }
+
+  const trades = (finalState.trades || []).filter((trade) => trade.date >= scoringStartDate);
+
+  return {
+    returnRate,
+    maxDrawdown,
+    trades,
+    rowsScored: states.length - effectiveStartIndex,
+    equity: finalEquity,
+  };
+}
+
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "block-rules") {
     return buildGenericBacktestStates(rows, config);
@@ -2611,6 +2657,7 @@ module.exports = {
   setOptimizationPointCountOverride,
   buildConfigFromPresetObject,
   buildBacktestStates,
+  buildScoredBacktestStates,
   buildBuyHoldStates,
   buildParallelBacktestStates,
   discoverOptimizationParameters,

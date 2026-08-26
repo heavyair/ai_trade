@@ -202,7 +202,7 @@ async function main() {
         } else {
           const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
           const buyHold = buyHoldStates[buyHoldStates.length - 1];
-          window = { trainRows, testRows, trainStartDate, testStartDate, buyHold };
+          window = { rows, trainRows, testRows, trainStartDate, testStartDate, buyHold };
         }
         windowCache.set(cacheKey, window);
       }
@@ -221,7 +221,7 @@ async function main() {
       continue;
     }
 
-    const { trainRows, testRows, trainStartDate, testStartDate, buyHold } = window;
+    const { rows, trainRows, testRows, trainStartDate, testStartDate, buyHold } = window;
     engine.setActiveLotSizeSymbol(symbolEntry.code);
     const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: "wave" };
 
@@ -256,12 +256,14 @@ async function main() {
         const bestScore = best.score;
 
         // Out-of-sample: run the EXACT found config (unchanged) against the test window,
-        // which the parameter search above never saw.
-        const testStates = engine.buildBacktestStates(testRows, best.config);
-        const testLast = testStates[testStates.length - 1];
+        // which the parameter search above never saw. Scored against the FULL history (not
+        // just testRows) so rolling-window indicators (moving averages, N-day highs, etc.)
+        // have real warmup data instead of being starved by a test window shorter than their
+        // own lookback — see buildScoredBacktestStates's comment for why this matters.
+        const scoredTest = engine.buildScoredBacktestStates(rows, best.config, testStartDate);
 
         const trainAnnualizedReturn = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        const testAnnualizedReturn = annualizedReturnRate(testLast.returnRate, testRows.length) || 0;
+        const testAnnualizedReturn = annualizedReturnRate(scoredTest.returnRate, scoredTest.rowsScored) || 0;
         const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
 
         await saveOptimizationResult(pool, {
@@ -283,11 +285,11 @@ async function main() {
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
           trainAnnualizedReturn,
-          testReturnRate: testLast.returnRate,
-          testMaxDrawdown: testLast.maxDrawdown,
+          testReturnRate: scoredTest.returnRate,
+          testMaxDrawdown: scoredTest.maxDrawdown,
           testAnnualizedReturn,
-          testTrades: testLast.trades.length,
-          testRowsTested: testRows.length,
+          testTrades: scoredTest.trades.length,
+          testRowsTested: scoredTest.rowsScored,
           annualizedDiff,
           trainStartDate,
           testStartDate,

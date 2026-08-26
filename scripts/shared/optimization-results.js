@@ -65,6 +65,7 @@ async function saveOptimizationResult(pool, row) {
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
       preset_label = EXCLUDED.preset_label,
+      strategy_type = EXCLUDED.strategy_type,
       rows_tested = EXCLUDED.rows_tested,
       baseline_return_rate = EXCLUDED.baseline_return_rate,
       baseline_max_drawdown = EXCLUDED.baseline_max_drawdown,
