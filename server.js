@@ -23,6 +23,8 @@ const SCAN_SESSION_STATE_FILE = process.env.SCAN_SESSION_STATE_FILE || path.join
 const AUTO_GENERATE_PROGRESS_FILE = process.env.AUTO_GENERATE_PROGRESS_FILE || path.join(DATA_DIR, "auto-generate-progress.json");
 // Same convention, written by run-optimization-scan.js itself — see its writeProgress helper.
 const SCAN_PROGRESS_FILE = process.env.SCAN_PROGRESS_FILE || path.join(DATA_DIR, "scan-progress.json");
+// Same convention, written by search-validated-best.js itself — see its writeProgress helper.
+const VALIDATED_SEARCH_PROGRESS_FILE = process.env.VALIDATED_SEARCH_PROGRESS_FILE || path.join(DATA_DIR, "validated-search-progress.json");
 const AKSHARE_PYTHON = process.env.AKSHARE_PYTHON || "python3";
 const AKSHARE_TIMEOUT_MS = Math.max(3000, Number(process.env.AKSHARE_TIMEOUT_MS || 18000));
 const AKSHARE_BRIDGE = path.join(__dirname, "scripts", "akshare_bridge.py");
@@ -386,6 +388,20 @@ async function initializeDatabase() {
       ON watch_alerts(owner_user_id, preset_id, symbol, market);
     CREATE INDEX IF NOT EXISTS watch_alerts_due_idx ON watch_alerts(enabled, last_checked_at);
     CREATE INDEX IF NOT EXISTS watch_alerts_owner_idx ON watch_alerts(owner_user_id, created_at DESC);
+
+    -- Simulated "started paper-trading the moment this watch was created" account, recomputed
+    -- from scratch every check cycle by run-watch-alerts.js (engine.buildScoredBacktestStates
+    -- scored from created_at) rather than incrementally maintained.
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_cash DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_shares DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_equity DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_position_ratio DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_return_rate DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_annualized_return DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_max_drawdown DOUBLE PRECISION;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_rows_scored INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_trades JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_updated_at TIMESTAMPTZ;
   `);
 
   await normalizeExistingPresetLabels();
@@ -2232,6 +2248,37 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   });
 }
 
+function readValidatedSearchProgress() {
+  try {
+    return JSON.parse(fs.readFileSync(VALIDATED_SEARCH_PROGRESS_FILE, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+  try {
+    fs.unlinkSync(VALIDATED_SEARCH_PROGRESS_FILE);
+  } catch (error) {
+    // fine if it didn't exist yet
+  }
+  const scriptArgs = [
+    `--symbols=${symbols.join(",")}`, `--targetPercent=${targetPercent}`, `--attemptsPerSymbol=${attemptsPerSymbol}`,
+    `--maxAttempts=${maxAttempts}`, `--candidates=${candidates}`, `--pointCount=${pointCount}`,
+    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, "--save",
+  ];
+  if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
+  if (ownerEmail) scriptArgs.push(`--ownerEmail=${ownerEmail}`);
+  launchBackgroundJob({
+    jobType: "validatedSearch",
+    scriptPath: path.join(__dirname, "scripts", "universe", "search-validated-best.js"),
+    scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    extra: { symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo },
+  });
+}
+
 function launchStockScreenProcess({ runId, presetId, market, ownerUserId, sessionStartedAt, triggeredBy }) {
   const scriptArgs = [`--runId=${runId}`, `--presetId=${presetId}`, `--market=${market}`];
   if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
@@ -2495,6 +2542,70 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
   }
 }
 
+// Shared by handleAdminAutoGenerateListApi and handleAdminValidatedSearchListApi — both read
+// presets saved via ModelGenerator.saveGeneratedPreset, which always stamps meta.creator =
+// 'ai-auto' regardless of which script called it. The two sources are only distinguishable by
+// the preset id's name-slug: run-auto-generate.js uses `ai_auto_<symbol>_<date>`,
+// search-validated-best.js uses `ai_validated_<symbol>_<date>` (see saveGeneratedPreset's
+// `preset_<ownerUserId>_<normalizePresetKey(name)>` id convention) — pass exactly one of
+// idLikePattern/idExcludePattern to pick a side, otherwise the two admin panels' lists overlap.
+async function queryAiGeneratedPresets({ idLikePattern, idExcludePattern }) {
+  const hasResultsTable = await dbQuery(`
+    SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
+  `);
+  const filterSql = idExcludePattern
+    ? `sp.meta->>'creator' = 'ai-auto' AND sp.id NOT LIKE $1`
+    : `sp.meta->>'creator' = 'ai-auto' AND sp.id LIKE $1`;
+  const filterParam = idExcludePattern || idLikePattern;
+  // LEFT JOIN (not INNER) so a preset that hasn't made it into optimization_scan_results
+  // yet still shows up instead of silently disappearing — its train/test fields just come
+  // back as defaults below. Also joined on osr.symbol = the preset's OWN targetSymbol, not
+  // just preset_id — once one of these presets becomes a root model, "对全部模型重新扫描"
+  // scans it against every stock in the universe, leaving MANY optimization_scan_results rows
+  // per preset_id (one per stock); without the symbol match the JOIN fans out into duplicate
+  // rows with mostly-irrelevant numbers — this list should only ever show the one result
+  // that's actually about the stock this model was generated/searched for.
+  const result = hasResultsTable.rows.length > 0
+    ? await dbQuery(`
+      SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
+        osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
+        osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates,
+        osr.test_trades, osr.reached_target
+      FROM strategy_presets sp
+      LEFT JOIN optimization_scan_results osr
+        ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
+      WHERE ${filterSql}
+      ORDER BY (osr.train_start_date IS NULL) ASC, osr.reached_target DESC NULLS LAST, osr.test_annualized_return DESC NULLS LAST, sp.updated_at DESC
+      LIMIT 500
+    `, [filterParam])
+    : await dbQuery(`
+      SELECT id, label, strategy_type, config, meta, created_at, updated_at
+      FROM strategy_presets WHERE ${filterSql} ORDER BY updated_at DESC LIMIT 500
+    `, [filterParam]);
+  return result.rows.map((row) => {
+    const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+    return {
+      id: row.id,
+      label: row.label,
+      strategyType: row.strategy_type,
+      bestConfig: row.config && typeof row.config === "object" ? row.config : {},
+      targetSymbol: meta.targetSymbol || "",
+      reason: meta.originalText || "",
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+      trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+      testAnnualizedReturn: Number(row.test_annualized_return) || 0,
+      annualizedDiff: Number(row.annualized_diff) || 0,
+      trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+      testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
+      bestTrades: row.best_trades || 0,
+      testedCandidates: row.tested_candidates || 0,
+      testTrades: row.test_trades || 0,
+      reachedTarget: Boolean(row.reached_target),
+    };
+  });
+}
+
 // Lists presets scripts/universe/run-auto-generate.js has saved (meta.creator = "ai-auto"),
 // plus the shared background-job running/last-result state (same globals the scan/validation
 // panels already poll — only one batch job runs at a time regardless of type).
@@ -2505,60 +2616,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-
-    const hasResultsTable = await dbQuery(`
-      SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
-    `);
-    // LEFT JOIN (not INNER) so a preset that hasn't made it into optimization_scan_results
-    // yet (e.g. saved by an older build, before this table existed) still shows up instead
-    // of silently disappearing — its train/test fields just come back as defaults below.
-    // Also joined on osr.symbol = the preset's OWN targetSymbol, not just preset_id — once an
-    // AI自动生成 preset becomes a root model, "对全部模型重新扫描" scans it against every
-    // stock in the universe, leaving MANY optimization_scan_results rows per preset_id (one
-    // per stock). Without the symbol match, the JOIN fans out into duplicate rows for the
-    // same preset with different (and mostly irrelevant) numbers — this list should only ever
-    // show the one result that's actually about the stock this model was generated for.
-    const result = hasResultsTable.rows.length > 0
-      ? await dbQuery(`
-        SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
-          osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
-          osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates, osr.test_trades
-        FROM strategy_presets sp
-        LEFT JOIN optimization_scan_results osr
-          ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
-        WHERE sp.meta->>'creator' = 'ai-auto'
-        ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff ASC, sp.updated_at DESC
-        LIMIT 500
-      `)
-      : await dbQuery(`
-        SELECT id, label, strategy_type, config, meta, created_at, updated_at
-        FROM strategy_presets
-        WHERE meta->>'creator' = 'ai-auto'
-        ORDER BY updated_at DESC
-        LIMIT 500
-      `);
-    const presets = result.rows.map((row) => {
-      const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
-      return {
-        id: row.id,
-        label: row.label,
-        strategyType: row.strategy_type,
-        bestConfig: row.config && typeof row.config === "object" ? row.config : {},
-        targetSymbol: meta.targetSymbol || "",
-        reason: meta.originalText || "",
-        createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
-        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
-        trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
-        testAnnualizedReturn: Number(row.test_annualized_return) || 0,
-        annualizedDiff: Number(row.annualized_diff) || 0,
-        trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
-        testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
-        bestTrades: row.best_trades || 0,
-        testedCandidates: row.tested_candidates || 0,
-        testTrades: row.test_trades || 0,
-      };
-    });
-
+    const presets = await queryAiGeneratedPresets({ idExcludePattern: "%ai_validated_%" });
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       presets,
@@ -2569,6 +2627,71 @@ async function handleAdminAutoGenerateListApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+// Lists presets scripts/universe/search-validated-best.js has saved — the "继续寻找" admin
+// panel. Unlike AI自动生成 (which only ever saves the single train-picked winner per symbol),
+// this script now always saves the best-by-TEST attempt per symbol even if it never reached
+// --targetPercent (reachedTarget: false), so the admin can see per-symbol search progress
+// across repeated runs instead of losing it.
+async function handleAdminValidatedSearchListApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const presets = await queryAiGeneratedPresets({ idLikePattern: "%ai_validated_%" });
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      presets,
+      running: isScanRunning(),
+      scanInfo: activeScanInfo,
+      progress: readValidatedSearchProgress(),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+async function handleAdminValidatedSearchRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "已有后台任务在运行中，请等它完成后再启动新的。", info: activeScanInfo });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const symbols = Array.isArray(payload.symbols)
+      ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
+      : [];
+    if (symbols.length === 0) {
+      sendJson(res, 400, { error: "请至少选择一支股票（这个功能不支持全市场扫描）。" });
+      return;
+    }
+    const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+    const attemptsPerSymbol = Math.max(1, Math.min(200, Math.round(Number(payload.attemptsPerSymbol)) || 60));
+    const maxAttempts = Math.max(1, Math.min(2000, Math.round(Number(payload.maxAttempts)) || 400));
+    const candidates = Math.max(1, Math.min(2000, Math.round(Number(payload.candidates)) || 400));
+    const pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
+    const trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
+    const testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+    const sessionStartedAt = new Date().toISOString();
+    // Per the standing rule established for validated/found models this session: they default
+    // to the admin's own account, never left ownerless — same as NET/GOOGL/TSM earlier.
+    launchValidatedSearchProcess({
+      symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo,
+      sessionStartedAt, triggeredBy: admin.email, ownerUserId: userIdForEmail(admin.email), ownerEmail: admin.email,
+    });
+    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动验证搜索失败。" });
   }
 }
 
@@ -2748,6 +2871,16 @@ function mapWatchAlertRow(row) {
     lastError: row.last_error || "",
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+    accountCash: row.account_cash !== null && row.account_cash !== undefined ? Number(row.account_cash) : null,
+    accountShares: row.account_shares !== null && row.account_shares !== undefined ? Number(row.account_shares) : null,
+    accountEquity: row.account_equity !== null && row.account_equity !== undefined ? Number(row.account_equity) : null,
+    accountPositionRatio: row.account_position_ratio !== null && row.account_position_ratio !== undefined ? Number(row.account_position_ratio) : null,
+    accountReturnRate: row.account_return_rate !== null && row.account_return_rate !== undefined ? Number(row.account_return_rate) : null,
+    accountAnnualizedReturn: row.account_annualized_return !== null && row.account_annualized_return !== undefined ? Number(row.account_annualized_return) : null,
+    accountMaxDrawdown: row.account_max_drawdown !== null && row.account_max_drawdown !== undefined ? Number(row.account_max_drawdown) : null,
+    accountRowsScored: row.account_rows_scored || 0,
+    accountTrades: Array.isArray(row.account_trades) ? row.account_trades : [],
+    accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
   };
 }
 
@@ -4257,6 +4390,16 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/auto-generate/run") {
     handleAdminAutoGenerateRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/validated-search") {
+    handleAdminValidatedSearchListApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/validated-search/run") {
+    handleAdminValidatedSearchRunApi(req, res);
     return;
   }
 

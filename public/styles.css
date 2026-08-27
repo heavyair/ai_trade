@@ -1828,6 +1828,11 @@ button:disabled {
   width: calc(100% - 20px);
 }
 
+.admin-scan-details .admin-progress-banner-stats,
+.admin-scan-details .admin-scan-actions {
+  margin: 0 10px 10px;
+}
+
 .admin-ranking-table {
   width: 100%;
   border-collapse: collapse;

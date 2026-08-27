@@ -15,8 +15,12 @@
 // Usage: node scripts/universe/search-validated-best.js --symbols=QQQ,NET [--targetPercent=50]
 //   [--attemptsPerSymbol=60] [--maxAttempts=400] [--candidates=400] [--pointCount=5]
 //   [--trainYearsAgo=5] [--testYearsAgo=1] [--minTrainRows=200] [--minTestRows=50]
-//   [--save] (only saves a preset if the target is actually reached; omit to dry-run/report only)
+//   [--save] (omit to dry-run/report only; with --save, the best-by-test attempt for each
+//   symbol is always saved even if it didn't reach --targetPercent, so re-running later can
+//   pick up where this run left off instead of losing progress that fell just short)
 
+const fs = require("fs");
+const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
@@ -64,6 +68,19 @@ if (SYMBOLS_FILTER.length === 0) {
   process.exit(1);
 }
 
+// Live progress, polled by server.js's /api/admin/validated-search status endpoint — same
+// file-based reporting convention as run-auto-generate.js's own progress file.
+const PROGRESS_FILE = path.join(__dirname, "..", "..", "data", "validated-search-progress.json");
+let progressState = {};
+function writeProgress(patch) {
+  progressState = { ...progressState, ...patch, updatedAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progressState));
+  } catch (error) {
+    // Best-effort only — progress reporting must never take down the actual job.
+  }
+}
+
 async function loadRows(symbol, market) {
   const result = await pool.query(`
     SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume,
@@ -109,9 +126,34 @@ async function main() {
   console.log(`targetPercent=${TARGET_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
+  let saved = 0;
+  let dataSkipped = 0;
+  let errored = 0;
+  let bestAnnualizedReturn = null;
+  let bestAnnualizedSymbol = null;
   const results = [];
 
+  writeProgress({
+    status: "running",
+    totalSymbols: symbols.length,
+    symbolIndex: 0,
+    currentSymbol: null,
+    attempt: 0,
+    attemptsPerSymbol: ATTEMPTS_PER_SYMBOL,
+    targetPercent: TARGET_PERCENT,
+    currentReason: null,
+    aiCalls: 0,
+    saved: 0,
+    dataSkipped: 0,
+    errored: 0,
+    bestAnnualizedReturn: null,
+    bestAnnualizedSymbol: null,
+  });
+
+  let symbolIndex = 0;
   for (const symbolEntry of symbols) {
+    symbolIndex += 1;
+    writeProgress({ symbolIndex, currentSymbol: symbolEntry.code, attempt: 0, currentReason: null });
     const dbMarket = symbolEntry.market === "CN" ? (/^[569]/.test(symbolEntry.code) ? "1" : "0") : "US";
     try {
       const freshness = await ensureFreshData(pool, symbolEntry.code, dbMarket);
@@ -122,6 +164,8 @@ async function main() {
       const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(allRows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
       if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
         console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${testRows.length} (<${MIN_TEST_ROWS}?)`);
+        dataSkipped += 1;
+        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testRows.length}行），跳过` });
         continue;
       }
 
@@ -143,12 +187,15 @@ async function main() {
         }
         if (reachedTarget) break;
 
+        writeProgress({ attempt: attempt + 1, currentReason: "AI 正在分析数据、设计模型…" });
         aiCalls += 1;
         let model;
         try {
           model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code, previousAttempts);
         } catch (aiError) {
           console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
+          errored += 1;
+          writeProgress({ aiCalls, errored });
           continue;
         }
         previousAttempts.push({ strategyType: model.strategyType, reason: model.reason });
@@ -179,6 +226,15 @@ async function main() {
         if (!bestByTest || testAnnualized > bestByTest.testAnnualized) {
           bestByTest = { model, best, trainAnnualized, testAnnualized, scoredTest };
         }
+        if (bestAnnualizedReturn === null || testAnnualized > bestAnnualizedReturn) {
+          bestAnnualizedReturn = testAnnualized;
+          bestAnnualizedSymbol = symbolEntry.code;
+        }
+        writeProgress({
+          aiCalls,
+          currentReason: `${model.strategyType}：train ${trainAnnualized.toFixed(1)}%年化 / TEST ${testAnnualized.toFixed(1)}%年化（${scoredTest.trades.length}笔）`,
+          bestAnnualizedReturn, bestAnnualizedSymbol,
+        });
         if (testAnnualized >= TARGET_PERCENT) {
           reachedTarget = true;
           console.log(`[TARGET REACHED] ${symbolEntry.code}: attempt ${attempt + 1} validated at ${testAnnualized.toFixed(1)}%年化 (>= ${TARGET_PERCENT}%)`);
@@ -189,10 +245,12 @@ async function main() {
         results.push({ symbol: symbolEntry.code, ...bestByTest, reachedTarget });
         console.log(`[best-by-test] ${symbolEntry.code}: strategyType=${bestByTest.model.strategyType} train=${bestByTest.trainAnnualized.toFixed(1)}% TEST=${bestByTest.testAnnualized.toFixed(1)}% ${reachedTarget ? "— TARGET MET" : "— below target"}`);
 
-        if (SHOULD_SAVE && reachedTarget) {
+        if (SHOULD_SAVE) {
           const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
           const name = `ai_validated_${symbolEntry.code}_${dateSlug}`;
-          const label = `AI验证达标·${symbolEntry.code}·+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`;
+          const label = reachedTarget
+            ? `AI验证达标·${symbolEntry.code}·+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`
+            : `AI搜索中·${symbolEntry.code}·当前最佳+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`;
           const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
             name,
             config: bestByTest.best.config,
@@ -229,14 +287,19 @@ async function main() {
             annualizedDiff: Math.abs(bestByTest.testAnnualized - bestByTest.trainAnnualized),
             trainStartDate,
             testStartDate,
+            reachedTarget,
           });
-          console.log(`[saved] ${symbolEntry.code}: ${presetId}`);
+          saved += 1;
+          console.log(`[saved] ${symbolEntry.code}: ${presetId} ${reachedTarget ? "(TARGET MET)" : "(best-so-far, below target)"}`);
+          writeProgress({ saved, currentReason: `已保存：${label}` });
         }
       } else {
         console.log(`[no-qualifying] ${symbolEntry.code}: no attempt beat buy-hold on both return and drawdown`);
       }
     } catch (error) {
       console.error(`[error] ${symbolEntry.code}: ${error.message}`);
+      errored += 1;
+      writeProgress({ errored });
     }
   }
 
@@ -246,6 +309,12 @@ async function main() {
     train: Number(r.trainAnnualized.toFixed(1)), test: Number(r.testAnnualized.toFixed(1)),
     reachedTarget: r.reachedTarget,
   })), null, 2));
+  writeProgress({
+    status: "done",
+    currentSymbol: null,
+    currentReason: `完成：共处理 ${symbolIndex}/${symbols.length} 只股票，AI调用${aiCalls}次，保存${saved}个，数据不足跳过${dataSkipped}个，出错${errored}个。`,
+    bestAnnualizedReturn, bestAnnualizedSymbol,
+  });
   await pool.end();
 }
 

@@ -17,6 +17,7 @@ const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
+const { annualizedReturnRate } = require("../shared/annualize.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -178,6 +179,20 @@ async function processWatch(watch) {
     const lastDate = rows[rows.length - 1].date;
     const todaysTrades = last.trades.filter((trade) => trade.date === lastDate);
 
+    // Simulated per-watch account: "as if you'd started paper-trading this model on this
+    // symbol the moment you set up the watch." Uses allRows (not the truncated SIMULATION_WINDOW
+    // slice) so indicators have real warmup data ahead of watch.created_at, same reasoning as
+    // buildScoredBacktestStates' own doc comment in engine.js. Re-run every cycle from scratch,
+    // like everything else in this pipeline — no incremental state to keep in sync.
+    const createdDateStr = new Date(watch.created_at).toISOString().slice(0, 10);
+    const scoredAccount = engine.buildScoredBacktestStates(allRows, baseConfig, createdDateStr);
+    const accountAnnualized = annualizedReturnRate(scoredAccount.returnRate, scoredAccount.rowsScored) || 0;
+    const accountParams = [
+      scoredAccount.cash, scoredAccount.shares, scoredAccount.equity, scoredAccount.positionRatio,
+      scoredAccount.returnRate, accountAnnualized, scoredAccount.maxDrawdown, scoredAccount.rowsScored,
+      JSON.stringify(scoredAccount.trades),
+    ];
+
     if (todaysTrades.length > 0 && lastDate !== (watch.last_signal_date ? watch.last_signal_date.toISOString().slice(0, 10) : null)) {
       await sendAlertEmail(watch, todaysTrades);
       const lastTrade = todaysTrades[todaysTrades.length - 1];
@@ -185,15 +200,22 @@ async function processWatch(watch) {
         UPDATE watch_alerts SET
           last_checked_at = NOW(), last_signal_date = $2, last_signal_action = $3,
           last_signal_reason = $4, last_notified_at = NOW(), consecutive_failures = 0,
-          last_error = '', updated_at = NOW()
+          last_error = '', updated_at = NOW(),
+          account_cash = $5, account_shares = $6, account_equity = $7, account_position_ratio = $8,
+          account_return_rate = $9, account_annualized_return = $10, account_max_drawdown = $11,
+          account_rows_scored = $12, account_trades = $13::jsonb, account_updated_at = NOW()
         WHERE id = $1
-      `, [watch.id, lastDate, lastTrade.side, lastTrade.reason || lastTrade.label || ""]);
+      `, [watch.id, lastDate, lastTrade.side, lastTrade.reason || lastTrade.label || "", ...accountParams]);
       console.log(`[alert] watch=${watch.id} ${watch.symbol} ${todaysTrades.map((t) => t.label).join(", ")} -> emailed ${watch.owner_email}`);
     } else {
       await pool.query(`
-        UPDATE watch_alerts SET last_checked_at = NOW(), consecutive_failures = 0, last_error = '', updated_at = NOW()
+        UPDATE watch_alerts SET
+          last_checked_at = NOW(), consecutive_failures = 0, last_error = '', updated_at = NOW(),
+          account_cash = $2, account_shares = $3, account_equity = $4, account_position_ratio = $5,
+          account_return_rate = $6, account_annualized_return = $7, account_max_drawdown = $8,
+          account_rows_scored = $9, account_trades = $10::jsonb, account_updated_at = NOW()
         WHERE id = $1
-      `, [watch.id]);
+      `, [watch.id, ...accountParams]);
       console.log(`[no-signal] watch=${watch.id} ${watch.symbol}`);
     }
   } catch (error) {

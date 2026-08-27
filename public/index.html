@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260827-watch-alerts">
+    <link rel="stylesheet" href="/styles.css?v=20260827-watch-account-search">
   </head>
   <body>
     <main class="shell">
@@ -90,7 +90,7 @@
           <div class="dialog-head">
             <div>
               <h2>设置盯盘提醒</h2>
-              <p class="field-hint">选择一个已保存的模型和一支股票，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你。</p>
+              <p class="field-hint">选择一个已保存的模型和一支股票，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你。每个盯盘提醒从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率。</p>
             </div>
             <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
           </div>
@@ -183,6 +183,7 @@
             <button id="adminAutoGenerateTabButton" type="button">AI自动生成</button>
             <button id="adminStockScreenTabButton" type="button">选股记录</button>
             <button id="adminWatchAlertsTabButton" type="button">盯盘提醒</button>
+            <button id="adminValidatedSearchTabButton" type="button">验证搜索</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -329,6 +330,46 @@
           <div id="adminWatchAlertsPanel" class="hidden">
             <p class="field-hint">所有用户设置的"盯盘提醒"配置，按更新时间排序。</p>
             <div id="adminWatchAlertsList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminValidatedSearchPanel" class="hidden">
+            <p class="field-hint">跟 AI自动生成 的区别：对每个模型思路的每次尝试都立即在验证期打分，专门找验证期年化收益能达标的模型；没达标也会保存当前最好成绩，方便下次继续搜索时跳过已经很成熟的股票。</p>
+            <div class="field-hint">股票代码（必选至少一支，不支持全市场搜索）</div>
+            <div id="adminValidatedSearchSymbolPicker" class="admin-symbol-picker">
+              <div class="admin-symbol-picker-toolbar">
+                <input id="adminValidatedSearchSymbolSearch" type="text" placeholder="搜索代码或名称...">
+                <button type="button" id="adminValidatedSearchSymbolSelectAllButton" class="ghost-button">全选（当前筛选）</button>
+                <button type="button" id="adminValidatedSearchSymbolClearButton" class="ghost-button">清除已选</button>
+                <span id="adminValidatedSearchSymbolCount" class="field-hint"></span>
+              </div>
+              <div id="adminValidatedSearchSymbolGrid" class="admin-symbol-picker-grid"></div>
+            </div>
+            <div id="adminValidatedSearchTriggerRow" class="admin-scan-filter-row">
+              <label>目标年化收益率(%)
+                <input id="adminValidatedSearchTargetPercent" type="number" step="1" min="1" max="500" value="50">
+              </label>
+              <label>每只股票尝试次数
+                <input id="adminValidatedSearchAttemptsPerSymbol" type="number" step="1" min="1" max="200" value="60">
+              </label>
+              <label>总 AI 调用次数上限
+                <input id="adminValidatedSearchMaxAttempts" type="number" step="1" min="1" max="2000" value="400">
+              </label>
+              <label>参数候选数量
+                <input id="adminValidatedSearchCandidates" type="number" step="1" min="1" max="2000" value="400">
+              </label>
+              <label>参数选点数量
+                <input id="adminValidatedSearchPointCount" type="number" step="1" min="3" max="10" value="5">
+              </label>
+              <label>训练起点（N年前）
+                <input id="adminValidatedSearchTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              </label>
+              <label>验证起点（最近N年，也是训练终点）
+                <input id="adminValidatedSearchTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
+              </label>
+              <button type="button" id="adminValidatedSearchRunButton" class="ghost-button">启动验证搜索</button>
+              <span id="adminValidatedSearchRunStatus" class="field-hint"></span>
+            </div>
+            <div id="adminValidatedSearchProgressBanner" class="admin-progress-banner hidden"></div>
+            <div id="adminValidatedSearchList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1260,7 +1301,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260827-watch-alerts"></script>
-    <script src="/app.js?v=20260827-watch-alerts"></script>
+    <script src="/formula-engine.js?v=20260827-watch-account-search"></script>
+    <script src="/app.js?v=20260827-watch-account-search"></script>
   </body>
 </html>

@@ -157,6 +157,24 @@ const adminStockScreenTabButton = document.querySelector("#adminStockScreenTabBu
 const adminWatchAlertsTabButton = document.querySelector("#adminWatchAlertsTabButton");
 const adminWatchAlertsPanel = document.querySelector("#adminWatchAlertsPanel");
 const adminWatchAlertsList = document.querySelector("#adminWatchAlertsList");
+const adminValidatedSearchTabButton = document.querySelector("#adminValidatedSearchTabButton");
+const adminValidatedSearchPanel = document.querySelector("#adminValidatedSearchPanel");
+const adminValidatedSearchSymbolGrid = document.querySelector("#adminValidatedSearchSymbolGrid");
+const adminValidatedSearchSymbolSearchInput = document.querySelector("#adminValidatedSearchSymbolSearch");
+const adminValidatedSearchSymbolSelectAllButton = document.querySelector("#adminValidatedSearchSymbolSelectAllButton");
+const adminValidatedSearchSymbolClearButton = document.querySelector("#adminValidatedSearchSymbolClearButton");
+const adminValidatedSearchSymbolCount = document.querySelector("#adminValidatedSearchSymbolCount");
+const adminValidatedSearchTargetPercentInput = document.querySelector("#adminValidatedSearchTargetPercent");
+const adminValidatedSearchAttemptsPerSymbolInput = document.querySelector("#adminValidatedSearchAttemptsPerSymbol");
+const adminValidatedSearchMaxAttemptsInput = document.querySelector("#adminValidatedSearchMaxAttempts");
+const adminValidatedSearchCandidatesInput = document.querySelector("#adminValidatedSearchCandidates");
+const adminValidatedSearchPointCountInput = document.querySelector("#adminValidatedSearchPointCount");
+const adminValidatedSearchTrainYearsAgoInput = document.querySelector("#adminValidatedSearchTrainYearsAgo");
+const adminValidatedSearchTestYearsAgoInput = document.querySelector("#adminValidatedSearchTestYearsAgo");
+const adminValidatedSearchRunButton = document.querySelector("#adminValidatedSearchRunButton");
+const adminValidatedSearchRunStatus = document.querySelector("#adminValidatedSearchRunStatus");
+const adminValidatedSearchProgressBanner = document.querySelector("#adminValidatedSearchProgressBanner");
+const adminValidatedSearchList = document.querySelector("#adminValidatedSearchList");
 const adminStockScreenPanel = document.querySelector("#adminStockScreenPanel");
 const adminStockScreenList = document.querySelector("#adminStockScreenList");
 const screenPresetSelect = document.querySelector("#screenPresetSelect");
@@ -2658,19 +2676,27 @@ async function triggerAdminValidationRun() {
   }
 }
 
-function findAdminAutoGenerateRecord(presetId) {
-  const presets = adminAutoGenerateLastPayload && Array.isArray(adminAutoGenerateLastPayload.presets)
-    ? adminAutoGenerateLastPayload.presets
-    : [];
+// Shared by AI自动生成 and 验证搜索 admin panels — both save presets the same way
+// (ModelGenerator.saveGeneratedPreset) and list them via server.js's queryAiGeneratedPresets,
+// so a preset record has the same shape regardless of which script produced it.
+function findAiGeneratedRecord(presetId, payload) {
+  const presets = payload && Array.isArray(payload.presets) ? payload.presets : [];
   return presets.find((item) => item.id === presetId);
+}
+
+function findAdminAutoGenerateRecord(presetId) {
+  return findAiGeneratedRecord(presetId, adminAutoGenerateLastPayload);
+}
+
+function findAdminValidatedSearchRecord(presetId) {
+  return findAiGeneratedRecord(presetId, adminValidatedSearchLastPayload);
 }
 
 // Mirrors openAdminScanParamViewer's readonly-viewer pattern, but sets preset.meta.targetSymbol
 // explicitly (openAdminScanParamViewer doesn't, so its own save-as silently falls back to
 // whatever symbol happens to be typed in the main page's code input) so "另存为个人模型" here
 // always defaults to the AI-generated model's actual target stock, not an unrelated one.
-function openAdminAutoGenerateParamViewer(presetId) {
-  const record = findAdminAutoGenerateRecord(presetId);
+function openAiGeneratedParamViewer(presetId, record, sourceLabel) {
   if (!record) return;
   const config = record.bestConfig && typeof record.bestConfig === "object" ? record.bestConfig : {};
   const viewPreset = {
@@ -2685,7 +2711,7 @@ function openAdminAutoGenerateParamViewer(presetId) {
   openPresetParamEditor(presetId, {
     preset: viewPreset,
     readonly: true,
-    title: `查看 AI 自动生成参数：${record.targetSymbol}（${record.label}）`,
+    title: `查看${sourceLabel}参数：${record.targetSymbol}（${record.label}）`,
     subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率 ${formatPercent(record.testAnnualizedReturn)} · 只读`,
     saveDefaultLabel: buildAutoSaveLabel({
       symbol: record.targetSymbol,
@@ -2696,8 +2722,15 @@ function openAdminAutoGenerateParamViewer(presetId) {
   });
 }
 
-async function openAdminAutoGenerateRerun(presetId) {
-  const record = findAdminAutoGenerateRecord(presetId);
+function openAdminAutoGenerateParamViewer(presetId) {
+  openAiGeneratedParamViewer(presetId, findAdminAutoGenerateRecord(presetId), "AI 自动生成");
+}
+
+function openAdminValidatedSearchParamViewer(presetId) {
+  openAiGeneratedParamViewer(presetId, findAdminValidatedSearchRecord(presetId), "验证搜索");
+}
+
+async function openAiGeneratedRerun(record) {
   if (!record || !adminRerunDialog) return;
   await runAdminRerunPlayback({
     title: `交易记录：${record.targetSymbol}（${record.label}）`,
@@ -2707,6 +2740,14 @@ async function openAdminAutoGenerateRerun(presetId) {
     start: formatDate(shiftYears(new Date(), -5)),
     end: todayText(),
   });
+}
+
+async function openAdminAutoGenerateRerun(presetId) {
+  await openAiGeneratedRerun(findAdminAutoGenerateRecord(presetId));
+}
+
+async function openAdminValidatedSearchRerun(presetId) {
+  await openAiGeneratedRerun(findAdminValidatedSearchRecord(presetId));
 }
 
 function formatAdminAutoGenerateReason(reason) {
@@ -2742,23 +2783,76 @@ function getAdminAutoGenerateSortValue(record, key) {
   return Number(record[key]) || 0;
 }
 
-function sortAdminAutoGenerateRecords(records) {
-  const key = adminAutoGenerateSortKey;
-  const dir = adminAutoGenerateSortDirection === "asc" ? 1 : -1;
-  const isTrainTestKey = ADMIN_TRAIN_TEST_SORT_KEYS.has(key);
+// Shared by AI自动生成 and 验证搜索 — both list the exact same kind of record (see
+// findAiGeneratedRecord above), so their sort/row/table rendering is one implementation with
+// a couple of per-panel switches (whether to show the "状态" 达标/搜索中 badge column, and
+// which data- sort-key attribute name the panel's own click handler reads).
+function sortAiGeneratedRecords(records, sortKey, sortDirection) {
+  const dir = sortDirection === "asc" ? 1 : -1;
+  const isTrainTestKey = ADMIN_TRAIN_TEST_SORT_KEYS.has(sortKey);
   return [...records].sort((a, b) => {
     if (isTrainTestKey) {
       const aMigrated = Boolean(a.trainStartDate);
       const bMigrated = Boolean(b.trainStartDate);
       if (aMigrated !== bMigrated) return aMigrated ? -1 : 1;
     }
-    const va = getAdminAutoGenerateSortValue(a, key);
-    const vb = getAdminAutoGenerateSortValue(b, key);
+    const va = getAdminAutoGenerateSortValue(a, sortKey);
+    const vb = getAdminAutoGenerateSortValue(b, sortKey);
     if (typeof va === "string" || typeof vb === "string") {
       return dir * String(va).localeCompare(String(vb), "zh-CN");
     }
     return dir * (va - vb);
   });
+}
+
+function renderAiGeneratedPresetRow(p, options = {}) {
+  const hasTrainTest = Boolean(p.trainStartDate);
+  const trainClass = p.trainAnnualizedReturn > 0 ? "up" : p.trainAnnualizedReturn < 0 ? "down" : "";
+  const testClass = p.testAnnualizedReturn > 0 ? "up" : p.testAnnualizedReturn < 0 ? "down" : "";
+  const statusCell = options.showStatus
+    ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最佳${formatPercent(p.testAnnualizedReturn)}</span>`}</td>`
+    : "";
+  return `
+    <tr>
+      ${statusCell}
+      <td>${escapeHtml(p.targetSymbol || "")}</td>
+      <td>${escapeHtml(p.label || "")}</td>
+      <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
+      <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
+      <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
+      <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
+      <td>${p.bestTrades || 0}</td>
+      <td>${p.testedCandidates || 0}</td>
+      <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
+      <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
+      <td class="admin-scan-actions">
+        <button type="button" class="admin-view-params-button" data-preset-id="${escapeHtml(p.id)}">查看参数</button>
+        <button type="button" class="admin-auto-generate-rerun-button" data-preset-id="${escapeHtml(p.id)}">查看交易记录</button>
+      </td>
+    </tr>
+  `;
+}
+
+function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus }) {
+  if (presets.length === 0) {
+    return '<div class="ranking-empty">还没有相关记录。</div>';
+  }
+  const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection);
+  const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus })).join("");
+  const columns = showStatus ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS] : ADMIN_AUTO_GENERATE_COLUMNS;
+  const headerCells = columns.map((column) => {
+    const active = sortKey === column.key;
+    const arrow = active ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
+    return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-${sortAttr}="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
+  }).join("");
+  return `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr>${headerCells}<th></th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 }
 
 function renderAdminAutoGenerateList(payload) {
@@ -2768,43 +2862,12 @@ function renderAdminAutoGenerateList(payload) {
     if (presets.length === 0) {
       adminAutoGenerateList.innerHTML = '<div class="ranking-empty">还没有自动生成并保存的模型。</div>';
     } else {
-      const sorted = sortAdminAutoGenerateRecords(presets);
-      const rows = sorted.map((p) => {
-        const hasTrainTest = Boolean(p.trainStartDate);
-        const trainClass = p.trainAnnualizedReturn > 0 ? "up" : p.trainAnnualizedReturn < 0 ? "down" : "";
-        const testClass = p.testAnnualizedReturn > 0 ? "up" : p.testAnnualizedReturn < 0 ? "down" : "";
-        return `
-        <tr>
-          <td>${escapeHtml(p.targetSymbol || "")}</td>
-          <td>${escapeHtml(p.label || "")}</td>
-          <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
-          <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
-          <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
-          <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
-          <td>${p.bestTrades || 0}</td>
-          <td>${p.testedCandidates || 0}</td>
-          <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
-          <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
-          <td class="admin-scan-actions">
-            <button type="button" class="admin-view-params-button" data-preset-id="${escapeHtml(p.id)}">查看参数</button>
-            <button type="button" class="admin-auto-generate-rerun-button" data-preset-id="${escapeHtml(p.id)}">查看交易记录</button>
-          </td>
-        </tr>
-      `;
-      }).join("");
-      const headerCells = ADMIN_AUTO_GENERATE_COLUMNS.map((column) => {
-        const active = adminAutoGenerateSortKey === column.key;
-        const arrow = active ? (adminAutoGenerateSortDirection === "asc" ? " ▲" : " ▼") : "";
-        return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-admin-auto-generate-sort-key="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
-      }).join("");
-      adminAutoGenerateList.innerHTML = `
-        <table class="admin-ranking-table">
-          <thead>
-            <tr>${headerCells}<th></th></tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
+      adminAutoGenerateList.innerHTML = renderAiGeneratedPresetTable(presets, {
+        sortKey: adminAutoGenerateSortKey,
+        sortDirection: adminAutoGenerateSortDirection,
+        sortAttr: "admin-auto-generate-sort-key",
+        showStatus: false,
+      });
     }
   }
 
@@ -3015,6 +3078,14 @@ const adminScanSymbolPicker = createAdminSymbolPicker({
   countEl: adminScanSymbolCount,
 });
 
+const adminValidatedSearchSymbolPicker = createAdminSymbolPicker({
+  gridEl: adminValidatedSearchSymbolGrid,
+  searchInput: adminValidatedSearchSymbolSearchInput,
+  selectAllButton: adminValidatedSearchSymbolSelectAllButton,
+  clearButton: adminValidatedSearchSymbolClearButton,
+  countEl: adminValidatedSearchSymbolCount,
+});
+
 async function loadAdminAutoGenerate() {
   adminAutoGenerateSymbolPicker.render();
   loadAdminSymbolHistory().then(() => adminAutoGenerateSymbolPicker.render()).catch(() => {});
@@ -3071,6 +3142,186 @@ async function triggerAdminAutoGenerateRun() {
     if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "";
     setStatus(`启动自动生成失败：${error.message}`, true);
   }
+}
+
+// "验证搜索"：跟 AI自动生成 的区别见 search-validated-best.js 顶部注释——对每次尝试都立即在
+// 验证期打分，直接找验证期年化收益达标的模型；没达标的也会保存当前最好成绩，方便"继续寻找"时
+// 知道每支股票已经搜到哪一步。这个功能没有全市场兜底，必须至少选一支股票。
+async function loadAdminValidatedSearch() {
+  adminValidatedSearchSymbolPicker.render();
+  loadAdminSymbolHistory().then(() => adminValidatedSearchSymbolPicker.render()).catch(() => {});
+  if (!adminValidatedSearchList) return;
+  if (!adminValidatedSearchList.innerHTML.trim()) {
+    adminValidatedSearchList.innerHTML = '<div class="ranking-empty">正在读取验证搜索结果...</div>';
+  }
+  try {
+    const response = await fetch("/api/admin/validated-search", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取验证搜索结果失败。");
+    renderAdminValidatedSearchList(payload);
+  } catch (error) {
+    adminValidatedSearchList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function triggerAdminValidatedSearchRun() {
+  const symbols = adminValidatedSearchSymbolPicker.getSelected();
+  if (symbols.length === 0) {
+    setStatus("请至少选择一支股票（这个功能不支持全市场搜索）。", true);
+    return;
+  }
+  const targetPercent = Number(adminValidatedSearchTargetPercentInput && adminValidatedSearchTargetPercentInput.value);
+  const attemptsPerSymbol = Number(adminValidatedSearchAttemptsPerSymbolInput && adminValidatedSearchAttemptsPerSymbolInput.value);
+  const maxAttempts = Number(adminValidatedSearchMaxAttemptsInput && adminValidatedSearchMaxAttemptsInput.value);
+  const candidates = Number(adminValidatedSearchCandidatesInput && adminValidatedSearchCandidatesInput.value);
+  const pointCount = Number(adminValidatedSearchPointCountInput && adminValidatedSearchPointCountInput.value);
+  const trainYearsAgo = Number(adminValidatedSearchTrainYearsAgoInput && adminValidatedSearchTrainYearsAgoInput.value);
+  const testYearsAgo = Number(adminValidatedSearchTestYearsAgoInput && adminValidatedSearchTestYearsAgoInput.value);
+  const requested = {
+    targetPercent: Number.isFinite(targetPercent) ? targetPercent : 50,
+    attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 60,
+    maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 400,
+    candidates: Number.isFinite(candidates) ? candidates : 400,
+    pointCount: Number.isFinite(pointCount) ? pointCount : 5,
+    trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
+    testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
+  };
+  if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "正在启动验证搜索...";
+  try {
+    const response = await fetch("/api/admin/validated-search/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols, ...requested }),
+    });
+    const result = await readJsonResponse(response, "启动验证搜索失败。");
+    const adjustments = ["targetPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYearsAgo", "testYearsAgo"]
+      .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
+      .map((key) => `${key} ${requested[key]}→${result[key]}`);
+    setStatus(adjustments.length > 0
+      ? `已启动验证搜索（部分参数超出允许范围，已调整：${adjustments.join("，")}）。`
+      : "已启动验证搜索。");
+    await loadAdminValidatedSearch();
+  } catch (error) {
+    if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "";
+    setStatus(`启动验证搜索失败：${error.message}`, true);
+  }
+}
+
+let adminValidatedSearchSortKey = "annualizedDiff";
+let adminValidatedSearchSortDirection = "asc";
+let adminValidatedSearchLastPayload = null;
+let adminValidatedSearchPollTimer = null;
+
+function renderAdminValidatedSearchList(payload) {
+  adminValidatedSearchLastPayload = payload;
+  const presets = Array.isArray(payload.presets) ? payload.presets : [];
+  if (adminValidatedSearchList) {
+    if (presets.length === 0) {
+      adminValidatedSearchList.innerHTML = '<div class="ranking-empty">还没有搜索并保存的模型。</div>';
+    } else {
+      adminValidatedSearchList.innerHTML = renderAiGeneratedPresetTable(presets, {
+        sortKey: adminValidatedSearchSortKey,
+        sortDirection: adminValidatedSearchSortDirection,
+        sortAttr: "admin-validated-search-sort-key",
+        showStatus: true,
+      });
+    }
+  }
+
+  const running = Boolean(payload.running);
+  if (adminValidatedSearchRunButton) adminValidatedSearchRunButton.disabled = running;
+
+  const runningIsValidatedSearch = running && payload.scanInfo && payload.scanInfo.jobType === "validatedSearch";
+  if (adminValidatedSearchRunStatus) {
+    if (runningIsValidatedSearch) {
+      adminValidatedSearchRunStatus.textContent = `验证搜索进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
+    } else if (running) {
+      adminValidatedSearchRunStatus.textContent = "已有其它后台任务在运行，请等它结束后再启动验证搜索。";
+    } else {
+      adminValidatedSearchRunStatus.textContent = "";
+    }
+  }
+
+  if (adminValidatedSearchProgressBanner) {
+    const progress = payload.progress;
+    if (runningIsValidatedSearch && progress) {
+      const symbolLabel = progress.currentSymbol
+        ? `股票 ${progress.symbolIndex || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbol)}）`
+        : `股票 ${progress.symbolIndex || 0}/${progress.totalSymbols || "?"}`;
+      const attemptLabel = progress.attempt ? `第 ${progress.attempt}/${progress.attemptsPerSymbol || "?"} 次尝试` : "";
+      const detailParts = [symbolLabel, attemptLabel].filter(Boolean).join(" · ");
+      const reasonText = progress.currentReason ? escapeHtml(progress.currentReason) : "";
+      const bestReturn = Number.isFinite(progress.bestAnnualizedReturn) ? progress.bestAnnualizedReturn : null;
+      const bestReturnLabel = bestReturn !== null
+        ? `目前最佳验证期年化收益率 <strong>${bestReturn >= 0 ? "+" : ""}${bestReturn.toFixed(1)}%</strong>（${escapeHtml(progress.bestAnnualizedSymbol || "")}，目标 ${progress.targetPercent || "?"}%）`
+        : "目前最佳验证期年化收益率：暂无";
+      adminValidatedSearchProgressBanner.classList.remove("hidden");
+      adminValidatedSearchProgressBanner.innerHTML = `
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>验证搜索进行中</div>
+        <div class="admin-progress-banner-detail">${detailParts}${reasonText ? `<br>${reasonText}` : ""}</div>
+        <div class="admin-progress-banner-best">${bestReturnLabel}</div>
+        <div class="admin-progress-banner-stats">
+          <span>AI 调用 <strong>${progress.aiCalls || 0}</strong>/${progress.maxAttempts || "?"}</span>
+          <span>已保存 <strong>${progress.saved || 0}</strong></span>
+          <span>数据不足跳过 <strong>${progress.dataSkipped || 0}</strong></span>
+          <span>出错 <strong>${progress.errored || 0}</strong></span>
+        </div>
+      `;
+    } else {
+      adminValidatedSearchProgressBanner.classList.add("hidden");
+      adminValidatedSearchProgressBanner.innerHTML = "";
+    }
+  }
+
+  if (running) {
+    scheduleAdminValidatedSearchPoll();
+  } else {
+    stopAdminValidatedSearchPoll();
+  }
+}
+
+function scheduleAdminValidatedSearchPoll() {
+  if (adminValidatedSearchPollTimer) return;
+  adminValidatedSearchPollTimer = window.setInterval(() => {
+    if (!adminValidatedSearchPanel || adminValidatedSearchPanel.classList.contains("hidden")) {
+      stopAdminValidatedSearchPoll();
+      return;
+    }
+    loadAdminValidatedSearch();
+  }, 5000);
+}
+
+function stopAdminValidatedSearchPoll() {
+  if (adminValidatedSearchPollTimer) {
+    window.clearInterval(adminValidatedSearchPollTimer);
+    adminValidatedSearchPollTimer = null;
+  }
+}
+
+if (adminValidatedSearchList) {
+  adminValidatedSearchList.addEventListener("click", (event) => {
+    const target = event.target;
+    const viewParamsButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
+    if (viewParamsButton) {
+      openAdminValidatedSearchParamViewer(viewParamsButton.dataset.presetId);
+      return;
+    }
+    const rerunButton = target && target.closest ? target.closest(".admin-auto-generate-rerun-button") : null;
+    if (rerunButton) {
+      openAdminValidatedSearchRerun(rerunButton.dataset.presetId);
+      return;
+    }
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header") : null;
+    if (sortHeader) {
+      const key = sortHeader.dataset.adminValidatedSearchSortKey;
+      if (adminValidatedSearchSortKey === key) {
+        adminValidatedSearchSortDirection = adminValidatedSearchSortDirection === "asc" ? "desc" : "asc";
+      } else {
+        adminValidatedSearchSortKey = key;
+        adminValidatedSearchSortDirection = "desc";
+      }
+      if (adminValidatedSearchLastPayload) renderAdminValidatedSearchList(adminValidatedSearchLastPayload);
+    }
+  });
 }
 
 // "选股": pick a saved model + a market, server scans that market's whole symbols.json
@@ -3326,43 +3577,79 @@ function formatWatchAlertFrequency(minutes) {
   return `每 ${minutes} 分钟`;
 }
 
+// 交易对象的字段形状（side/price/date/reason/label）跟 renderScreenMatchesTable 消费的
+// 选股匹配记录一致（两边都来自 engine.js 的回测 trades 数组），所以列结构直接照抄那份。
+function renderWatchAlertOrdersTable(trades) {
+  if (!Array.isArray(trades) || trades.length === 0) {
+    return '<div class="ranking-empty">暂无模拟订单。</div>';
+  }
+  const rows = trades.map((t) => `
+    <tr>
+      <td class="${t.side === "buy" ? "up" : "down"}">${t.side === "buy" ? "买入" : "卖出"}</td>
+      <td>${Number.isFinite(t.price) ? t.price.toFixed(2) : escapeHtml(t.price)}</td>
+      <td>${escapeHtml(t.date || "")}</td>
+      <td>${escapeHtml(t.reason || t.label || "")}</td>
+    </tr>
+  `).join("");
+  return `
+    <table class="admin-ranking-table">
+      <thead><tr><th>方向</th><th>价格</th><th>日期</th><th>原因</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function formatWatchAlertAccountStats(watch) {
+  if (watch.accountEquity === null || watch.accountEquity === undefined || watch.accountRowsScored <= 0) {
+    return '<span class="field-hint">账户数据尚未计算（等待下一次检查周期）</span>';
+  }
+  const returnClass = watch.accountReturnRate >= 0 ? "up" : "down";
+  return `
+    <span>账户权益 <strong>${watch.accountEquity.toFixed(0)}</strong></span>
+    <span class="${returnClass}">回报率 ${watch.accountReturnRate.toFixed(1)}%</span>
+    <span class="${returnClass}">年化 ${watch.accountAnnualizedReturn.toFixed(1)}%</span>
+    <span>持仓 ${watch.accountPositionRatio.toFixed(1)}%</span>
+  `;
+}
+
+// Shared by both the main-page "我的盯盘提醒" list (own watches, with toggle/delete actions)
+// and the admin "盯盘提醒" list (all users' watches, read-only + owner column) — a <details>
+// block keeps each watch's order history collapsed by default, same pattern as
+// renderScreenRunEntry uses for 选股 run entries.
+function renderWatchAlertEntry(watch, options = {}) {
+  const marketLabel = watch.market === "US" ? "美股" : "A股";
+  const signalCell = watch.lastSignalDate
+    ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
+    : '<span class="field-hint">暂无信号</span>';
+  const failurePart = watch.consecutiveFailures > 0
+    ? ` · <span class="down" title="${escapeHtml(watch.lastError || "")}">失败 ${watch.consecutiveFailures} 次</span>`
+    : "";
+  const ownerPart = options.showOwner ? `${escapeHtml(watch.ownerEmail || "")} · ` : "";
+  const statusPart = !watch.enabled ? ' · <span class="down">已停用</span>' : "";
+  const summary = `${ownerPart}${escapeHtml(watch.presetLabel)} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
+  const actionsPart = options.showOwner ? "" : `
+    <div class="admin-scan-actions">
+      <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
+      <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
+    </div>
+  `;
+  return `
+    <details class="admin-scan-details">
+      <summary>${summary}</summary>
+      <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
+      ${renderWatchAlertOrdersTable(watch.accountTrades)}
+      ${actionsPart}
+    </details>
+  `;
+}
+
 function renderWatchAlertsList(watches) {
   if (!watchAlertsList) return;
   if (!Array.isArray(watches) || watches.length === 0) {
     watchAlertsList.innerHTML = '<div class="ranking-empty">还没有设置盯盘提醒。</div>';
     return;
   }
-  const rows = watches.map((watch) => {
-    const marketLabel = watch.market === "US" ? "美股" : "A股";
-    const signalCell = watch.lastSignalDate
-      ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
-      : '<span class="field-hint">暂无信号</span>';
-    const failureCell = watch.consecutiveFailures > 0
-      ? `<span class="down" title="${escapeHtml(watch.lastError || "")}">失败 ${watch.consecutiveFailures} 次</span>`
-      : "";
-    return `
-      <tr>
-        <td>${escapeHtml(watch.presetLabel)}</td>
-        <td>${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）</td>
-        <td>${marketLabel}</td>
-        <td>${formatWatchAlertFrequency(watch.frequencyMinutes)}</td>
-        <td>${signalCell}</td>
-        <td>${failureCell}</td>
-        <td class="admin-scan-actions">
-          <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
-          <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
-        </td>
-      </tr>
-    `;
-  }).join("");
-  watchAlertsList.innerHTML = `
-    <table class="admin-ranking-table">
-      <thead>
-        <tr><th>模型</th><th>股票</th><th>市场</th><th>频率</th><th>最近信号</th><th></th><th></th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
+  watchAlertsList.innerHTML = watches.map((watch) => renderWatchAlertEntry(watch)).join("");
 }
 
 async function loadMyWatchAlerts() {
@@ -3528,35 +3815,7 @@ async function loadAdminWatchAlerts() {
       adminWatchAlertsList.innerHTML = '<div class="ranking-empty">还没有用户设置盯盘提醒。</div>';
       return;
     }
-    const rows = watches.map((watch) => {
-      const marketLabel = watch.market === "US" ? "美股" : "A股";
-      const signalCell = watch.lastSignalDate
-        ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
-        : '<span class="field-hint">暂无信号</span>';
-      const statusCell = watch.enabled
-        ? (watch.consecutiveFailures > 0 ? `<span class="down" title="${escapeHtml(watch.lastError || "")}">运行中，失败 ${watch.consecutiveFailures} 次</span>` : "运行中")
-        : '<span class="down">已停用</span>';
-      return `
-        <tr>
-          <td>${escapeHtml(watch.ownerEmail)}</td>
-          <td>${escapeHtml(watch.presetLabel)}</td>
-          <td>${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）</td>
-          <td>${marketLabel}</td>
-          <td>${formatWatchAlertFrequency(watch.frequencyMinutes)}</td>
-          <td>${signalCell}</td>
-          <td>${statusCell}</td>
-          <td>${escapeHtml(formatAdminDate(watch.updatedAt))}</td>
-        </tr>
-      `;
-    }).join("");
-    adminWatchAlertsList.innerHTML = `
-      <table class="admin-ranking-table">
-        <thead>
-          <tr><th>Owner</th><th>模型</th><th>股票</th><th>市场</th><th>频率</th><th>最近信号</th><th>状态</th><th>更新时间</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
+    adminWatchAlertsList.innerHTML = watches.map((watch) => renderWatchAlertEntry(watch, { showOwner: true })).join("");
   } catch (error) {
     adminWatchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
@@ -3676,7 +3935,8 @@ function setAdminTab(tab) {
   const showAutoGenerate = tab === "autoGenerate";
   const showStockScreen = tab === "stockScreen";
   const showWatchAlerts = tab === "watchAlerts";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts;
+  const showValidatedSearch = tab === "validatedSearch";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -3685,6 +3945,7 @@ function setAdminTab(tab) {
   if (adminAutoGenerateTabButton) adminAutoGenerateTabButton.classList.toggle("active", showAutoGenerate);
   if (adminStockScreenTabButton) adminStockScreenTabButton.classList.toggle("active", showStockScreen);
   if (adminWatchAlertsTabButton) adminWatchAlertsTabButton.classList.toggle("active", showWatchAlerts);
+  if (adminValidatedSearchTabButton) adminValidatedSearchTabButton.classList.toggle("active", showValidatedSearch);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
@@ -3693,6 +3954,7 @@ function setAdminTab(tab) {
   if (adminAutoGeneratePanel) adminAutoGeneratePanel.classList.toggle("hidden", !showAutoGenerate);
   if (adminStockScreenPanel) adminStockScreenPanel.classList.toggle("hidden", !showStockScreen);
   if (adminWatchAlertsPanel) adminWatchAlertsPanel.classList.toggle("hidden", !showWatchAlerts);
+  if (adminValidatedSearchPanel) adminValidatedSearchPanel.classList.toggle("hidden", !showValidatedSearch);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
@@ -3700,6 +3962,7 @@ function setAdminTab(tab) {
   if (showAutoGenerate) loadAdminAutoGenerate();
   if (showStockScreen) loadAdminStockScreen();
   if (showWatchAlerts) loadAdminWatchAlerts();
+  if (showValidatedSearch) loadAdminValidatedSearch();
 }
 
 if (adminPresetsTabButton) {
@@ -3724,6 +3987,15 @@ if (adminAutoGenerateRunButton) {
   adminAutoGenerateRunButton.addEventListener("click", () => {
     if (!window.confirm("确定要启动 AI 自动生成吗？这会消耗 AI API 调用额度（最多按“总 AI 调用次数上限”计费），并跑参数搜索，可能耗时较久。")) return;
     triggerAdminAutoGenerateRun();
+  });
+}
+if (adminValidatedSearchTabButton) {
+  adminValidatedSearchTabButton.addEventListener("click", () => setAdminTab("validatedSearch"));
+}
+if (adminValidatedSearchRunButton) {
+  adminValidatedSearchRunButton.addEventListener("click", () => {
+    if (!window.confirm("确定要启动验证搜索吗？这会消耗 AI API 调用额度（最多按“总 AI 调用次数上限”计费），并跑参数搜索，可能耗时较久。")) return;
+    triggerAdminValidatedSearchRun();
   });
 }
 if (adminValidationRunButton) {

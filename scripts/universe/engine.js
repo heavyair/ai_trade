@@ -2062,7 +2062,10 @@ function buildScoreRuleBacktestStates(rows, config) {
 function buildScoredBacktestStates(rows, config, scoringStartDate) {
   const states = buildBacktestStates(rows, config);
   if (states.length === 0) {
-    return { returnRate: 0, maxDrawdown: 0, trades: [], rowsScored: 0, equity: config.initialCash || 0 };
+    return {
+      returnRate: 0, maxDrawdown: 0, trades: [], rowsScored: 0, equity: config.initialCash || 0,
+      cash: config.initialCash || 0, shares: 0, positionRatio: 0,
+    };
   }
   const scoringStartIndex = rows.findIndex((row) => row.date >= scoringStartDate);
   const effectiveStartIndex = scoringStartIndex < 0 ? states.length : scoringStartIndex;
@@ -2085,12 +2088,25 @@ function buildScoredBacktestStates(rows, config, scoringStartDate) {
 
   const trades = (finalState.trades || []).filter((trade) => trade.date >= scoringStartDate);
 
+  // cash/shares/equity are rebased the same way returnRate already is: scaled as if the
+  // account had actually been reset to config.initialCash at the baseline (scoringStartDate),
+  // not left at whatever dollar value the backtest happened to compound to across the full
+  // (possibly multi-year) rows array before that point. Without this, a caller asking "what
+  // would my account look like if I'd started trading on this date" would see the account's
+  // true full-history-compounded balance (e.g. $18M from a 5-year warmup run) instead of a
+  // number consistent with returnRate and a real starting balance — positionRatio needs no
+  // scaling since it's already a ratio, invariant to the account's absolute size.
+  const scale = baselineEquity > 0 ? (Number(config.initialCash) || 0) / baselineEquity : 1;
+
   return {
     returnRate,
     maxDrawdown,
     trades,
     rowsScored: states.length - effectiveStartIndex,
-    equity: finalEquity,
+    equity: finalEquity * scale,
+    cash: finalState.cash * scale,
+    shares: finalState.shares * scale,
+    positionRatio: finalState.positionRatio,
   };
 }
 

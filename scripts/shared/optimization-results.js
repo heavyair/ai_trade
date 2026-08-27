@@ -46,6 +46,7 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_start_date DATE;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_start_date DATE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS reached_target BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 }
 
@@ -59,9 +60,9 @@ async function saveOptimizationResult(pool, row) {
       buy_hold_return_rate, buy_hold_max_drawdown,
       train_annualized_return, test_return_rate, test_max_drawdown, test_annualized_return,
       test_trades, test_rows_tested, annualized_diff, train_start_date, test_start_date,
-      scanned_at
+      reached_target, scanned_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW())
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
       preset_label = EXCLUDED.preset_label,
@@ -86,6 +87,7 @@ async function saveOptimizationResult(pool, row) {
       annualized_diff = EXCLUDED.annualized_diff,
       train_start_date = EXCLUDED.train_start_date,
       test_start_date = EXCLUDED.test_start_date,
+      reached_target = EXCLUDED.reached_target,
       scanned_at = NOW()
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
@@ -94,6 +96,7 @@ async function saveOptimizationResult(pool, row) {
     row.buyHoldReturnRate, row.buyHoldMaxDrawdown,
     row.trainAnnualizedReturn, row.testReturnRate, row.testMaxDrawdown, row.testAnnualizedReturn,
     row.testTrades, row.testRowsTested, row.annualizedDiff, row.trainStartDate, row.testStartDate,
+    Boolean(row.reachedTarget),
   ]);
 }
 
