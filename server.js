@@ -7,6 +7,7 @@ const { execFile, spawn } = require("child_process");
 const { Pool } = require("pg");
 const ModelGenerator = require("./scripts/shared/model-generator.js");
 const { getStockCategories } = require("./scripts/shared/stock-categories.js");
+const { postJsonToResend } = require("./scripts/shared/send-email.js");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -353,6 +354,38 @@ async function initializeDatabase() {
     ALTER TABLE stock_screen_runs ADD COLUMN IF NOT EXISTS preset_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
     CREATE INDEX IF NOT EXISTS stock_screen_runs_owner_idx ON stock_screen_runs(owner_user_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS stock_screen_runs_started_idx ON stock_screen_runs(started_at DESC);
+
+    -- 盯盘提醒: one row per (owner, model, stock) watch a user configured to be checked on a
+    -- recurring schedule by scripts/universe/run-watch-alerts.js (host-cron driven, see that
+    -- script's header comment). Unlike stock_screen_runs (a one-shot batch scan across a whole
+    -- market), this is a small persistent list of narrow, targeted watches — each row IS the
+    -- config, and also carries its own last-check/last-signal state so the checker script can
+    -- do its own per-row dedup without a separate log table.
+    CREATE TABLE IF NOT EXISTS watch_alerts (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_email TEXT NOT NULL,
+      preset_id TEXT NOT NULL REFERENCES strategy_presets(id) ON DELETE CASCADE,
+      preset_label TEXT NOT NULL DEFAULT '',
+      symbol TEXT NOT NULL,
+      symbol_name TEXT NOT NULL DEFAULT '',
+      market TEXT NOT NULL,
+      frequency_minutes INTEGER NOT NULL DEFAULT 60,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      last_checked_at TIMESTAMPTZ,
+      last_signal_date DATE,
+      last_signal_action TEXT,
+      last_signal_reason TEXT NOT NULL DEFAULT '',
+      last_notified_at TIMESTAMPTZ,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS watch_alerts_owner_preset_symbol_idx
+      ON watch_alerts(owner_user_id, preset_id, symbol, market);
+    CREATE INDEX IF NOT EXISTS watch_alerts_due_idx ON watch_alerts(enabled, last_checked_at);
+    CREATE INDEX IF NOT EXISTS watch_alerts_owner_idx ON watch_alerts(owner_user_id, created_at DESC);
   `);
 
   await normalizeExistingPresetLabels();
@@ -408,60 +441,9 @@ function getRequestOrigin(req) {
   return `${String(protocol).split(",")[0]}://${String(host).split(",")[0]}`.replace(/\/+$/, "");
 }
 
-function postJsonToResend(payload) {
-  if (!RESEND_API_KEY) {
-    const error = new Error("邮件服务还没有配置。");
-    error.statusCode = 503;
-    throw error;
-  }
-
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify(payload);
-    const request = https.request({
-      method: "POST",
-      hostname: "api.resend.com",
-      path: "/emails",
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-      timeout: 12000,
-    }, (response) => {
-      let responseBody = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        responseBody += chunk;
-      });
-      response.on("end", () => {
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-          resolve(responseBody);
-          return;
-        }
-        let detail = "";
-        try {
-          const payload = JSON.parse(responseBody);
-          detail = payload && (payload.message || payload.error || payload.name)
-            ? String(payload.message || payload.error || payload.name)
-            : "";
-        } catch (parseError) {
-          detail = responseBody;
-        }
-        const suffix = detail ? `：${detail.slice(0, 300)}` : "";
-        const error = new Error(`邮件服务返回 ${response.statusCode}${suffix}`);
-        error.statusCode = 502;
-        reject(error);
-      });
-    });
-
-    request.on("timeout", () => {
-      request.destroy(new Error("邮件服务请求超时。"));
-    });
-    request.on("error", reject);
-    request.write(body);
-    request.end();
-  });
-}
+// postJsonToResend moved to scripts/shared/send-email.js so scripts/universe/run-watch-alerts.js
+// (a standalone cron script, can't require server.js without starting a duplicate HTTP
+// listener) can send email through the same transport instead of a second copy.
 
 // AI model generation (requestAiJsonModel/generateModelFromDescription/normalizeGeneratedModel/
 // the BLOCK_RULE_* schema constants) moved to scripts/shared/model-generator.js so both this
@@ -2746,6 +2728,198 @@ async function handleAdminStockScreenApi(req, res) {
   }
 }
 
+function mapWatchAlertRow(row) {
+  return {
+    id: row.id,
+    ownerEmail: row.owner_email,
+    presetId: row.preset_id,
+    presetLabel: row.preset_label,
+    symbol: row.symbol,
+    symbolName: row.symbol_name,
+    market: row.market,
+    frequencyMinutes: row.frequency_minutes,
+    enabled: row.enabled,
+    lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
+    lastSignalDate: row.last_signal_date ? new Date(row.last_signal_date).toISOString().slice(0, 10) : "",
+    lastSignalAction: row.last_signal_action || "",
+    lastSignalReason: row.last_signal_reason || "",
+    lastNotifiedAt: row.last_notified_at ? new Date(row.last_notified_at).toISOString() : "",
+    consecutiveFailures: row.consecutive_failures || 0,
+    lastError: row.last_error || "",
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+const WATCH_ALERT_FREQUENCY_OPTIONS = new Set([30, 60, 240, 1440]);
+
+// "设置盯盘提醒": a user configures a persistent (model, stock, check-frequency) watch;
+// scripts/universe/run-watch-alerts.js (host-cron driven, NOT this server's isScanRunning()
+// batch-job lock — it's a lightweight per-watch check, not a full-universe scan) periodically
+// re-checks whether that model's most recent trading day would trigger a buy/sell signal on
+// that stock, flags it here, and emails the owner. This is the persistent-subscription
+// counterpart to 选股's one-shot market-wide scan.
+async function handleWatchAlertsApi(req, res) {
+  try {
+    if (req.method === "GET") {
+      const user = await requireCurrentUser(req);
+      const ownerUserId = userIdForEmail(user.email);
+      const result = await dbQuery(`
+        SELECT * FROM watch_alerts WHERE owner_user_id = $1 ORDER BY created_at DESC
+      `, [ownerUserId]);
+      sendJson(res, 200, { watches: result.rows.map(mapWatchAlertRow) });
+      return;
+    }
+
+    if (req.method === "POST") {
+      const user = await requireVerifiedCurrentUser(req);
+      const ownerUserId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+
+      const presetId = String(payload.presetId || "").trim();
+      const market = String(payload.market || "").trim().toUpperCase();
+      const frequencyMinutes = Math.round(Number(payload.frequencyMinutes));
+      if (!presetId) {
+        sendJson(res, 400, { error: "请选择一个模型。" });
+        return;
+      }
+      if (market !== "CN" && market !== "US") {
+        sendJson(res, 400, { error: "请选择 A股 或 美股。" });
+        return;
+      }
+      if (!WATCH_ALERT_FREQUENCY_OPTIONS.has(frequencyMinutes)) {
+        sendJson(res, 400, { error: "检查频率不合法。" });
+        return;
+      }
+      let symbol;
+      try {
+        symbol = normalizeCode(payload.symbol);
+      } catch (error) {
+        sendJson(res, 400, { error: error.message });
+        return;
+      }
+
+      const presetResult = await dbQuery(`
+        SELECT id, label, owner_user_id FROM strategy_presets WHERE id = $1
+      `, [presetId]);
+      if (presetResult.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在。" });
+        return;
+      }
+      const presetRow = presetResult.rows[0];
+      if (presetRow.owner_user_id && presetRow.owner_user_id !== ownerUserId) {
+        sendJson(res, 403, { error: "无权使用该模型。" });
+        return;
+      }
+
+      // A watch can target ANY stock the user cares about, not just a known/curated list —
+      // unlike the admin batch-scan symbol pickers, there's no "existing universe" to choose
+      // from here. Existence is proven the same way the live app already proves it for any
+      // manually-entered code: try to actually fetch recent klines. This also has the useful
+      // side effect of seeding daily_prices for the symbol immediately via persistKlineData
+      // inside fetchKlines, so the very next cron cycle already has data to check against.
+      let symbolName = symbol;
+      try {
+        const end = new Date().toISOString().slice(0, 10);
+        const start = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+        const klineResult = await fetchKlines({ code: symbol, start, end });
+        symbolName = klineResult.name || symbol;
+      } catch (error) {
+        sendJson(res, 400, { error: "股票代码不存在或无法获取行情，请确认代码是否正确。" });
+        return;
+      }
+
+      const id = randomId("watch");
+      const result = await dbQuery(`
+        INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market, frequency_minutes, enabled)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        ON CONFLICT (owner_user_id, preset_id, symbol, market) DO UPDATE SET
+          preset_label = EXCLUDED.preset_label,
+          symbol_name = EXCLUDED.symbol_name,
+          frequency_minutes = EXCLUDED.frequency_minutes,
+          enabled = TRUE,
+          consecutive_failures = 0,
+          last_error = '',
+          updated_at = NOW()
+        RETURNING *
+      `, [id, ownerUserId, user.email, presetId, presetRow.label, symbol, symbolName, market, frequencyMinutes]);
+      sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const user = await requireCurrentUser(req);
+      const ownerUserId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const id = String(payload.id || "").trim();
+      if (!id) {
+        sendJson(res, 400, { error: "缺少盯盘提醒 id。" });
+        return;
+      }
+      const enabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
+      const frequencyMinutes = payload.frequencyMinutes !== undefined
+        ? Math.round(Number(payload.frequencyMinutes))
+        : null;
+      if (frequencyMinutes !== null && !WATCH_ALERT_FREQUENCY_OPTIONS.has(frequencyMinutes)) {
+        sendJson(res, 400, { error: "检查频率不合法。" });
+        return;
+      }
+      const result = await dbQuery(`
+        UPDATE watch_alerts SET
+          enabled = COALESCE($3, enabled),
+          frequency_minutes = COALESCE($4, frequency_minutes),
+          consecutive_failures = CASE WHEN $3 = TRUE THEN 0 ELSE consecutive_failures END,
+          updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2
+        RETURNING *
+      `, [id, ownerUserId, enabled, frequencyMinutes]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const user = await requireCurrentUser(req);
+      const ownerUserId = userIdForEmail(user.email);
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const id = String(payload.id || "").trim();
+      const result = await dbQuery(`
+        DELETE FROM watch_alerts WHERE id = $1 AND owner_user_id = $2 RETURNING id
+      `, [id, ownerUserId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
+        return;
+      }
+      sendJson(res, 200, { deleted: result.rows[0] });
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "盯盘提醒操作失败。" });
+  }
+}
+
+async function handleAdminWatchAlertsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`SELECT * FROM watch_alerts ORDER BY updated_at DESC LIMIT 500`);
+    sendJson(res, 200, { adminEmail: ADMIN_EMAIL, watches: result.rows.map(mapWatchAlertRow) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
 // Aggregates universe_validation_results per candidate (preset_id + origin symbol/market)
 // with the profit threshold applied at query time, so the admin can freely change "what
 // counts as profitable" without ever re-running the (expensive) validation batch job.
@@ -4123,6 +4297,16 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/stock-screen") {
     handleAdminStockScreenApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts") {
+    handleWatchAlertsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/watch-alerts") {
+    handleAdminWatchAlertsApi(req, res);
     return;
   }
 

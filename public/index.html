@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260826-scan-symbol-picker">
+    <link rel="stylesheet" href="/styles.css?v=20260827-watch-alerts">
   </head>
   <body>
     <main class="shell">
@@ -21,6 +21,7 @@
           <button id="wizardNewModelButton" class="wizard-action" type="button" data-wizard-target="new-model" aria-selected="false" data-i18n="newModel">新建模型</button>
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false" data-i18n="historySimulation">历史模拟</button>
           <button id="wizardScreenButton" class="wizard-action" type="button" data-wizard-target="screen" aria-selected="false">选股</button>
+          <button id="wizardWatchAlertsButton" class="wizard-action" type="button" data-wizard-target="watch-alerts" aria-selected="false">设置盯盘提醒</button>
         </div>
         <div class="auth-panel" aria-live="polite">
           <div>
@@ -84,6 +85,45 @@
         </form>
       </dialog>
 
+      <dialog id="watchAlertsDialog" class="param-dialog" aria-label="设置盯盘提醒">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>设置盯盘提醒</h2>
+              <p class="field-hint">选择一个已保存的模型和一支股票，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你。</p>
+            </div>
+            <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div id="watchAlertsAuthNote" class="auth-required-note hidden">设置盯盘提醒需要免费注册、登录并验证电子邮件，提醒会发到验证过的邮箱。</div>
+          <div id="watchAlertsCreateRow" class="admin-scan-filter-row">
+            <label>选择模型
+              <select id="watchAlertsPresetSelect"></select>
+            </label>
+            <label>市场
+              <select id="watchAlertsMarketSelect">
+                <option value="CN">A股</option>
+                <option value="US">美股</option>
+              </select>
+            </label>
+            <label>股票代码
+              <input id="watchAlertsSymbolInput" type="text" placeholder="如 600519 或 NVDA">
+            </label>
+            <label>检查频率
+              <select id="watchAlertsFrequencySelect">
+                <option value="30">每 30 分钟</option>
+                <option value="60" selected>每 1 小时</option>
+                <option value="240">每 4 小时</option>
+                <option value="1440">每天一次</option>
+              </select>
+            </label>
+            <button type="button" id="watchAlertsCreateButton" class="ghost-button">添加提醒</button>
+            <span id="watchAlertsCreateStatus" class="field-hint"></span>
+          </div>
+          <div class="section-label">我的盯盘提醒</div>
+          <div id="watchAlertsList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
       <dialog id="presetParamDialog" class="param-dialog">
         <form method="dialog" class="param-dialog-body">
           <div class="dialog-head">
@@ -142,6 +182,7 @@
             <button id="adminValidationTabButton" type="button">全市场验证</button>
             <button id="adminAutoGenerateTabButton" type="button">AI自动生成</button>
             <button id="adminStockScreenTabButton" type="button">选股记录</button>
+            <button id="adminWatchAlertsTabButton" type="button">盯盘提醒</button>
           </div>
           <div id="adminPresetsPanel">
             <div id="adminPresetList" class="admin-preset-list"></div>
@@ -284,6 +325,10 @@
           <div id="adminStockScreenPanel" class="hidden">
             <p class="field-hint">所有用户触发过的"选股"扫描记录，按开始时间排序。</p>
             <div id="adminStockScreenList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminWatchAlertsPanel" class="hidden">
+            <p class="field-hint">所有用户设置的"盯盘提醒"配置，按更新时间排序。</p>
+            <div id="adminWatchAlertsList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1215,7 +1260,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260826-scan-symbol-picker"></script>
-    <script src="/app.js?v=20260826-scan-symbol-picker"></script>
+    <script src="/formula-engine.js?v=20260827-watch-alerts"></script>
+    <script src="/app.js?v=20260827-watch-alerts"></script>
   </body>
 </html>

@@ -80,13 +80,15 @@ curl "http://<host>/api/klines?code=TSM&start=2021-08-27&end=2026-08-27"
 
 `run-auto-generate.js` 的选择逻辑是：每次尝试只按**训练期**打分，多次尝试里选分数最高的那一个，*然后*才对这一个跑验证期评估——如果某次尝试训练期打分不是最高，但换到验证期表现其实更好更稳，这次尝试从一开始就不会被选中，也就永远不会被验证。
 
-新增的 `scripts/universe/search-validated-best.js` 改成：**每一次跑赢买入持有的尝试，立刻在验证期上评估**，全程跟踪"验证期年化收益最高的那一次"，而不是"训练期打分最高的那一次"。用法：
+新增的 `scripts/universe/search-validated-best.js` 改成：**每一次跑赢买入持有的尝试，立刻在验证期上评估**，全程跟踪"验证期年化收益最高的那一次"，而不是"训练期打分最高的那一次"。用法（**务必带上 `--ownerUserId`/`--ownerEmail`，这类经过验证的模型默认要挂在 admin 账户下，不能是无主的公开模型**——管理员的 userId 是 `user_d2392eab3f9892a9d11fb99efd0a0791`，邮箱 `victor.gm.liu@gmail.com`）：
 ```
 node scripts/universe/search-validated-best.js --symbols=NET --targetPercent=50 \
   --attemptsPerSymbol=25 --maxAttempts=25 --candidates=400 --pointCount=5 \
-  --trainYearsAgo=5 --testYearsAgo=1 --save
+  --trainYearsAgo=5 --testYearsAgo=1 \
+  --ownerUserId=user_d2392eab3f9892a9d11fb99efd0a0791 --ownerEmail=victor.gm.liu@gmail.com \
+  --save
 ```
-`--targetPercent` 是验证期年化收益目标（默认50），一旦某次尝试达标就提前停止这只股票的搜索；`--save` 才会真的存成模型，不加就是只探索不保存。
+`--targetPercent` 是验证期年化收益目标（默认50），一旦某次尝试达标就提前停止这只股票的搜索；`--save` 才会真的存成模型，不加就是只探索不保存。2026-08-27 第一批结果（NET/GOOGL/TSM）跑的时候忘了带 owner 参数，后来手动把这三条记录的 `owner_user_id`/`meta.isPublic` 改成了 admin 账户——以后跑记得直接带上，不用事后补。
 
 **重要：验证期表现好不等于是"真实策略"，还要看交易次数和差异**。碰到过两种需要警惕的假阳性：
 - **训练/验证差异巨大**（比如差20-40）但验证期数字本身达标——可能是这次尝试的触发条件很宽松，恰好在验证期这一年"蒙对了"，不代表真的找到了可重复的规律。

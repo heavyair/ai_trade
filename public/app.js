@@ -16,6 +16,16 @@ const historyPanels = Array.from(document.querySelectorAll("[data-history-panel]
 const returnNavButtons = Array.from(document.querySelectorAll(".return-nav-button"));
 const newModelDialog = document.querySelector("#newModelDialog");
 const closeNewModelButton = document.querySelector("#closeNewModelButton");
+const watchAlertsDialog = document.querySelector("#watchAlertsDialog");
+const closeWatchAlertsButton = document.querySelector("#closeWatchAlertsButton");
+const watchAlertsAuthNote = document.querySelector("#watchAlertsAuthNote");
+const watchAlertsPresetSelect = document.querySelector("#watchAlertsPresetSelect");
+const watchAlertsMarketSelect = document.querySelector("#watchAlertsMarketSelect");
+const watchAlertsSymbolInput = document.querySelector("#watchAlertsSymbolInput");
+const watchAlertsFrequencySelect = document.querySelector("#watchAlertsFrequencySelect");
+const watchAlertsCreateButton = document.querySelector("#watchAlertsCreateButton");
+const watchAlertsCreateStatus = document.querySelector("#watchAlertsCreateStatus");
+const watchAlertsList = document.querySelector("#watchAlertsList");
 const authDialog = document.querySelector("#authDialog");
 const authForm = document.querySelector("#authForm");
 const authStatusText = document.querySelector("#authStatusText");
@@ -144,6 +154,9 @@ const adminAutoGenerateProgressBanner = document.querySelector("#adminAutoGenera
 const adminScanProgressBanner = document.querySelector("#adminScanProgressBanner");
 const adminAutoGenerateList = document.querySelector("#adminAutoGenerateList");
 const adminStockScreenTabButton = document.querySelector("#adminStockScreenTabButton");
+const adminWatchAlertsTabButton = document.querySelector("#adminWatchAlertsTabButton");
+const adminWatchAlertsPanel = document.querySelector("#adminWatchAlertsPanel");
+const adminWatchAlertsList = document.querySelector("#adminWatchAlertsList");
 const adminStockScreenPanel = document.querySelector("#adminStockScreenPanel");
 const adminStockScreenList = document.querySelector("#adminStockScreenList");
 const screenPresetSelect = document.querySelector("#screenPresetSelect");
@@ -3287,6 +3300,174 @@ if (screenStartButton) {
   screenStartButton.addEventListener("click", () => triggerStockScreenRun());
 }
 
+// "设置盯盘提醒": the persistent, single-stock, scheduled counterpart to 选股's one-shot
+// market-wide scan — a user configures (model, stock, check frequency), and
+// scripts/universe/run-watch-alerts.js (host-cron driven) periodically re-checks it and
+// emails the owner when a signal fires. Reuses the same preset-list source as 选股's picker.
+function renderWatchAlertsPresetOptions() {
+  if (!watchAlertsPresetSelect) return;
+  const entries = Object.entries(strategyPresets).filter(([, preset]) => preset && preset.id);
+  if (entries.length === 0) {
+    watchAlertsPresetSelect.innerHTML = '<option value="">暂无可用模型（请先保存一个模型）</option>';
+    return;
+  }
+  const previousValue = watchAlertsPresetSelect.value;
+  watchAlertsPresetSelect.innerHTML = entries
+    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || name)}</option>`)
+    .join("");
+  if (previousValue && entries.some(([, preset]) => preset.id === previousValue)) {
+    watchAlertsPresetSelect.value = previousValue;
+  }
+}
+
+function formatWatchAlertFrequency(minutes) {
+  if (minutes >= 1440) return "每天一次";
+  if (minutes >= 60) return `每 ${minutes / 60} 小时`;
+  return `每 ${minutes} 分钟`;
+}
+
+function renderWatchAlertsList(watches) {
+  if (!watchAlertsList) return;
+  if (!Array.isArray(watches) || watches.length === 0) {
+    watchAlertsList.innerHTML = '<div class="ranking-empty">还没有设置盯盘提醒。</div>';
+    return;
+  }
+  const rows = watches.map((watch) => {
+    const marketLabel = watch.market === "US" ? "美股" : "A股";
+    const signalCell = watch.lastSignalDate
+      ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
+      : '<span class="field-hint">暂无信号</span>';
+    const failureCell = watch.consecutiveFailures > 0
+      ? `<span class="down" title="${escapeHtml(watch.lastError || "")}">失败 ${watch.consecutiveFailures} 次</span>`
+      : "";
+    return `
+      <tr>
+        <td>${escapeHtml(watch.presetLabel)}</td>
+        <td>${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）</td>
+        <td>${marketLabel}</td>
+        <td>${formatWatchAlertFrequency(watch.frequencyMinutes)}</td>
+        <td>${signalCell}</td>
+        <td>${failureCell}</td>
+        <td class="admin-scan-actions">
+          <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
+          <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+  watchAlertsList.innerHTML = `
+    <table class="admin-ranking-table">
+      <thead>
+        <tr><th>模型</th><th>股票</th><th>市场</th><th>频率</th><th>最近信号</th><th></th><th></th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function loadMyWatchAlerts() {
+  if (!watchAlertsList) return;
+  if (!watchAlertsList.innerHTML.trim()) {
+    watchAlertsList.innerHTML = '<div class="ranking-empty">正在读取盯盘提醒...</div>';
+  }
+  try {
+    const response = await fetch("/api/watch-alerts", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
+    renderWatchAlertsList(payload.watches);
+  } catch (error) {
+    watchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function openWatchAlertsDialog() {
+  renderWatchAlertsPresetOptions();
+  loadMyWatchAlerts();
+  showDialog(watchAlertsDialog);
+}
+
+async function createWatchAlert() {
+  const presetId = watchAlertsPresetSelect && watchAlertsPresetSelect.value;
+  const market = watchAlertsMarketSelect && watchAlertsMarketSelect.value;
+  const symbol = watchAlertsSymbolInput ? watchAlertsSymbolInput.value.trim() : "";
+  const frequencyMinutes = Number(watchAlertsFrequencySelect && watchAlertsFrequencySelect.value);
+  if (!presetId) {
+    setStatus("请先选择一个模型。", true);
+    return;
+  }
+  if (!symbol) {
+    setStatus("请输入股票代码。", true);
+    return;
+  }
+  if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "正在添加（会先尝试拉取这支股票的行情，验证代码是否存在）...";
+  if (watchAlertsCreateButton) watchAlertsCreateButton.disabled = true;
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presetId, market, symbol, frequencyMinutes }),
+    });
+    await readJsonResponse(response, "添加盯盘提醒失败。");
+    if (watchAlertsSymbolInput) watchAlertsSymbolInput.value = "";
+    if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "已添加。";
+    await loadMyWatchAlerts();
+  } catch (error) {
+    if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "";
+    setStatus(`添加盯盘提醒失败：${error.message}`, true);
+  } finally {
+    if (watchAlertsCreateButton) watchAlertsCreateButton.disabled = false;
+  }
+}
+
+async function toggleWatchAlert(id, currentlyEnabled) {
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, enabled: !currentlyEnabled }),
+    });
+    await readJsonResponse(response, "更新盯盘提醒失败。");
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`更新盯盘提醒失败：${error.message}`, true);
+  }
+}
+
+async function deleteWatchAlert(id) {
+  if (!window.confirm("确定删除这个盯盘提醒吗？")) return;
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    await readJsonResponse(response, "删除盯盘提醒失败。");
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`删除盯盘提醒失败：${error.message}`, true);
+  }
+}
+
+if (watchAlertsCreateButton) {
+  watchAlertsCreateButton.addEventListener("click", () => createWatchAlert());
+}
+if (closeWatchAlertsButton && watchAlertsDialog) {
+  closeWatchAlertsButton.addEventListener("click", () => closeDialog(watchAlertsDialog));
+}
+if (watchAlertsList) {
+  watchAlertsList.addEventListener("click", (event) => {
+    const target = event.target;
+    const toggleButton = target && target.closest ? target.closest(".watch-alert-toggle-button") : null;
+    if (toggleButton) {
+      toggleWatchAlert(toggleButton.dataset.watchId, toggleButton.dataset.enabled === "1");
+      return;
+    }
+    const deleteButton = target && target.closest ? target.closest(".watch-alert-delete-button") : null;
+    if (deleteButton) {
+      deleteWatchAlert(deleteButton.dataset.watchId);
+    }
+  });
+}
+
 let adminStockScreenPollTimer = null;
 
 function scheduleAdminStockScreenPoll() {
@@ -3332,6 +3513,57 @@ async function loadAdminStockScreen() {
 
 if (adminStockScreenTabButton) {
   adminStockScreenTabButton.addEventListener("click", () => setAdminTab("stockScreen"));
+}
+
+async function loadAdminWatchAlerts() {
+  if (!adminWatchAlertsList) return;
+  if (!adminWatchAlertsList.innerHTML.trim()) {
+    adminWatchAlertsList.innerHTML = '<div class="ranking-empty">正在读取盯盘提醒...</div>';
+  }
+  try {
+    const response = await fetch("/api/admin/watch-alerts", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
+    const watches = Array.isArray(payload.watches) ? payload.watches : [];
+    if (watches.length === 0) {
+      adminWatchAlertsList.innerHTML = '<div class="ranking-empty">还没有用户设置盯盘提醒。</div>';
+      return;
+    }
+    const rows = watches.map((watch) => {
+      const marketLabel = watch.market === "US" ? "美股" : "A股";
+      const signalCell = watch.lastSignalDate
+        ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
+        : '<span class="field-hint">暂无信号</span>';
+      const statusCell = watch.enabled
+        ? (watch.consecutiveFailures > 0 ? `<span class="down" title="${escapeHtml(watch.lastError || "")}">运行中，失败 ${watch.consecutiveFailures} 次</span>` : "运行中")
+        : '<span class="down">已停用</span>';
+      return `
+        <tr>
+          <td>${escapeHtml(watch.ownerEmail)}</td>
+          <td>${escapeHtml(watch.presetLabel)}</td>
+          <td>${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）</td>
+          <td>${marketLabel}</td>
+          <td>${formatWatchAlertFrequency(watch.frequencyMinutes)}</td>
+          <td>${signalCell}</td>
+          <td>${statusCell}</td>
+          <td>${escapeHtml(formatAdminDate(watch.updatedAt))}</td>
+        </tr>
+      `;
+    }).join("");
+    adminWatchAlertsList.innerHTML = `
+      <table class="admin-ranking-table">
+        <thead>
+          <tr><th>Owner</th><th>模型</th><th>股票</th><th>市场</th><th>频率</th><th>最近信号</th><th>状态</th><th>更新时间</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (error) {
+    adminWatchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+if (adminWatchAlertsTabButton) {
+  adminWatchAlertsTabButton.addEventListener("click", () => setAdminTab("watchAlerts"));
 }
 
 function openAdminValidationParamViewer(sourceScanResultId) {
@@ -3443,7 +3675,8 @@ function setAdminTab(tab) {
   const showValidation = tab === "validation";
   const showAutoGenerate = tab === "autoGenerate";
   const showStockScreen = tab === "stockScreen";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen;
+  const showWatchAlerts = tab === "watchAlerts";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -3451,6 +3684,7 @@ function setAdminTab(tab) {
   if (adminValidationTabButton) adminValidationTabButton.classList.toggle("active", showValidation);
   if (adminAutoGenerateTabButton) adminAutoGenerateTabButton.classList.toggle("active", showAutoGenerate);
   if (adminStockScreenTabButton) adminStockScreenTabButton.classList.toggle("active", showStockScreen);
+  if (adminWatchAlertsTabButton) adminWatchAlertsTabButton.classList.toggle("active", showWatchAlerts);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
@@ -3458,12 +3692,14 @@ function setAdminTab(tab) {
   if (adminValidationPanel) adminValidationPanel.classList.toggle("hidden", !showValidation);
   if (adminAutoGeneratePanel) adminAutoGeneratePanel.classList.toggle("hidden", !showAutoGenerate);
   if (adminStockScreenPanel) adminStockScreenPanel.classList.toggle("hidden", !showStockScreen);
+  if (adminWatchAlertsPanel) adminWatchAlertsPanel.classList.toggle("hidden", !showWatchAlerts);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
   if (showValidation) loadAdminValidation();
   if (showAutoGenerate) loadAdminAutoGenerate();
   if (showStockScreen) loadAdminStockScreen();
+  if (showWatchAlerts) loadAdminWatchAlerts();
 }
 
 if (adminPresetsTabButton) {
@@ -3943,6 +4179,7 @@ function renderAuthState() {
   if (openAdminButton) openAdminButton.classList.toggle("hidden", !(isSignedIn && currentUser.isAdmin));
   if (resendVerificationButton) resendVerificationButton.classList.toggle("hidden", !needsVerification);
   if (newModelAuthNote) newModelAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
+  if (watchAlertsAuthNote) watchAlertsAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
   if (customModelCreatorInput && isSignedIn) {
     customModelCreatorInput.value = currentUser.email;
   }
@@ -4143,6 +4380,10 @@ function setSimulationStep(stepName) {
 function setWizardPage(pageName) {
   if (pageName === "new-model") {
     showDialog(newModelDialog);
+    return;
+  }
+  if (pageName === "watch-alerts") {
+    openWatchAlertsDialog();
     return;
   }
   closeDialog(newModelDialog);
