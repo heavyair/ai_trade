@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260827-watch-account-search">
+    <link rel="stylesheet" href="/styles.css?v=20260827-numeric-model-id">
   </head>
   <body>
     <main class="shell">
@@ -186,6 +186,11 @@
             <button id="adminValidatedSearchTabButton" type="button">验证搜索</button>
           </div>
           <div id="adminPresetsPanel">
+            <div class="admin-scan-filter-row">
+              <label>按数字ID查找
+                <input id="adminPresetIdSearchInput" type="text" inputmode="numeric" placeholder="如 12">
+              </label>
+            </div>
             <div id="adminPresetList" class="admin-preset-list"></div>
           </div>
           <div id="adminRankingsPanel" class="hidden">
@@ -1301,7 +1306,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260827-watch-account-search"></script>
-    <script src="/app.js?v=20260827-watch-account-search"></script>
+    <script src="/formula-engine.js?v=20260827-numeric-model-id"></script>
+    <script src="/app.js?v=20260827-numeric-model-id"></script>
   </body>
 </html>

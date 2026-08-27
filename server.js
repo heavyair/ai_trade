@@ -332,6 +332,12 @@ async function initializeDatabase() {
 
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS original_model_id TEXT NOT NULL DEFAULT '0';
 
+    -- Human-friendly unique lookup number, separate from the TEXT primary key (id) that every
+    -- FK/reference in the app actually points at. Nothing ever writes this column explicitly —
+    -- BIGSERIAL's own sequence guarantees uniqueness on insert, and IF NOT EXISTS makes this
+    -- safe to re-run on every server start without re-creating the sequence or touching existing values.
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS numeric_id BIGSERIAL;
+
     -- One row per "选股" scan run. A single row carries both the live in-progress state
     -- (status='running', scanned_symbols/matches updated incrementally by the batch script)
     -- and the permanent historical record once done — private to owner_user_id, except the
@@ -1030,6 +1036,7 @@ function presetRowsToMap(rows) {
     next[row.name] = sanitizeServerPreset(row.name, {
       ...preset,
       id: row.id,
+      numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
       label: row.label,
       strategyType: row.strategy_type,
       meta: {
@@ -1049,14 +1056,14 @@ function presetRowsToMap(rows) {
 
 async function readUserPresets(email) {
   const legacyResult = await dbQuery(`
-    SELECT id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+    SELECT id, numeric_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL AND hidden_at IS NULL
     ORDER BY updated_at DESC
   `, [PUBLIC_OWNER_LABEL]);
   const userResult = await dbQuery(`
-    SELECT strategy_presets.id, strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
+    SELECT strategy_presets.id, strategy_presets.numeric_id, strategy_presets.name, strategy_presets.label, strategy_presets.strategy_type, strategy_presets.config,
       strategy_presets.meta, strategy_presets.original_text, strategy_presets.model_text, strategy_presets.is_legacy,
       users.email AS owner_email, TRUE AS is_owner, FALSE AS is_public
     FROM strategy_presets
@@ -1078,7 +1085,7 @@ async function readUserPresets(email) {
 
 async function readVisiblePresetsForAnonymous() {
   const result = await dbQuery(`
-    SELECT id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
+    SELECT id, numeric_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy,
       $1::text AS owner_email, FALSE AS is_owner, TRUE AS is_public
     FROM strategy_presets
     WHERE owner_user_id IS NULL AND hidden_at IS NULL
@@ -1765,6 +1772,7 @@ function mapAdminPresetRow(row) {
   const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
   return {
     id: row.id,
+    numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
     name: row.name,
     label: row.label,
     strategyType: row.strategy_type,
@@ -2021,6 +2029,7 @@ function mapAdminOptimizationScanRow(row, universeIndexByCode) {
     isTech: categories.isTech,
     isQqq: categories.isQqq,
     presetId: row.preset_id,
+    presetNumericId: row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null,
     presetLabel: row.preset_label,
     strategyType: row.strategy_type,
     rowsTested: row.rows_tested || 0,
@@ -2062,8 +2071,10 @@ async function handleAdminOptimizationScanApi(req, res) {
       return;
     }
     const result = await dbQuery(`
-      SELECT * FROM optimization_scan_results
-      ORDER BY (train_start_date IS NULL) ASC, annualized_diff ASC
+      SELECT osr.*, sp.numeric_id AS preset_numeric_id
+      FROM optimization_scan_results osr
+      LEFT JOIN strategy_presets sp ON sp.id = osr.preset_id
+      ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff ASC
       LIMIT 3000
     `);
     const universeIndexByCode = new Map(
@@ -2567,7 +2578,7 @@ async function queryAiGeneratedPresets({ idLikePattern, idExcludePattern }) {
   // that's actually about the stock this model was generated/searched for.
   const result = hasResultsTable.rows.length > 0
     ? await dbQuery(`
-      SELECT sp.id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
+      SELECT sp.id, sp.numeric_id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
         osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
         osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates,
         osr.test_trades, osr.reached_target
@@ -2579,13 +2590,14 @@ async function queryAiGeneratedPresets({ idLikePattern, idExcludePattern }) {
       LIMIT 500
     `, [filterParam])
     : await dbQuery(`
-      SELECT id, label, strategy_type, config, meta, created_at, updated_at
+      SELECT id, numeric_id, label, strategy_type, config, meta, created_at, updated_at
       FROM strategy_presets WHERE ${filterSql} ORDER BY updated_at DESC LIMIT 500
     `, [filterParam]);
   return result.rows.map((row) => {
     const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
     return {
       id: row.id,
+      numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
       label: row.label,
       strategyType: row.strategy_type,
       bestConfig: row.config && typeof row.config === "object" ? row.config : {},
@@ -2856,6 +2868,7 @@ function mapWatchAlertRow(row) {
     id: row.id,
     ownerEmail: row.owner_email,
     presetId: row.preset_id,
+    presetNumericId: row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null,
     presetLabel: row.preset_label,
     symbol: row.symbol,
     symbolName: row.symbol_name,
@@ -2898,7 +2911,11 @@ async function handleWatchAlertsApi(req, res) {
       const user = await requireCurrentUser(req);
       const ownerUserId = userIdForEmail(user.email);
       const result = await dbQuery(`
-        SELECT * FROM watch_alerts WHERE owner_user_id = $1 ORDER BY created_at DESC
+        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id
+        FROM watch_alerts
+        LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        WHERE watch_alerts.owner_user_id = $1
+        ORDER BY watch_alerts.created_at DESC
       `, [ownerUserId]);
       sendJson(res, 200, { watches: result.rows.map(mapWatchAlertRow) });
       return;
@@ -3046,7 +3063,13 @@ async function handleAdminWatchAlertsApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const result = await dbQuery(`SELECT * FROM watch_alerts ORDER BY updated_at DESC LIMIT 500`);
+    const result = await dbQuery(`
+      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id
+      FROM watch_alerts
+      LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+      ORDER BY watch_alerts.updated_at DESC
+      LIMIT 500
+    `);
     sendJson(res, 200, { adminEmail: ADMIN_EMAIL, watches: result.rows.map(mapWatchAlertRow) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
@@ -3086,6 +3109,7 @@ async function handleUniverseValidationApi(req, res) {
       SELECT
         uv.source_scan_result_id, uv.preset_id, uv.preset_label, uv.origin_symbol, uv.origin_market,
         osr.best_config, osr.symbol_name AS origin_symbol_name, osr.strategy_type,
+        sp.numeric_id AS preset_numeric_id,
         COUNT(*) AS tested_count,
         COUNT(*) FILTER (WHERE uv.return_rate >= $1) AS passing_count,
         MIN(uv.return_rate) AS worst_return_rate,
@@ -3093,8 +3117,9 @@ async function handleUniverseValidationApi(req, res) {
         MAX(uv.validated_at) AS validated_at
       FROM universe_validation_results uv
       JOIN optimization_scan_results osr ON osr.id = uv.source_scan_result_id
+      LEFT JOIN strategy_presets sp ON sp.id = uv.preset_id
       GROUP BY uv.source_scan_result_id, uv.preset_id, uv.preset_label, uv.origin_symbol, uv.origin_market,
-               osr.best_config, osr.symbol_name, osr.strategy_type
+               osr.best_config, osr.symbol_name, osr.strategy_type, sp.numeric_id
       ORDER BY (COUNT(*) FILTER (WHERE uv.return_rate >= $1))::float / NULLIF(COUNT(*), 0) DESC, worst_return_rate DESC
     `, [effectiveThreshold]);
 
@@ -3104,6 +3129,7 @@ async function handleUniverseValidationApi(req, res) {
       return {
         sourceScanResultId: row.source_scan_result_id,
         presetId: row.preset_id,
+        presetNumericId: row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null,
         presetLabel: row.preset_label,
         originSymbol: row.origin_symbol,
         originMarket: row.origin_market,

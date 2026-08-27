@@ -113,6 +113,7 @@ const refreshBlockRuleFormButton = document.querySelector("#refreshBlockRuleForm
 const adminDialog = document.querySelector("#adminDialog");
 const closeAdminButton = document.querySelector("#closeAdminButton");
 const adminPresetList = document.querySelector("#adminPresetList");
+const adminPresetIdSearchInput = document.querySelector("#adminPresetIdSearchInput");
 const adminPresetsTabButton = document.querySelector("#adminPresetsTabButton");
 const adminRankingsTabButton = document.querySelector("#adminRankingsTabButton");
 const adminScanTabButton = document.querySelector("#adminScanTabButton");
@@ -1352,7 +1353,7 @@ function renderAdminPresetCard(preset, presets) {
   return `
     <article class="admin-preset-card${isHidden ? " admin-preset-card--hidden" : ""}" data-admin-preset-id="${escapeHtml(preset.id)}">
       <div>
-        <strong>${escapeHtml(preset.label || preset.name)}</strong>
+        <strong>${preset.numericId ? `#${preset.numericId} · ` : ""}${escapeHtml(preset.label || preset.name)}</strong>
         <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
         <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
         <small class="${isHidden ? "down" : (isOrigin ? "up" : "")}">${lineageText}</small>
@@ -1378,30 +1379,76 @@ function renderAdminPresetCard(preset, presets) {
   `;
 }
 
-function renderAdminPresetGroup(title, list, presets) {
-  const body = list.length
-    ? list.map((preset) => renderAdminPresetCard(preset, presets)).join("")
-    : '<div class="ranking-empty">暂无。</div>';
+// Paginated per-group render — page/dataAttr/buttonClass let the two groups (原始模型/衍生模型)
+// each keep their own independent page position, mirroring renderAdminScanList's single-list
+// pagination (adminScanPage/adminScanPageSize) but applied twice.
+function renderAdminPresetGroup(title, list, presets, { page, dataAttr, buttonClass }) {
+  if (!list.length) {
+    return `
+      <div class="admin-preset-group">
+        <h4 class="admin-preset-group-title">${escapeHtml(title)}（0）</h4>
+        <div class="ranking-empty">暂无。</div>
+      </div>
+    `;
+  }
+  const pageCount = Math.max(1, Math.ceil(list.length / adminPresetPageSize));
+  const clampedPage = Math.min(Math.max(0, page), pageCount - 1);
+  const pageStart = clampedPage * adminPresetPageSize;
+  const pageList = list.slice(pageStart, pageStart + adminPresetPageSize);
+  const paginationHtml = renderAdminListPagination(clampedPage, pageCount, list.length, dataAttr, `${title}分页`, buttonClass);
+  const body = pageList.map((preset) => renderAdminPresetCard(preset, presets)).join("");
   return `
     <div class="admin-preset-group">
       <h4 class="admin-preset-group-title">${escapeHtml(title)}（${list.length}）</h4>
+      ${paginationHtml}
       ${body}
+      ${paginationHtml}
     </div>
   `;
 }
 
-function renderAdminPresetList(presets = []) {
+let adminPresetSearchTerm = "";
+let adminPresetRootPage = 0;
+let adminPresetDerivedPage = 0;
+const adminPresetPageSize = 15;
+
+function renderAdminPresetList() {
   if (!adminPresetList) return;
+  const presets = adminPresetsCache;
   const previousScrollTop = adminPresetList.scrollTop;
   if (!presets.length) {
     adminPresetList.innerHTML = '<div class="ranking-empty">服务器端还没有保存模型。</div>';
     return;
   }
+  const searchTerm = adminPresetSearchTerm.trim();
+  if (searchTerm) {
+    // Searching by ID short-circuits grouping/pagination entirely — this is meant to jump
+    // straight to one specific model, not browse a filtered subset page by page.
+    const matches = presets.filter((preset) => String(preset.numericId || "").startsWith(searchTerm));
+    adminPresetList.innerHTML = matches.length
+      ? `<div class="admin-preset-group">
+          <h4 class="admin-preset-group-title">搜索结果（${matches.length}）</h4>
+          ${matches.map((preset) => renderAdminPresetCard(preset, presets)).join("")}
+        </div>`
+      : '<div class="ranking-empty">没有匹配这个数字ID的模型。</div>';
+    adminPresetList.scrollTop = previousScrollTop;
+    return;
+  }
   const roots = presets.filter((preset) => String(preset.originalModelId || "0") === "0");
   const derived = presets.filter((preset) => String(preset.originalModelId || "0") !== "0");
-  adminPresetList.innerHTML = renderAdminPresetGroup("原始模型", roots, presets)
-    + renderAdminPresetGroup("衍生模型", derived, presets);
+  adminPresetList.innerHTML = renderAdminPresetGroup("原始模型", roots, presets, {
+    page: adminPresetRootPage, dataAttr: "admin-preset-root-page", buttonClass: "admin-preset-root-page-button",
+  }) + renderAdminPresetGroup("衍生模型", derived, presets, {
+    page: adminPresetDerivedPage, dataAttr: "admin-preset-derived-page", buttonClass: "admin-preset-derived-page-button",
+  });
   adminPresetList.scrollTop = previousScrollTop;
+}
+
+if (adminPresetIdSearchInput) {
+  adminPresetIdSearchInput.addEventListener("input", () => {
+    adminPresetSearchTerm = adminPresetIdSearchInput.value;
+    renderAdminPresetList();
+  });
 }
 
 function openAdminPresetParamViewer(presetId) {
@@ -1433,6 +1480,18 @@ if (adminPresetList) {
     const viewButton = target && target.closest ? target.closest(".admin-view-params-button") : null;
     if (viewButton) {
       openAdminPresetParamViewer(viewButton.dataset.presetId);
+      return;
+    }
+    const rootPageButton = target && target.closest ? target.closest(".admin-preset-root-page-button") : null;
+    if (rootPageButton) {
+      adminPresetRootPage = Math.max(0, Number(rootPageButton.dataset.adminPresetRootPage) || 0);
+      renderAdminPresetList();
+      return;
+    }
+    const derivedPageButton = target && target.closest ? target.closest(".admin-preset-derived-page-button") : null;
+    if (derivedPageButton) {
+      adminPresetDerivedPage = Math.max(0, Number(derivedPageButton.dataset.adminPresetDerivedPage) || 0);
+      renderAdminPresetList();
     }
   });
 }
@@ -1447,7 +1506,7 @@ async function loadAdminPresets({ silent = false } = {}) {
     const payload = await readJsonResponse(response, "读取 admin 模型列表失败。");
     adminPresetsCache = Array.isArray(payload.presets) ? payload.presets : [];
     adminOwnerOptions = Array.isArray(payload.owners) ? payload.owners : ["public"];
-    renderAdminPresetList(Array.isArray(payload.presets) ? payload.presets : []);
+    renderAdminPresetList();
   } catch (error) {
     adminPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
@@ -1666,17 +1725,24 @@ function sortAdminScanRecords(records) {
   });
 }
 
-function renderAdminScanPagination(page, pageCount, totalRecords) {
+// Generic client-side pagination bar, shared by any admin list that slices a sorted/filtered
+// array by page — `dataAttr` is the kebab-case data-* attribute name the caller's own
+// delegated click handler reads (e.g. "admin-scan-page" -> event.target.dataset.adminScanPage).
+function renderAdminListPagination(page, pageCount, totalRecords, dataAttr, ariaLabel, buttonClass) {
   if (pageCount <= 1) return "";
   return `
-    <div class="ranking-pagination" aria-label="后台模型排行分页">
+    <div class="ranking-pagination" aria-label="${escapeHtml(ariaLabel)}">
       <span>第 ${page + 1} / ${pageCount} 页，共 ${totalRecords} 条</span>
       <div>
-        <button class="ranking-page-button admin-scan-page-button" type="button" data-admin-scan-page="${page - 1}"${page <= 0 ? " disabled" : ""}>上一页</button>
-        <button class="ranking-page-button admin-scan-page-button" type="button" data-admin-scan-page="${page + 1}"${page >= pageCount - 1 ? " disabled" : ""}>下一页</button>
+        <button class="ranking-page-button ${buttonClass}" type="button" data-${dataAttr}="${page - 1}"${page <= 0 ? " disabled" : ""}>上一页</button>
+        <button class="ranking-page-button ${buttonClass}" type="button" data-${dataAttr}="${page + 1}"${page >= pageCount - 1 ? " disabled" : ""}>下一页</button>
       </div>
     </div>
   `;
+}
+
+function renderAdminScanPagination(page, pageCount, totalRecords) {
+  return renderAdminListPagination(page, pageCount, totalRecords, "admin-scan-page", "后台模型排行分页", "admin-scan-page-button");
 }
 
 function renderAdminScanList() {
@@ -1713,7 +1779,7 @@ function renderAdminScanList() {
     return `
       <tr>
         <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
-        <td>${escapeHtml(record.presetLabel || "")}</td>
+        <td>${record.presetNumericId ? `#${record.presetNumericId} · ` : ""}${escapeHtml(record.presetLabel || "")}</td>
         <td>${escapeHtml(getStrategyTypeLabel(record.strategyType || "wave"))}</td>
         <td>${formatPercent(record.baselineReturnRate)}</td>
         <td class="${bestClass}">${formatPercent(record.bestReturnRate)}</td>
@@ -2543,7 +2609,7 @@ function renderAdminValidationList(payload) {
   } else {
     const rows = candidates.map((c) => `
       <tr>
-        <td>${escapeHtml(c.presetLabel)}</td>
+        <td>${c.presetNumericId ? `#${c.presetNumericId} · ` : ""}${escapeHtml(c.presetLabel)}</td>
         <td>${escapeHtml(c.originSymbol)}</td>
         <td>${c.testedCount}</td>
         <td>${c.passingCount}</td>
@@ -2816,7 +2882,7 @@ function renderAiGeneratedPresetRow(p, options = {}) {
     <tr>
       ${statusCell}
       <td>${escapeHtml(p.targetSymbol || "")}</td>
-      <td>${escapeHtml(p.label || "")}</td>
+      <td>${p.numericId ? `#${p.numericId} · ` : ""}${escapeHtml(p.label || "")}</td>
       <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
       <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
       <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
@@ -3329,6 +3395,12 @@ if (adminValidatedSearchList) {
 // model. Only server-persisted presets have a database id (built-in hardcoded defaults in
 // strategyPresets don't, unless a same-named preset was also saved server-side), and a
 // presetId is required to launch a scan, so the picker only lists presets that have one.
+// Built-in hardcoded presets (no server row) have no numericId — this returns "" for them
+// rather than "#undefined ·", which is the expected/documented limitation (see plan).
+function formatModelIdPrefix(preset) {
+  return preset && preset.numericId ? `#${preset.numericId} · ` : "";
+}
+
 function renderScreenPresetOptions() {
   if (!screenPresetSelect) return;
   const entries = Object.entries(strategyPresets).filter(([, preset]) => preset && preset.id);
@@ -3338,7 +3410,7 @@ function renderScreenPresetOptions() {
   }
   const previousValue = screenPresetSelect.value;
   screenPresetSelect.innerHTML = entries
-    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || name)}</option>`)
+    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${formatModelIdPrefix(preset)}${escapeHtml(preset.label || name)}</option>`)
     .join("");
   if (previousValue && entries.some(([, preset]) => preset.id === previousValue)) {
     screenPresetSelect.value = previousValue;
@@ -3564,7 +3636,7 @@ function renderWatchAlertsPresetOptions() {
   }
   const previousValue = watchAlertsPresetSelect.value;
   watchAlertsPresetSelect.innerHTML = entries
-    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.label || name)}</option>`)
+    .map(([name, preset]) => `<option value="${escapeHtml(preset.id)}">${formatModelIdPrefix(preset)}${escapeHtml(preset.label || name)}</option>`)
     .join("");
   if (previousValue && entries.some(([, preset]) => preset.id === previousValue)) {
     watchAlertsPresetSelect.value = previousValue;
@@ -3626,7 +3698,8 @@ function renderWatchAlertEntry(watch, options = {}) {
     : "";
   const ownerPart = options.showOwner ? `${escapeHtml(watch.ownerEmail || "")} · ` : "";
   const statusPart = !watch.enabled ? ' · <span class="down">已停用</span>' : "";
-  const summary = `${ownerPart}${escapeHtml(watch.presetLabel)} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
+  const modelIdPart = watch.presetNumericId ? `#${watch.presetNumericId} · ` : "";
+  const summary = `${ownerPart}${modelIdPart}${escapeHtml(watch.presetLabel)} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
   const actionsPart = options.showOwner ? "" : `
     <div class="admin-scan-actions">
       <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
@@ -5231,7 +5304,7 @@ function renderModelCompareOptions() {
         <div class="model-preset-card" data-preset-name="${escapeHtml(name)}">
           <label>
             <input class="model-compare-enabled" type="checkbox" value="${escapeHtml(name)}"${checked}>
-            <span>${escapeHtml(preset.label)}</span>
+            <span>${formatModelIdPrefix(preset)}${escapeHtml(preset.label)}</span>
             <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))} · ${escapeHtml(getPresetResearchName(name, preset))}</small>
           </label>
           <strong class="model-selector-return ${returnClass}" data-label="回报率">${returnText}</strong>
@@ -5340,7 +5413,7 @@ function renderStrategyPresetOptions(strategyType, selectedPresetName) {
   strategyPresetSelect.innerHTML = presetEntries
     .map(([name, preset]) => {
       const selected = name === nextSelectedName ? " selected" : "";
-      return `<option value="${escapeHtml(name)}"${selected}>${escapeHtml(preset.label)}</option>`;
+      return `<option value="${escapeHtml(name)}"${selected}>${formatModelIdPrefix(preset)}${escapeHtml(preset.label)}</option>`;
     })
     .join("");
 
@@ -8178,7 +8251,7 @@ function renderMyModelsList() {
       ${myModels.map(([name, preset]) => `
         <div class="my-model-row" data-preset-name="${escapeHtml(name)}">
           <div class="my-model-info">
-            <strong>${escapeHtml(preset.label || name)}</strong>
+            <strong>${preset.numericId ? `#${preset.numericId} · ` : ""}${escapeHtml(preset.label || name)}</strong>
             <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</small>
           </div>
           <div class="my-model-actions">
