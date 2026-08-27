@@ -2869,7 +2869,13 @@ function mapWatchAlertRow(row) {
     ownerEmail: row.owner_email,
     presetId: row.preset_id,
     presetNumericId: row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null,
-    presetLabel: row.preset_label,
+    // Prefer the model's CURRENT label (live-joined from strategy_presets) over the snapshot
+    // taken when the watch was created — the underlying model can get re-saved with a new
+    // label later (e.g. a re-run of search-validated-best.js updating its annualized-return
+    // figure), and the watch list should reflect that, not a stale name frozen at creation
+    // time. Falls back to the stored snapshot only if the preset itself was deleted (JOIN
+    // finds nothing) so the watch doesn't show a blank name.
+    presetLabel: row.preset_current_label || row.preset_label,
     symbol: row.symbol,
     symbolName: row.symbol_name,
     market: row.market,
@@ -2911,7 +2917,7 @@ async function handleWatchAlertsApi(req, res) {
       const user = await requireCurrentUser(req);
       const ownerUserId = userIdForEmail(user.email);
       const result = await dbQuery(`
-        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id
+        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label
         FROM watch_alerts
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
         WHERE watch_alerts.owner_user_id = $1
@@ -3064,7 +3070,7 @@ async function handleAdminWatchAlertsApi(req, res) {
       return;
     }
     const result = await dbQuery(`
-      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id
+      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label
       FROM watch_alerts
       LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
       ORDER BY watch_alerts.updated_at DESC
