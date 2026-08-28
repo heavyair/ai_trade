@@ -2419,6 +2419,20 @@ textarea:focus {
   50% { opacity: 0.4; transform: scale(0.7); }
 }
 
+/* Once a background job stops, keep the banner visible (so "it stopped" is an explicit,
+   readable state, not just the banner silently disappearing) but visually distinct from the
+   pulsing "in progress" look. */
+.admin-progress-banner--stopped {
+  border-color: var(--border, #cdd7de);
+  background: #f4f5f6;
+  box-shadow: none;
+}
+
+.admin-progress-banner--stopped .admin-progress-banner-dot {
+  animation: none;
+  background: var(--muted, #8a97a3);
+}
+
 .admin-progress-banner-detail {
   font-size: 13px;
   color: var(--ink);

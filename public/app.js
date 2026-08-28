@@ -3506,15 +3506,22 @@ function renderAdminValidatedSearchList(payload) {
     } else if (running) {
       adminValidatedSearchRunStatus.textContent = "已有其它后台任务在运行，请等它结束后再启动验证搜索。";
     } else if (crashed) {
-      adminValidatedSearchRunStatus.textContent = `上次验证搜索已暂停/中断（退出码 ${validatedSearchLast.exitCode}，${escapeHtml(formatAdminDate(validatedSearchLast.endedAt))}）——可以点"继续上次中断"接着跑。`;
+      adminValidatedSearchRunStatus.textContent = `上次验证搜索已停止/暂停（退出码 ${validatedSearchLast.exitCode}，${escapeHtml(formatAdminDate(validatedSearchLast.endedAt))}）——可以点"继续上次中断"接着跑。`;
+    } else if (validatedSearchLast) {
+      adminValidatedSearchRunStatus.textContent = `上次验证搜索已停止（正常完成，${escapeHtml(formatAdminDate(validatedSearchLast.endedAt))}）。`;
     } else {
-      adminValidatedSearchRunStatus.textContent = "";
+      adminValidatedSearchRunStatus.textContent = "还没有运行过验证搜索。";
     }
   }
 
   if (adminValidatedSearchProgressBanner) {
     const progress = payload.progress;
-    if (runningIsValidatedSearch && progress) {
+    if (progress && (runningIsValidatedSearch || validatedSearchLast)) {
+      // Once the job stops (normally or via pause), stay visible instead of vanishing — a
+      // banner that just disappears leaves no visible confirmation that the search actually
+      // stopped rather than the page simply not having refreshed yet.
+      const stopped = !runningIsValidatedSearch;
+      const titleText = runningIsValidatedSearch ? "验证搜索进行中" : (crashed ? "验证搜索已停止（暂停/中断）" : "验证搜索已停止（正常完成）");
       const symbolLabel = progress.currentSymbol
         ? `股票 ${progress.symbolIndex || "?"}/${progress.totalSymbols || "?"}（${escapeHtml(progress.currentSymbol)}）`
         : `股票 ${progress.symbolIndex || 0}/${progress.totalSymbols || "?"}`;
@@ -3526,8 +3533,9 @@ function renderAdminValidatedSearchList(payload) {
         ? `目前最佳验证期年化收益率 <strong>${bestReturn >= 0 ? "+" : ""}${bestReturn.toFixed(1)}%</strong>（${escapeHtml(progress.bestAnnualizedSymbol || "")}，目标 ${progress.targetPercent || "?"}%）`
         : "目前最佳验证期年化收益率：暂无";
       adminValidatedSearchProgressBanner.classList.remove("hidden");
+      adminValidatedSearchProgressBanner.classList.toggle("admin-progress-banner--stopped", stopped);
       adminValidatedSearchProgressBanner.innerHTML = `
-        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>验证搜索进行中</div>
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>${titleText}</div>
         <div class="admin-progress-banner-detail">${detailParts}${reasonText ? `<br>${reasonText}` : ""}</div>
         <div class="admin-progress-banner-best">${bestReturnLabel}</div>
         <div class="admin-progress-banner-stats">
