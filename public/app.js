@@ -218,6 +218,8 @@ const modelActionViewTradesButton = document.querySelector("#modelActionViewTrad
 const modelActionRenameButton = document.querySelector("#modelActionRenameButton");
 const modelActionSaveAsButton = document.querySelector("#modelActionSaveAsButton");
 const modelActionReloadSimButton = document.querySelector("#modelActionReloadSimButton");
+const modelActionCreateWatchButton = document.querySelector("#modelActionCreateWatchButton");
+const modelActionScreenMarketButton = document.querySelector("#modelActionScreenMarketButton");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
 const adminRerunSubtitle = document.querySelector("#adminRerunSubtitle");
 const closeAdminRerunButton = document.querySelector("#closeAdminRerunButton");
@@ -2865,6 +2867,10 @@ function openModelActionMenu(context) {
   const hasSymbol = Boolean(context.symbol);
   if (modelActionViewTradesButton) modelActionViewTradesButton.disabled = !hasSymbol;
   if (modelActionReloadSimButton) modelActionReloadSimButton.disabled = !hasSymbol;
+  // 建立盯盘/扫描市场都需要知道具体股票代码（盯盘要盯这只票；扫描市场靠代码推断用哪个市场
+  // 的股票池），没有关联股票的模型（比如"通用"模型）这两个按钮先禁用。
+  if (modelActionCreateWatchButton) modelActionCreateWatchButton.disabled = !hasSymbol;
+  if (modelActionScreenMarketButton) modelActionScreenMarketButton.disabled = !hasSymbol;
   showDialog(modelActionDialog);
 }
 
@@ -2997,6 +3003,96 @@ if (modelActionReloadSimButton) {
   });
 }
 
+// Same code=>market convention used server-side for /api/klines and inferMarket()
+// (scripts/shared/universe-loader.js) — 6 digits = A股, anything else = 美股.
+function inferMarketFromSymbol(symbol) {
+  return /^\d{6}$/.test(String(symbol || "").trim()) ? "CN" : "US";
+}
+
+// 建立盯盘/扫描市场都要求 presetId 是 strategy_presets 里的真实一行——AI候选模型（只存在于
+// optimization_scan_results，context.isAiCandidate 标记的那种）直接拿去用会被服务端 404。
+// 这里复用"另存"按钮的克隆逻辑：先让用户确认/改一个名字，另存成正式模型，再用新模型的真实
+// id 继续后面的动作。非AI候选的 context 直接透传自己的 id，不用克隆。
+async function resolveRealPresetIdForContext(context, actionLabel) {
+  if (!context.isAiCandidate) {
+    return { id: context.id, label: context.label, numericId: context.numericId };
+  }
+  const defaultLabel = `${context.label} 副本`.slice(0, 60);
+  const label = window.prompt(`这是AI候选模型，${actionLabel}前需要先另存为正式模型。输入新模型名称：`, defaultLabel);
+  if (label === null) return null;
+  const trimmed = label.trim().slice(0, 80);
+  if (!trimmed) {
+    setStatus("模型名称不能为空。", true);
+    return null;
+  }
+  const preset = createPresetFromConfig(trimmed, context.config || {}, {
+    targetSymbol: context.symbol || "通用",
+    creator: "auto",
+    createdAt: todayText(),
+    updatedAt: todayText(),
+    originalText: `另存自：${context.label}`,
+    originalModelId: context.id,
+    originalModelLabel: context.label,
+    originalModelNumericId: context.numericId,
+  });
+  const presetName = await saveGeneratedPreset(preset);
+  if (!presetName) return null;
+  const saved = strategyPresets[presetName];
+  if (!saved || !saved.id) {
+    setStatus("另存模型失败，无法继续。", true);
+    return null;
+  }
+  setStatus(`已另存为新模型：${saved.label}。`);
+  return { id: saved.id, label: saved.label, numericId: saved.numericId };
+}
+
+if (modelActionCreateWatchButton) {
+  modelActionCreateWatchButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context || !context.symbol) return;
+    if (!requireSignedInForSave()) return;
+    closeDialog(modelActionDialog);
+    const resolved = await resolveRealPresetIdForContext(context, "建立盯盘");
+    if (!resolved) return;
+    const market = inferMarketFromSymbol(context.symbol);
+    try {
+      const response = await fetch("/api/watch-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presetId: resolved.id, market, symbol: context.symbol, frequencyMinutes: 60 }),
+      });
+      await readJsonResponse(response, "添加盯盘提醒失败。");
+      setStatus(`已为「${resolved.label}」在 ${context.symbol} 建立盯盘（默认每小时检查一次，可以在"设置盯盘提醒"里改）。`);
+      await loadMyWatchAlerts();
+    } catch (error) {
+      setStatus(`建立盯盘失败：${error.message}`, true);
+    }
+  });
+}
+
+if (modelActionScreenMarketButton) {
+  modelActionScreenMarketButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context || !context.symbol) return;
+    if (!requireSignedInForSave()) return;
+    closeDialog(modelActionDialog);
+    const resolved = await resolveRealPresetIdForContext(context, "扫描市场");
+    if (!resolved) return;
+    const market = inferMarketFromSymbol(context.symbol);
+    try {
+      const response = await fetch("/api/stock-screen/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presetId: resolved.id, market }),
+      });
+      await readJsonResponse(response, "启动选股扫描失败。");
+      setStatus(`已用「${resolved.label}」启动${market === "CN" ? "A股" : "美股"}全市场扫描，可以在"选股"页面查看结果。`);
+    } catch (error) {
+      setStatus(`启动扫描失败：${error.message}`, true);
+    }
+  });
+}
+
 function formatAdminAutoGenerateReason(reason) {
   const text = String(reason || "").trim();
   if (!text) return "";
@@ -3072,7 +3168,7 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${formatModelNameLink({
         id: p.id, numericId: p.numericId, label: p.label || "",
         config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
-        reason: p.reason, isOwner: false, name: null,
+        reason: p.reason, isOwner: false, name: null, isAiCandidate: true,
       })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
       <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
