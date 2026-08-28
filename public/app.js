@@ -173,6 +173,7 @@ const adminValidatedSearchPointCountInput = document.querySelector("#adminValida
 const adminValidatedSearchTrainYearsAgoInput = document.querySelector("#adminValidatedSearchTrainYearsAgo");
 const adminValidatedSearchTestYearsAgoInput = document.querySelector("#adminValidatedSearchTestYearsAgo");
 const adminValidatedSearchRunButton = document.querySelector("#adminValidatedSearchRunButton");
+const adminValidatedSearchPauseResumeButton = document.querySelector("#adminValidatedSearchPauseResumeButton");
 const adminValidatedSearchRunStatus = document.querySelector("#adminValidatedSearchRunStatus");
 const adminValidatedSearchProgressBanner = document.querySelector("#adminValidatedSearchProgressBanner");
 const adminValidatedSearchList = document.querySelector("#adminValidatedSearchList");
@@ -209,6 +210,14 @@ const adminScanRunAllButton = document.querySelector("#adminScanRunAllButton");
 const adminScanPauseResumeButton = document.querySelector("#adminScanPauseResumeButton");
 const adminScanRunStatus = document.querySelector("#adminScanRunStatus");
 const adminRerunDialog = document.querySelector("#adminRerunDialog");
+const modelActionDialog = document.querySelector("#modelActionDialog");
+const modelActionTitle = document.querySelector("#modelActionTitle");
+const closeModelActionButton = document.querySelector("#closeModelActionButton");
+const modelActionViewParamsButton = document.querySelector("#modelActionViewParamsButton");
+const modelActionViewTradesButton = document.querySelector("#modelActionViewTradesButton");
+const modelActionRenameButton = document.querySelector("#modelActionRenameButton");
+const modelActionSaveAsButton = document.querySelector("#modelActionSaveAsButton");
+const modelActionReloadSimButton = document.querySelector("#modelActionReloadSimButton");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
 const adminRerunSubtitle = document.querySelector("#adminRerunSubtitle");
 const closeAdminRerunButton = document.querySelector("#closeAdminRerunButton");
@@ -1336,7 +1345,12 @@ function renderAdminPresetCard(preset, presets) {
   return `
     <article class="admin-preset-card${isHidden ? " admin-preset-card--hidden" : ""}" data-admin-preset-id="${escapeHtml(preset.id)}">
       <div>
-        <strong>${preset.numericId ? `#${preset.numericId} · ` : ""}${escapeHtml(preset.label || preset.name)}</strong>
+        <strong>${formatModelNameLink({
+          id: preset.id, numericId: preset.numericId, label: preset.label || preset.name,
+          config: preset.config, strategyType: preset.strategyType,
+          symbol: meta.targetSymbol && meta.targetSymbol !== "通用" ? meta.targetSymbol : "",
+          ownerEmail: ownerValue, isOwner: false, name: null,
+        })}</strong>
         <span>${escapeHtml(preset.name)} · ${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</span>
         <small>Owner: ${escapeHtml(ownerValue)} · 更新 ${escapeHtml(formatAdminDate(preset.updatedAt))}</small>
         <small class="${isHidden ? "down" : (isOrigin ? "up" : "")}">${lineageText}</small>
@@ -1762,7 +1776,11 @@ function renderAdminScanList() {
     return `
       <tr>
         <td>${escapeHtml(record.symbolName || record.symbol || "")} (${escapeHtml(record.symbol || "")})</td>
-        <td>${record.presetNumericId ? `#${record.presetNumericId} · ` : ""}${escapeHtml(record.presetLabel || "")}</td>
+        <td>${formatModelNameLink({
+          id: record.presetId, numericId: record.presetNumericId, label: record.presetLabel || "",
+          config: record.bestConfig, strategyType: record.strategyType, symbol: record.symbol,
+          isOwner: false, name: null,
+        })}</td>
         <td>${escapeHtml(getStrategyTypeLabel(record.strategyType || "wave"))}</td>
         <td>${formatPercent(record.baselineReturnRate)}</td>
         <td class="${bestClass}">${formatPercent(record.bestReturnRate)}</td>
@@ -2591,7 +2609,11 @@ function renderAdminValidationList(payload) {
   } else {
     const rows = candidates.map((c) => `
       <tr>
-        <td>${c.presetNumericId ? `#${c.presetNumericId} · ` : ""}${escapeHtml(c.presetLabel)}</td>
+        <td>${formatModelNameLink({
+          id: c.presetId, numericId: c.presetNumericId, label: c.presetLabel,
+          config: c.bestConfig, strategyType: c.strategyType, symbol: c.originSymbol,
+          isOwner: false, name: null,
+        })}</td>
         <td>${escapeHtml(c.originSymbol)}</td>
         <td>${c.testedCount}</td>
         <td>${c.passingCount}</td>
@@ -2800,6 +2822,171 @@ async function openAdminValidatedSearchRerun(presetId) {
   await openAiGeneratedRerun(findAdminValidatedSearchRecord(presetId));
 }
 
+// Unified "click a model's name anywhere" popup — 查看参数/查看历史交易记录/重命名(仅
+// owner/admin)/另存/重新加载历史模拟, all delegating to functions that already exist for
+// individual lists rather than reimplementing any of the five actions. Keyed by an opaque
+// lookup token (not just the model's own id) because 后台模型排行/全市场验证 can show the SAME
+// model against MANY different symbols (one row per scanned stock) — the popup needs to know
+// which row's symbol was clicked, not just which model.
+const modelContextRegistry = new Map();
+let modelActionContext = null;
+
+function registerModelContext(context) {
+  const refKey = `${context.id}::${context.symbol || ""}`;
+  modelContextRegistry.set(refKey, context);
+  return refKey;
+}
+
+function formatModelNameLink(context) {
+  if (!context || !context.id) return escapeHtml(context && context.label || "");
+  const refKey = registerModelContext(context);
+  const prefix = context.numericId ? `#${context.numericId} · ` : "";
+  return `<button type="button" class="model-name-link" data-model-ref-key="${escapeHtml(refKey)}">${prefix}${escapeHtml(context.label || "模型")}</button>`;
+}
+
+function openModelActionMenu(context) {
+  if (!context) return;
+  modelActionContext = context;
+  if (modelActionTitle) {
+    modelActionTitle.textContent = `${context.numericId ? `#${context.numericId} · ` : ""}${context.label || "模型"}`;
+  }
+  const canRename = Boolean(context.isOwner || (currentUser && currentUser.isAdmin));
+  if (modelActionRenameButton) modelActionRenameButton.classList.toggle("hidden", !canRename);
+  const hasSymbol = Boolean(context.symbol);
+  if (modelActionViewTradesButton) modelActionViewTradesButton.disabled = !hasSymbol;
+  if (modelActionReloadSimButton) modelActionReloadSimButton.disabled = !hasSymbol;
+  showDialog(modelActionDialog);
+}
+
+if (document.body) {
+  document.body.addEventListener("click", (event) => {
+    const link = event.target && event.target.closest ? event.target.closest(".model-name-link") : null;
+    if (!link) return;
+    // A name-link can sit inside a <summary> (盯盘提醒's collapsible rows) — without this, the
+    // click would also toggle the parent <details> open/closed as a browser default action.
+    event.preventDefault();
+    const context = modelContextRegistry.get(link.dataset.modelRefKey);
+    if (context) openModelActionMenu(context);
+  });
+}
+
+if (closeModelActionButton && modelActionDialog) {
+  closeModelActionButton.addEventListener("click", () => closeDialog(modelActionDialog));
+}
+
+if (modelActionViewParamsButton) {
+  modelActionViewParamsButton.addEventListener("click", () => {
+    const context = modelActionContext;
+    if (!context) return;
+    closeDialog(modelActionDialog);
+    if (context.name && isOwnedEditablePreset(context.name)) {
+      openPresetParamEditor(context.name);
+      return;
+    }
+    const config = context.config && typeof context.config === "object" ? context.config : {};
+    const viewPreset = {
+      ...config,
+      label: context.label,
+      strategyType: context.strategyType || config.strategyType || "wave",
+      meta: { targetSymbol: context.symbol || "通用", originalText: context.reason || "" },
+    };
+    openPresetParamEditor(context.id, {
+      preset: viewPreset,
+      readonly: true,
+      title: `查看参数：${context.label}`,
+      subtitle: context.ownerEmail ? `Owner: ${context.ownerEmail} · 只读` : "只读",
+      saveDefaultLabel: `${context.label} 副本`.slice(0, 60),
+    });
+  });
+}
+
+if (modelActionViewTradesButton) {
+  modelActionViewTradesButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context || !context.symbol) return;
+    closeDialog(modelActionDialog);
+    await runAdminRerunPlayback({
+      title: `交易记录：${context.symbol}（${context.label}）`,
+      symbol: context.symbol,
+      config: context.config || {},
+      strategyType: context.strategyType,
+      start: formatDate(shiftYears(new Date(), -5)),
+      end: todayText(),
+    });
+  });
+}
+
+if (modelActionRenameButton) {
+  modelActionRenameButton.addEventListener("click", () => {
+    const context = modelActionContext;
+    if (!context) return;
+    closeDialog(modelActionDialog);
+    if (context.name && isOwnedEditablePreset(context.name)) {
+      renameOwnedPreset(context.name);
+    } else {
+      renameAdminPreset(context.id, context.label);
+    }
+  });
+}
+
+if (modelActionSaveAsButton) {
+  modelActionSaveAsButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context) return;
+    const defaultLabel = `${context.label} 副本`.slice(0, 60);
+    const label = window.prompt("输入新模型名称：", defaultLabel);
+    if (label === null) return;
+    const trimmed = label.trim().slice(0, 80);
+    if (!trimmed) {
+      setStatus("模型名称不能为空。", true);
+      return;
+    }
+    closeDialog(modelActionDialog);
+    const preset = createPresetFromConfig(trimmed, context.config || {}, {
+      targetSymbol: context.symbol || "通用",
+      creator: "auto",
+      createdAt: todayText(),
+      updatedAt: todayText(),
+      originalText: `另存自：${context.label}`,
+      originalModelId: context.id,
+      originalModelLabel: context.label,
+      originalModelNumericId: context.numericId,
+    });
+    const presetName = await saveGeneratedPreset(preset);
+    if (presetName) {
+      setStatus(`已另存为模型：${strategyPresets[presetName].label}。`);
+    }
+  });
+}
+
+if (modelActionReloadSimButton) {
+  modelActionReloadSimButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context || !context.symbol) return;
+    closeDialog(modelActionDialog);
+    let targetName = context.name && strategyPresets[context.name] ? context.name : "";
+    if (!targetName) {
+      targetName = `__viewed_${context.id}`;
+      const config = context.config && typeof context.config === "object" ? context.config : {};
+      strategyPresets[targetName] = sanitizeStoredPreset(targetName, {
+        ...config,
+        label: context.label,
+        strategyType: context.strategyType || config.strategyType || "wave",
+        meta: { targetSymbol: context.symbol, originalText: context.reason || "" },
+      });
+    }
+    setWizardPage("simulation");
+    if (codeInput) codeInput.value = context.symbol;
+    if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
+    if (endInput) endInput.value = todayText();
+    renderModelCompareOptions();
+    document.querySelectorAll(".model-compare-enabled").forEach((input) => {
+      input.checked = input.value === targetName;
+    });
+    await loadData();
+  });
+}
+
 function formatAdminAutoGenerateReason(reason) {
   const text = String(reason || "").trim();
   if (!text) return "";
@@ -2866,7 +3053,11 @@ function renderAiGeneratedPresetRow(p, options = {}) {
     <tr>
       ${statusCell}
       <td>${escapeHtml(p.targetSymbol || "")}</td>
-      <td>${p.numericId ? `#${p.numericId} · ` : ""}${escapeHtml(p.label || "")}</td>
+      <td>${formatModelNameLink({
+        id: p.id, numericId: p.numericId, label: p.label || "",
+        config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
+        reason: p.reason, isOwner: false, name: null,
+      })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
       <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
       <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
@@ -2875,10 +3066,6 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${p.testedCandidates || 0}</td>
       <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
       <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
-      <td class="admin-scan-actions">
-        <button type="button" class="admin-view-params-button" data-preset-id="${escapeHtml(p.id)}">查看参数</button>
-        <button type="button" class="admin-auto-generate-rerun-button" data-preset-id="${escapeHtml(p.id)}">查看交易记录</button>
-      </td>
     </tr>
   `;
 }
@@ -2898,7 +3085,7 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
   return `
     <table class="admin-ranking-table">
       <thead>
-        <tr>${headerCells}<th></th></tr>
+        <tr>${headerCells}</tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -3213,9 +3400,9 @@ async function loadAdminValidatedSearch() {
   }
 }
 
-async function triggerAdminValidatedSearchRun() {
-  const symbols = adminValidatedSearchSymbolPicker.getSelected();
-  if (symbols.length === 0) {
+async function triggerAdminValidatedSearchRun(options = {}) {
+  const symbols = options.resume ? [] : adminValidatedSearchSymbolPicker.getSelected();
+  if (!options.resume && symbols.length === 0) {
     setStatus("请至少选择一支股票（这个功能不支持全市场搜索）。", true);
     return;
   }
@@ -3235,24 +3422,37 @@ async function triggerAdminValidatedSearchRun() {
     trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
     testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
   };
-  if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "正在启动验证搜索...";
+  if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = options.resume ? "正在继续上次中断的验证搜索..." : "正在启动验证搜索...";
   try {
     const response = await fetch("/api/admin/validated-search/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbols, ...requested }),
+      body: JSON.stringify({ symbols, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动验证搜索失败。");
     const adjustments = ["targetPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYearsAgo", "testYearsAgo"]
-      .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
+      .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0
       ? `已启动验证搜索（部分参数超出允许范围，已调整：${adjustments.join("，")}）。`
-      : "已启动验证搜索。");
+      : options.resume ? "已继续上次中断的验证搜索。" : "已启动验证搜索。");
     await loadAdminValidatedSearch();
   } catch (error) {
     if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "";
     setStatus(`启动验证搜索失败：${error.message}`, true);
+  }
+}
+
+async function pauseAdminValidatedSearch() {
+  if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "正在暂停验证搜索...";
+  try {
+    const response = await fetch("/api/admin/validated-search/pause", { method: "POST" });
+    await readJsonResponse(response, "暂停验证搜索失败。");
+    setStatus("验证搜索已暂停。可以点“继续上次中断”接着跑。");
+    await loadAdminValidatedSearch();
+  } catch (error) {
+    if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "";
+    setStatus(`暂停验证搜索失败：${error.message}`, true);
   }
 }
 
@@ -3281,11 +3481,32 @@ function renderAdminValidatedSearchList(payload) {
   if (adminValidatedSearchRunButton) adminValidatedSearchRunButton.disabled = running;
 
   const runningIsValidatedSearch = running && payload.scanInfo && payload.scanInfo.jobType === "validatedSearch";
+  const lastResult = payload.lastScanResult;
+  const validatedSearchLast = lastResult && lastResult.jobType === "validatedSearch" ? lastResult : null;
+  const crashed = Boolean(validatedSearchLast && validatedSearchLast.exitCode !== 0);
+
+  // Same "kill = pause, same button resumes" pattern as adminScanPauseResumeButton — a pause
+  // is just a deliberate crash (handleAdminValidatedSearchPauseApi), so "crashed" and "paused"
+  // are the same state from the UI's perspective.
+  if (adminValidatedSearchPauseResumeButton) {
+    adminValidatedSearchPauseResumeButton.classList.toggle("hidden", !runningIsValidatedSearch && !crashed);
+    adminValidatedSearchPauseResumeButton.disabled = false;
+    if (runningIsValidatedSearch) {
+      adminValidatedSearchPauseResumeButton.textContent = "暂停";
+      adminValidatedSearchPauseResumeButton.dataset.mode = "pause";
+    } else if (crashed) {
+      adminValidatedSearchPauseResumeButton.textContent = "继续上次中断";
+      adminValidatedSearchPauseResumeButton.dataset.mode = "resume";
+    }
+  }
+
   if (adminValidatedSearchRunStatus) {
     if (runningIsValidatedSearch) {
       adminValidatedSearchRunStatus.textContent = `验证搜索进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
     } else if (running) {
       adminValidatedSearchRunStatus.textContent = "已有其它后台任务在运行，请等它结束后再启动验证搜索。";
+    } else if (crashed) {
+      adminValidatedSearchRunStatus.textContent = `上次验证搜索已暂停/中断（退出码 ${validatedSearchLast.exitCode}，${escapeHtml(formatAdminDate(validatedSearchLast.endedAt))}）——可以点"继续上次中断"接着跑。`;
     } else {
       adminValidatedSearchRunStatus.textContent = "";
     }
@@ -3682,8 +3903,12 @@ function renderWatchAlertEntry(watch, options = {}) {
     : "";
   const ownerPart = options.showOwner ? `${escapeHtml(watch.ownerEmail || "")} · ` : "";
   const statusPart = !watch.enabled ? ' · <span class="down">已停用</span>' : "";
-  const modelIdPart = watch.presetNumericId ? `#${watch.presetNumericId} · ` : "";
-  const summary = `${ownerPart}${modelIdPart}${escapeHtml(watch.presetLabel)} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
+  const modelLink = formatModelNameLink({
+    id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
+    config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
+    isOwner: false, name: null,
+  });
+  const summary = `${ownerPart}${modelLink} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
   const actionsPart = options.showOwner ? "" : `
     <div class="admin-scan-actions">
       <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
@@ -3691,22 +3916,68 @@ function renderWatchAlertEntry(watch, options = {}) {
     </div>
   `;
   return `
-    <details class="admin-scan-details">
+    <details class="admin-scan-details" data-watch-id="${escapeHtml(watch.id)}">
       <summary>${summary}</summary>
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
+      <div class="trade-price-wrap trade-price-wrap--compact">
+        <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
+      </div>
       ${renderWatchAlertOrdersTable(watch.accountTrades)}
       ${actionsPart}
     </details>
   `;
 }
 
+let watchAlertsCache = [];
+let adminWatchAlertsCache = [];
+
+// Lazy-loads the price chart the first time a watch's <details> row is actually expanded —
+// firing an /api/klines request per row on every list render would be wasteful for a list of
+// many watches most of which stay collapsed. `toggle` events don't bubble, so delegation below
+// listens in the capture phase instead.
+async function loadWatchAlertChart(watch, svgEl) {
+  if (!svgEl || svgEl.dataset.loaded === "1") return;
+  svgEl.dataset.loaded = "1";
+  if (!Array.isArray(watch.accountTrades) || watch.accountRowsScored <= 0) return;
+  try {
+    const start = String(watch.createdAt || "").slice(0, 10);
+    const end = todayText();
+    const params = new URLSearchParams({ code: watch.symbol, start, end });
+    const response = await fetch(`/api/klines?${params.toString()}`);
+    const result = await readJsonResponse(response, "行情读取失败。");
+    const rows = (result.rows || []).filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close)
+      && row.close > 0 && Number.isFinite(row.high) && Number.isFinite(row.low));
+    if (rows.length === 0) return;
+    const trades = watch.accountTrades
+      .map((t) => ({ ...t, rowIndex: rows.findIndex((r) => r.date === t.date) }))
+      .filter((t) => t.rowIndex >= 0);
+    drawModelOrderPriceChartInto(svgEl, rows, trades);
+  } catch (error) {
+    // Best-effort — the trade table below still shows the same information as text.
+  }
+}
+
+function handleWatchAlertsToggle(event, watchesCache) {
+  const details = event.target;
+  if (!details || details.tagName !== "DETAILS" || !details.open) return;
+  const watchId = details.dataset.watchId;
+  const watch = watchesCache.find((item) => item.id === watchId);
+  const svgEl = details.querySelector(".watch-alert-chart-svg");
+  if (watch && svgEl) loadWatchAlertChart(watch, svgEl);
+}
+
 function renderWatchAlertsList(watches) {
   if (!watchAlertsList) return;
-  if (!Array.isArray(watches) || watches.length === 0) {
+  watchAlertsCache = Array.isArray(watches) ? watches : [];
+  if (watchAlertsCache.length === 0) {
     watchAlertsList.innerHTML = '<div class="ranking-empty">还没有设置盯盘提醒。</div>';
     return;
   }
-  watchAlertsList.innerHTML = watches.map((watch) => renderWatchAlertEntry(watch)).join("");
+  watchAlertsList.innerHTML = watchAlertsCache.map((watch) => renderWatchAlertEntry(watch)).join("");
+}
+
+if (watchAlertsList) {
+  watchAlertsList.addEventListener("toggle", (event) => handleWatchAlertsToggle(event, watchAlertsCache), true);
 }
 
 async function loadMyWatchAlerts() {
@@ -3867,12 +4138,12 @@ async function loadAdminWatchAlerts() {
   try {
     const response = await fetch("/api/admin/watch-alerts", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
-    const watches = Array.isArray(payload.watches) ? payload.watches : [];
-    if (watches.length === 0) {
+    adminWatchAlertsCache = Array.isArray(payload.watches) ? payload.watches : [];
+    if (adminWatchAlertsCache.length === 0) {
       adminWatchAlertsList.innerHTML = '<div class="ranking-empty">还没有用户设置盯盘提醒。</div>';
       return;
     }
-    adminWatchAlertsList.innerHTML = watches.map((watch) => renderWatchAlertEntry(watch, { showOwner: true })).join("");
+    adminWatchAlertsList.innerHTML = adminWatchAlertsCache.map((watch) => renderWatchAlertEntry(watch, { showOwner: true })).join("");
   } catch (error) {
     adminWatchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
@@ -3880,6 +4151,10 @@ async function loadAdminWatchAlerts() {
 
 if (adminWatchAlertsTabButton) {
   adminWatchAlertsTabButton.addEventListener("click", () => setAdminTab("watchAlerts"));
+}
+
+if (adminWatchAlertsList) {
+  adminWatchAlertsList.addEventListener("toggle", (event) => handleWatchAlertsToggle(event, adminWatchAlertsCache), true);
 }
 
 function openAdminValidationParamViewer(sourceScanResultId) {
@@ -4052,6 +4327,15 @@ if (adminValidatedSearchRunButton) {
   adminValidatedSearchRunButton.addEventListener("click", () => {
     if (!window.confirm("确定要启动验证搜索吗？这会消耗 AI API 调用额度（最多按“总 AI 调用次数上限”计费），并跑参数搜索，可能耗时较久。")) return;
     triggerAdminValidatedSearchRun();
+  });
+}
+if (adminValidatedSearchPauseResumeButton) {
+  adminValidatedSearchPauseResumeButton.addEventListener("click", () => {
+    if (adminValidatedSearchPauseResumeButton.dataset.mode === "pause") {
+      pauseAdminValidatedSearch();
+    } else {
+      triggerAdminValidatedSearchRun({ resume: true });
+    }
   });
 }
 if (adminValidationRunButton) {
@@ -8236,7 +8520,12 @@ function renderMyModelsList() {
       ${myModels.map(([name, preset]) => `
         <div class="my-model-row" data-preset-name="${escapeHtml(name)}">
           <div class="my-model-info">
-            <strong>${preset.numericId ? `#${preset.numericId} · ` : ""}${escapeHtml(preset.label || name)}</strong>
+            <strong>${formatModelNameLink({
+              id: preset.id, numericId: preset.numericId, label: preset.label || name,
+              config: preset, strategyType: preset.strategyType,
+              symbol: preset.meta && preset.meta.targetSymbol && preset.meta.targetSymbol !== "通用" ? preset.meta.targetSymbol : "",
+              isOwner: true, name,
+            })}</strong>
             <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</small>
           </div>
           <div class="my-model-actions">

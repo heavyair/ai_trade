@@ -2534,6 +2534,7 @@ async function handleAdminValidatedSearchListApi(req, res) {
       presets,
       running: isScanRunning(),
       scanInfo: activeScanInfo,
+      lastScanResult,
       progress: readValidatedSearchProgress(),
     });
   } catch (error) {
@@ -2554,30 +2555,83 @@ async function handleAdminValidatedSearchRunApi(req, res) {
     }
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
-    const symbols = Array.isArray(payload.symbols)
-      ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
-      : [];
-    if (symbols.length === 0) {
-      sendJson(res, 400, { error: "请至少选择一支股票（这个功能不支持全市场扫描）。" });
-      return;
+
+    let symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt;
+    if (payload.resume) {
+      if (!lastScanResult || lastScanResult.jobType !== "validatedSearch" || lastScanResult.exitCode === 0) {
+        sendJson(res, 400, { error: "没有可以继续的中断验证搜索（上一次不是异常退出）。" });
+        return;
+      }
+      symbols = Array.isArray(lastScanResult.symbols) ? lastScanResult.symbols : [];
+      targetPercent = lastScanResult.targetPercent || 50;
+      attemptsPerSymbol = lastScanResult.attemptsPerSymbol || 60;
+      maxAttempts = lastScanResult.maxAttempts || 400;
+      candidates = lastScanResult.candidates || 400;
+      pointCount = lastScanResult.pointCount || 5;
+      trainYearsAgo = lastScanResult.trainYearsAgo || 5;
+      testYearsAgo = lastScanResult.testYearsAgo || 1;
+      sessionStartedAt = lastScanResult.sessionStartedAt;
+    } else {
+      symbols = Array.isArray(payload.symbols)
+        ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
+        : [];
+      if (symbols.length === 0) {
+        sendJson(res, 400, { error: "请至少选择一支股票（这个功能不支持全市场扫描）。" });
+        return;
+      }
+      targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+      attemptsPerSymbol = Math.max(1, Math.min(200, Math.round(Number(payload.attemptsPerSymbol)) || 60));
+      maxAttempts = Math.max(1, Math.min(2000, Math.round(Number(payload.maxAttempts)) || 400));
+      candidates = Math.max(1, Math.min(2000, Math.round(Number(payload.candidates)) || 400));
+      pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
+      trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
+      testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+      sessionStartedAt = new Date().toISOString();
+
+      // A fresh (non-resume) trigger means "search these symbols again", not "pick up where
+      // the last run left off" — clear out prior non-qualifying candidates for these symbols
+      // so the admin doesn't see a stale mix of this-run and previous-run attempts. Rows that
+      // already reached the target are left alone — they're validated results, not
+      // in-progress search state.
+      await dbQuery(
+        `DELETE FROM optimization_scan_results WHERE source = 'validated-search' AND symbol = ANY($1) AND reached_target = FALSE`,
+        [symbols]
+      );
+      lastScanResult = null;
+      writeScanSessionState({ status: "idle", result: null });
     }
-    const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
-    const attemptsPerSymbol = Math.max(1, Math.min(200, Math.round(Number(payload.attemptsPerSymbol)) || 60));
-    const maxAttempts = Math.max(1, Math.min(2000, Math.round(Number(payload.maxAttempts)) || 400));
-    const candidates = Math.max(1, Math.min(2000, Math.round(Number(payload.candidates)) || 400));
-    const pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
-    const trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
-    const testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
-    const sessionStartedAt = new Date().toISOString();
+
     // Per the standing rule established for validated/found models this session: they default
     // to the admin's own account, never left ownerless — same as NET/GOOGL/TSM earlier.
     launchValidatedSearchProcess({
       symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo,
       sessionStartedAt, triggeredBy: admin.email, ownerUserId: userIdForEmail(admin.email), ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt });
+    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动验证搜索失败。" });
+  }
+}
+
+// Same "kill = pause, replay same args = resume" pattern as handleAdminOptimizationScanPauseApi
+// — killing activeScanProcess makes launchBackgroundJob's own exit handler treat this exactly
+// like a crash, persisting lastScanResult (with source symbols/params intact via `extra`) for
+// the resume branch above to replay. No new state-tracking needed.
+async function handleAdminValidatedSearchPauseApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!isScanRunning() || !activeScanInfo || activeScanInfo.jobType !== "validatedSearch") {
+      sendJson(res, 400, { error: "当前没有正在运行的验证搜索，无法暂停。" });
+      return;
+    }
+    activeScanProcess.kill();
+    sendJson(res, 200, { paused: true });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "暂停验证搜索失败。" });
   }
 }
 
@@ -2750,6 +2804,13 @@ function mapWatchAlertRow(row) {
     // time. Falls back to the stored snapshot only if the preset itself was deleted (JOIN
     // finds nothing) so the watch doesn't show a blank name.
     presetLabel: row.preset_current_label || row.preset_label,
+    // Full config/strategyType (when the JOIN resolves — absent right after a fresh POST
+    // create, which doesn't go through the JOIN) lets the client build a 只读 preset view for
+    // the unified "model action" popup (查看参数/查看历史交易记录/另存/重新加载模拟) without a
+    // dedicated single-preset lookup endpoint.
+    presetConfig: row.preset_config && typeof row.preset_config === "object" ? row.preset_config : null,
+    presetStrategyType: row.preset_strategy_type || "",
+    presetOwnerUserId: row.preset_owner_user_id || null,
     symbol: row.symbol,
     symbolName: row.symbol_name,
     market: row.market,
@@ -2791,7 +2852,8 @@ async function handleWatchAlertsApi(req, res) {
       const user = await requireCurrentUser(req);
       const ownerUserId = userIdForEmail(user.email);
       const result = await dbQuery(`
-        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label
+        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
         FROM watch_alerts
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
         WHERE watch_alerts.owner_user_id = $1
@@ -2944,7 +3006,8 @@ async function handleAdminWatchAlertsApi(req, res) {
       return;
     }
     const result = await dbQuery(`
-      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label
+      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
       FROM watch_alerts
       LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
       ORDER BY watch_alerts.updated_at DESC
@@ -4306,6 +4369,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/validated-search/run") {
     handleAdminValidatedSearchRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/validated-search/pause") {
+    handleAdminValidatedSearchPauseApi(req, res);
     return;
   }
 

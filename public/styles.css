@@ -2062,10 +2062,19 @@ button:disabled {
   overflow-y: hidden;
 }
 
+/* Compact variant for charts embedded in a list row's <details> body (盯盘提醒) rather than a
+   full page/dialog — drawModelOrderPriceChartInto floors its own height at 280px internally,
+   so this stays at/above that floor rather than fighting it. */
+.trade-price-wrap--compact {
+  height: 300px;
+  margin: 0 10px 10px;
+}
+
 #returnCompareChart,
 #tradePriceChart,
 #adminRerunChartSvg,
-#adminRerunTradeDetailChart {
+#adminRerunTradeDetailChart,
+.watch-alert-chart-svg {
   display: block;
   width: 100%;
   height: 100%;
@@ -2346,6 +2355,24 @@ textarea:focus {
 .ghost-button:hover {
   color: #fff;
   background: var(--accent);
+}
+
+/* Clickable model name — inline text, not button chrome, since it appears embedded inside
+   table cells, card headers, and <summary> lines all over the app. */
+.model-name-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--accent-dark, var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.model-name-link:hover {
+  color: var(--accent);
 }
 
 .security-note {

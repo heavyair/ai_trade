@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260827-numeric-model-id">
+    <link rel="stylesheet" href="/styles.css?v=20260828-model-popup-chart-pause">
   </head>
   <body>
     <main class="shell">
@@ -371,6 +371,7 @@
                 <input id="adminValidatedSearchTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
               </label>
               <button type="button" id="adminValidatedSearchRunButton" class="ghost-button">启动验证搜索</button>
+              <button type="button" id="adminValidatedSearchPauseResumeButton" class="ghost-button hidden">暂停</button>
               <span id="adminValidatedSearchRunStatus" class="field-hint"></span>
             </div>
             <div id="adminValidatedSearchProgressBanner" class="admin-progress-banner hidden"></div>
@@ -389,6 +390,24 @@
             <button id="closeAdminParamPatternButton" type="button" class="ghost-button">关闭</button>
           </div>
           <div id="adminParamPatternList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
+      <dialog id="modelActionDialog" class="param-dialog" aria-label="模型操作">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="modelActionTitle">模型</h2>
+            </div>
+            <button id="closeModelActionButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div class="dialog-actions">
+            <button type="button" id="modelActionViewParamsButton" class="ghost-button">查看参数</button>
+            <button type="button" id="modelActionViewTradesButton" class="ghost-button">查看历史交易记录</button>
+            <button type="button" id="modelActionRenameButton" class="ghost-button hidden">重命名</button>
+            <button type="button" id="modelActionSaveAsButton" class="ghost-button">另存</button>
+            <button type="button" id="modelActionReloadSimButton" class="ghost-button">重新加载历史模拟</button>
+          </div>
         </form>
       </dialog>
 
@@ -1306,7 +1325,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260827-numeric-model-id"></script>
-    <script src="/app.js?v=20260827-numeric-model-id"></script>
+    <script src="/formula-engine.js?v=20260828-model-popup-chart-pause"></script>
+    <script src="/app.js?v=20260828-model-popup-chart-pause"></script>
   </body>
 </html>
