@@ -20,8 +20,13 @@ const watchAlertsDialog = document.querySelector("#watchAlertsDialog");
 const closeWatchAlertsButton = document.querySelector("#closeWatchAlertsButton");
 const watchAlertsAuthNote = document.querySelector("#watchAlertsAuthNote");
 const watchAlertsPresetSelect = document.querySelector("#watchAlertsPresetSelect");
+const watchAlertsModeSelect = document.querySelector("#watchAlertsModeSelect");
+const watchAlertsMarketLabel = document.querySelector("#watchAlertsMarketLabel");
 const watchAlertsMarketSelect = document.querySelector("#watchAlertsMarketSelect");
+const watchAlertsSymbolLabel = document.querySelector("#watchAlertsSymbolLabel");
 const watchAlertsSymbolInput = document.querySelector("#watchAlertsSymbolInput");
+const watchAlertsIndexLabel = document.querySelector("#watchAlertsIndexLabel");
+const watchAlertsIndexSelect = document.querySelector("#watchAlertsIndexSelect");
 const watchAlertsFrequencySelect = document.querySelector("#watchAlertsFrequencySelect");
 const watchAlertsCreateButton = document.querySelector("#watchAlertsCreateButton");
 const watchAlertsCreateStatus = document.querySelector("#watchAlertsCreateStatus");
@@ -3970,6 +3975,40 @@ function renderWatchAlertsPresetOptions() {
   }
 }
 
+// Cached after the first fetch — this list is static server-side (WATCH_INDEX_CATALOG in
+// server.js), no need to re-fetch every time the dialog opens.
+let watchAlertsIndexCatalog = null;
+
+async function renderWatchAlertsIndexOptions() {
+  if (!watchAlertsIndexSelect) return;
+  if (!watchAlertsIndexCatalog) {
+    try {
+      const response = await fetch("/api/watch-alert-indexes", { cache: "no-store" });
+      const payload = await readJsonResponse(response, "读取指数列表失败。");
+      watchAlertsIndexCatalog = Array.isArray(payload.indexes) ? payload.indexes : [];
+    } catch (error) {
+      watchAlertsIndexSelect.innerHTML = `<option value="">读取指数列表失败：${escapeHtml(error.message)}</option>`;
+      return;
+    }
+  }
+  watchAlertsIndexSelect.innerHTML = watchAlertsIndexCatalog
+    .map((entry) => `<option value="${escapeHtml(entry.code || "")}"${entry.available ? "" : " disabled"}>${escapeHtml(entry.name)}${entry.available ? "" : "（暂不支持，指数代码待确认）"}</option>`)
+    .join("");
+  const firstAvailable = watchAlertsIndexCatalog.find((entry) => entry.available);
+  if (firstAvailable) watchAlertsIndexSelect.value = firstAvailable.code;
+}
+
+function updateWatchAlertsModeVisibility() {
+  const isIndexMode = watchAlertsModeSelect && watchAlertsModeSelect.value === "index";
+  if (watchAlertsMarketLabel) watchAlertsMarketLabel.classList.toggle("hidden", isIndexMode);
+  if (watchAlertsSymbolLabel) watchAlertsSymbolLabel.classList.toggle("hidden", isIndexMode);
+  if (watchAlertsIndexLabel) watchAlertsIndexLabel.classList.toggle("hidden", !isIndexMode);
+}
+
+if (watchAlertsModeSelect) {
+  watchAlertsModeSelect.addEventListener("change", updateWatchAlertsModeVisibility);
+}
+
 function formatWatchAlertFrequency(minutes) {
   if (minutes >= 1440) return "每天一次";
   if (minutes >= 60) return `每 ${minutes / 60} 小时`;
@@ -4016,10 +4055,15 @@ function formatWatchAlertAccountStats(watch) {
 // block keeps each watch's order history collapsed by default, same pattern as
 // renderScreenRunEntry uses for 选股 run entries.
 function renderWatchAlertEntry(watch, options = {}) {
+  const isIndexWatch = Boolean(watch.indexCode);
   const marketLabel = watch.market === "US" ? "美股" : "A股";
-  const signalCell = watch.lastSignalDate
-    ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
-    : '<span class="field-hint">暂无信号</span>';
+  const signalCell = isIndexWatch
+    ? (watch.lastSignalDate
+      ? `<span class="up" title="${escapeHtml(watch.lastSignalReason || "")}">${escapeHtml(watch.lastSignalDate)} 有成分股触发信号</span>`
+      : '<span class="field-hint">暂无信号</span>')
+    : (watch.lastSignalDate
+      ? `<span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${escapeHtml(watch.lastSignalDate)}</span>`
+      : '<span class="field-hint">暂无信号</span>');
   const failurePart = watch.consecutiveFailures > 0
     ? ` · <span class="down" title="${escapeHtml(watch.lastError || "")}">失败 ${watch.consecutiveFailures} 次</span>`
     : "";
@@ -4030,21 +4074,31 @@ function renderWatchAlertEntry(watch, options = {}) {
     config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
     isOwner: false, name: null,
   });
-  const summary = `${ownerPart}${modelLink} · ${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}） · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
+  const targetLabel = isIndexWatch
+    ? `${escapeHtml(watch.indexName || watch.indexCode)}（全指数）`
+    : `${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）`;
+  const summary = `${ownerPart}${modelLink} · ${targetLabel} · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
   const actionsPart = options.showOwner ? "" : `
     <div class="admin-scan-actions">
       <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
       <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     </div>
   `;
-  return `
-    <details class="admin-scan-details" data-watch-id="${escapeHtml(watch.id)}">
-      <summary>${summary}</summary>
+  // 指数盯盘没有单一股票的模拟账户/价格图/订单表——每次检查扫的是当前全部成分股，不是
+  // 一支固定的票，跟"从创建那一刻起模拟交易"的单股账户模型不是一回事。
+  const bodyPart = isIndexWatch
+    ? `<div class="field-hint">${watch.lastSignalReason ? escapeHtml(watch.lastSignalReason) : "指数盯盘不模拟账户，触发信号时会邮件列出当次所有触发的成分股。"}</div>`
+    : `
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
       </div>
       ${renderWatchAlertOrdersTable(watch.accountTrades)}
+    `;
+  return `
+    <details class="admin-scan-details" data-watch-id="${escapeHtml(watch.id)}">
+      <summary>${summary}</summary>
+      ${bodyPart}
       ${actionsPart}
     </details>
   `;
@@ -4118,30 +4172,50 @@ async function loadMyWatchAlerts() {
 
 function openWatchAlertsDialog() {
   renderWatchAlertsPresetOptions();
+  renderWatchAlertsIndexOptions();
+  updateWatchAlertsModeVisibility();
   loadMyWatchAlerts();
   showDialog(watchAlertsDialog);
 }
 
 async function createWatchAlert() {
   const presetId = watchAlertsPresetSelect && watchAlertsPresetSelect.value;
-  const market = watchAlertsMarketSelect && watchAlertsMarketSelect.value;
-  const symbol = watchAlertsSymbolInput ? watchAlertsSymbolInput.value.trim() : "";
+  const isIndexMode = watchAlertsModeSelect && watchAlertsModeSelect.value === "index";
   const frequencyMinutes = Number(watchAlertsFrequencySelect && watchAlertsFrequencySelect.value);
   if (!presetId) {
     setStatus("请先选择一个模型。", true);
     return;
   }
-  if (!symbol) {
-    setStatus("请输入股票代码。", true);
-    return;
+
+  let body;
+  if (isIndexMode) {
+    const indexCode = watchAlertsIndexSelect && watchAlertsIndexSelect.value;
+    if (!indexCode) {
+      setStatus("请选择一个指数。", true);
+      return;
+    }
+    body = { presetId, indexCode, frequencyMinutes };
+  } else {
+    const market = watchAlertsMarketSelect && watchAlertsMarketSelect.value;
+    const symbol = watchAlertsSymbolInput ? watchAlertsSymbolInput.value.trim() : "";
+    if (!symbol) {
+      setStatus("请输入股票代码。", true);
+      return;
+    }
+    body = { presetId, market, symbol, frequencyMinutes };
   }
-  if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "正在添加（会先尝试拉取这支股票的行情，验证代码是否存在）...";
+
+  if (watchAlertsCreateStatus) {
+    watchAlertsCreateStatus.textContent = isIndexMode
+      ? "正在添加（会先尝试拉取这个指数的成分股列表）..."
+      : "正在添加（会先尝试拉取这支股票的行情，验证代码是否存在）...";
+  }
   if (watchAlertsCreateButton) watchAlertsCreateButton.disabled = true;
   try {
     const response = await fetch("/api/watch-alerts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ presetId, market, symbol, frequencyMinutes }),
+      body: JSON.stringify(body),
     });
     await readJsonResponse(response, "添加盯盘提醒失败。");
     if (watchAlertsSymbolInput) watchAlertsSymbolInput.value = "";

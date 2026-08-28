@@ -109,6 +109,28 @@ def fetch_klines(ak, payload):
     return {"source": source, "name": code, "rows": rows}
 
 
+def fetch_index_constituents(ak, payload):
+    # index_stock_cons_csindex covers indices published by 中证指数公司 (CSI) — this includes
+    # 沪深300/上证/中证-branded indices, but NOT 国证 (published by 深圳证券信息有限公司) or
+    # US indices like the Nasdaq-100, which need a different data source not wired up yet.
+    # Codes here must be verified against the LIVE response's own 指数名称/指数英文名称 columns
+    # before being trusted — CSI index codes are opaque and easy to mix up (e.g. 930713 "中证
+    # 人工智能主题指数" vs 931071 "中证人工智能产业指数" are two different indices).
+    code = str(payload["indexCode"]).strip()
+    frame = ak.index_stock_cons_csindex(symbol=code)
+
+    def map_row(item):
+        stock_code = str(item.get("成分券代码", "")).strip()
+        stock_name = str(item.get("成分券名称", "")).strip()
+        if not stock_code:
+            return None
+        return {"code": stock_code, "name": stock_name}
+
+    rows = frame_to_rows(frame, map_row)
+    index_name = str(frame.iloc[0]["指数名称"]) if len(frame) > 0 else ""
+    return {"source": "AKShare index_stock_cons_csindex", "indexCode": code, "indexName": index_name, "rows": rows}
+
+
 def main():
     payload = read_payload()
     import akshare as ak
@@ -118,6 +140,8 @@ def main():
         result = fetch_valuations(ak, payload)
     elif mode == "klines":
         result = fetch_klines(ak, payload)
+    elif mode == "index_cons":
+        result = fetch_index_constituents(ak, payload)
     else:
         raise ValueError(f"unsupported mode: {mode}")
 

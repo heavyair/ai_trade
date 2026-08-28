@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-watch-scan-actions">
+    <link rel="stylesheet" href="/styles.css?v=20260828-index-watch">
   </head>
   <body>
     <main class="shell">
@@ -90,7 +90,7 @@
           <div class="dialog-head">
             <div>
               <h2>设置盯盘提醒</h2>
-              <p class="field-hint">选择一个已保存的模型和一支股票，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你。每个盯盘提醒从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率。</p>
+              <p class="field-hint">选择一个已保存的模型，盯一支股票或整个指数的成分股，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你（指数盯盘一次邮件会列出所有触发信号的成分股）。单股盯盘从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率；指数盯盘不模拟账户。</p>
             </div>
             <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
           </div>
@@ -99,14 +99,23 @@
             <label>选择模型
               <select id="watchAlertsPresetSelect"></select>
             </label>
-            <label>市场
+            <label>盯盘范围
+              <select id="watchAlertsModeSelect">
+                <option value="symbol" selected>单个股票</option>
+                <option value="index">整个指数（全市场扫描）</option>
+              </select>
+            </label>
+            <label id="watchAlertsMarketLabel">市场
               <select id="watchAlertsMarketSelect">
                 <option value="CN">A股</option>
                 <option value="US">美股</option>
               </select>
             </label>
-            <label>股票代码
+            <label id="watchAlertsSymbolLabel">股票代码
               <input id="watchAlertsSymbolInput" type="text" placeholder="如 600519 或 NVDA">
+            </label>
+            <label id="watchAlertsIndexLabel" class="hidden">指数
+              <select id="watchAlertsIndexSelect"></select>
             </label>
             <label>检查频率
               <select id="watchAlertsFrequencySelect">
@@ -1327,7 +1336,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260828-watch-scan-actions"></script>
-    <script src="/app.js?v=20260828-watch-scan-actions"></script>
+    <script src="/formula-engine.js?v=20260828-index-watch"></script>
+    <script src="/app.js?v=20260828-index-watch"></script>
   </body>
 </html>

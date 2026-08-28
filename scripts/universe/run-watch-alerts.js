@@ -1,15 +1,26 @@
 // 盯盘提醒 (watch alerts) checker: run on a fixed host-cron cadence (see the crontab entry
-// documented in scripts/universe/STRATEGY_SEARCH_WORKFLOW.md-style docs / deploy notes). For
-// every enabled watch_alerts row whose frequency has elapsed, refreshes its symbol's data,
-// runs ONE deterministic backtest under the watch's saved model, and checks whether the most
-// recent trading day produced an actual buy/sell trade — i.e. whether it currently "qualifies
-// for placing an order" — using the exact same trigger-detection block as
-// scripts/universe/run-stock-screen.js (buildBacktestStates -> last day's trades). A signal
-// already emailed for the same trade_date is not re-emailed (last_signal_date dedup).
+// documented in scripts/universe/STRATEGY_SEARCH_WORKFLOW.md-style docs / deploy notes). Each
+// enabled watch_alerts row is one of two modes:
 //
-// This is a lightweight per-watch job (seconds per row), not a full-universe batch scan, so it
-// deliberately does NOT go through server.js's isScanRunning()/activeScanProcess lock — it
-// runs standalone via cron, independent of the admin batch jobs' single-slot lock.
+//   - Symbol watch (index_code IS NULL): refreshes ONE symbol's data, runs ONE deterministic
+//     backtest under the watch's saved model, and checks whether the most recent trading day
+//     produced an actual buy/sell trade — using the exact same trigger-detection block as
+//     scripts/universe/run-stock-screen.js (buildBacktestStates -> last day's trades).
+//   - Index watch (index_code IS NOT NULL): re-resolves the index's CURRENT constituent list
+//     live via AKShare every cycle (so index rebalances are picked up automatically, unlike a
+//     frozen snapshot taken at creation time), runs the SAME per-symbol trigger-detection block
+//     against every constituent, and — if any of them triggered on the same trading day — sends
+//     ONE combined email listing every matching stock and its action, instead of one email per
+//     stock. Simulated per-watch account tracking (account_* columns) only applies to symbol
+//     watches; an index watch has no single stock's account to track.
+//
+// A signal already emailed for the same trade_date is not re-emailed (last_signal_date dedup,
+// applies to both modes).
+//
+// This is a lightweight per-watch job (seconds per symbol-mode row, longer for index-mode rows
+// since those scan every constituent), not a full-universe batch scan, so it deliberately does
+// NOT go through server.js's isScanRunning()/activeScanProcess lock — it runs standalone via
+// cron, independent of the admin batch jobs' single-slot lock.
 //
 // Usage: node scripts/universe/run-watch-alerts.js   (no args — processes all due watches)
 
@@ -18,6 +29,7 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
+const { runAkshareBridge } = require("../shared/akshare-client.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -124,8 +136,61 @@ async function sendAlertEmail(watch, trades) {
   await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
 }
 
+// One combined email per index-watch check cycle listing EVERY constituent that triggered,
+// with 模型/股票/操作 per row — not one email per matching stock.
+function buildIndexAlertEmail(watch, matches) {
+  const indexLabel = watch.index_name || watch.index_code;
+  const rows = matches.map((m) => `
+    <tr>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(watch.preset_label)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(`${m.name}（${m.code}）`)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${m.side === "buy" ? "买入" : "卖出"}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(m.price)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(m.reason || m.label || "")}</td>
+    </tr>
+  `).join("");
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>指数盯盘提醒：${escapeHtml(indexLabel)} 有 ${matches.length} 只成分股出现信号</h2>
+      <p>你设置的指数盯盘"${escapeHtml(watch.preset_label)} · ${escapeHtml(indexLabel)}"在最近一个交易日（${escapeHtml(matches[0].date)}）里，以下成分股触发了信号：</p>
+      <table style="border-collapse:collapse;margin:12px 0">
+        <thead>
+          <tr>
+            <th style="padding:6px 10px;text-align:left;border-bottom:2px solid #1f7a8c">模型</th>
+            <th style="padding:6px 10px;text-align:left;border-bottom:2px solid #1f7a8c">股票</th>
+            <th style="padding:6px 10px;text-align:left;border-bottom:2px solid #1f7a8c">操作</th>
+            <th style="padding:6px 10px;text-align:left;border-bottom:2px solid #1f7a8c">价格</th>
+            <th style="padding:6px 10px;text-align:left;border-bottom:2px solid #1f7a8c">原因</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p>这是模拟回测信号，不构成投资建议，请自行判断是否下单。</p>
+      <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
+      <h2>Index watch alert: ${escapeHtml(indexLabel)} — ${matches.length} constituent(s) triggered</h2>
+      <p>Your index watch "${escapeHtml(watch.preset_label)} · ${escapeHtml(indexLabel)}" triggered on the most recent trading day (${escapeHtml(matches[0].date)}). This is a simulated backtest signal, not investment advice.</p>
+    </div>
+  `;
+  const text = [
+    `指数盯盘提醒：${indexLabel} 有 ${matches.length} 只成分股出现信号`,
+    `模型：${watch.preset_label}`,
+    `交易日：${matches[0].date}`,
+    ...matches.map((m) => `- ${m.name}（${m.code}） ${m.side === "buy" ? "买入" : "卖出"} @ ${m.price}：${m.reason || m.label || ""}`),
+    "",
+    "这是模拟回测信号，不构成投资建议。",
+  ].join("\n");
+  return { html, text, subject: `指数盯盘提醒：${indexLabel} 有 ${matches.length} 只成分股出现信号` };
+}
+
+async function sendIndexAlertEmail(watch, matches) {
+  const { html, text, subject } = buildIndexAlertEmail(watch, matches);
+  await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+}
+
 async function sendAutoDisabledEmail(watch) {
-  const symbolLabel = `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
+  const symbolLabel = watch.index_code
+    ? (watch.index_name || watch.index_code)
+    : `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
   const html = `
     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
       <h2>你的盯盘提醒已自动暂停</h2>
@@ -147,6 +212,111 @@ async function sendAutoDisabledEmail(watch) {
 }
 
 async function processWatch(watch) {
+  if (watch.index_code) {
+    return processIndexWatch(watch);
+  }
+  return processSymbolWatch(watch);
+}
+
+// Checks one index's CURRENT constituent list (re-resolved live, not frozen at watch-creation
+// time) against the watch's model, and sends ONE combined email if any constituent's most
+// recent trading day triggered a buy/sell trade. Mirrors run-stock-screen.js's per-symbol
+// trigger-detection block (ensureFreshData -> loadRows -> buildBacktestStates -> last day's
+// trades), just applied to every constituent instead of a whole market universe.
+async function processIndexWatch(watch) {
+  try {
+    const constituents = await runAkshareBridge("index_cons", { indexCode: watch.index_code });
+    const rowsList = constituents && Array.isArray(constituents.rows) ? constituents.rows : [];
+    if (rowsList.length === 0) {
+      throw new Error("指数成分股列表为空");
+    }
+
+    const preset = {
+      id: watch.preset_id,
+      label: watch.current_preset_label,
+      strategyType: watch.strategy_type,
+      ...(watch.config && typeof watch.config === "object" ? watch.config : {}),
+    };
+    const baseConfig = engine.buildConfigFromPresetObject(preset, { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: preset.strategyType });
+
+    const matches = [];
+    let dataSkipped = 0;
+    let errored = 0;
+    for (const constituent of rowsList) {
+      const code = String(constituent.code || "").trim();
+      if (!code) continue;
+      const dbMarket = watch.market === "CN" ? (/^[569]/.test(code) ? "1" : "0") : "US";
+      try {
+        await ensureFreshData(pool, code, dbMarket);
+        const allRows = await loadRows(code, dbMarket);
+        const rows = allRows.slice(-SIMULATION_WINDOW_ROWS);
+        if (rows.length < MIN_ROWS) {
+          dataSkipped += 1;
+          continue;
+        }
+        engine.setActiveLotSizeSymbol(code);
+        const states = engine.buildBacktestStates(rows, baseConfig);
+        const last = states[states.length - 1];
+        const lastDate = rows[rows.length - 1].date;
+        const todaysTrades = last.trades.filter((trade) => trade.date === lastDate);
+        todaysTrades.forEach((trade) => {
+          matches.push({
+            code, name: constituent.name || code, date: lastDate,
+            side: trade.side, price: trade.price, reason: trade.reason || "", label: trade.label || "",
+          });
+        });
+      } catch (symbolError) {
+        errored += 1;
+        console.error(`[error] index-watch=${watch.id} constituent=${code}: ${symbolError.message}`);
+      }
+    }
+
+    console.log(`[index-scan] watch=${watch.id} ${watch.index_code} constituents=${rowsList.length} matches=${matches.length} dataSkipped=${dataSkipped} errored=${errored}`);
+
+    if (matches.length > 0) {
+      const signalDate = matches.reduce((max, m) => (m.date > max ? m.date : max), matches[0].date);
+      const previousSignalDate = watch.last_signal_date ? watch.last_signal_date.toISOString().slice(0, 10) : null;
+      if (signalDate !== previousSignalDate) {
+        await sendIndexAlertEmail(watch, matches.filter((m) => m.date === signalDate));
+        const summary = matches.map((m) => `${m.name}(${m.side === "buy" ? "买入" : "卖出"})`).join("、");
+        await pool.query(`
+          UPDATE watch_alerts SET
+            last_checked_at = NOW(), last_signal_date = $2, last_signal_action = 'mixed',
+            last_signal_reason = $3, last_notified_at = NOW(), consecutive_failures = 0,
+            last_error = '', updated_at = NOW()
+          WHERE id = $1
+        `, [watch.id, signalDate, summary.slice(0, 2000)]);
+        console.log(`[alert] index-watch=${watch.id} ${watch.index_code} -> emailed ${watch.owner_email} (${matches.length} matches)`);
+        return;
+      }
+    }
+    await pool.query(`
+      UPDATE watch_alerts SET last_checked_at = NOW(), consecutive_failures = 0, last_error = '', updated_at = NOW()
+      WHERE id = $1
+    `, [watch.id]);
+    console.log(`[no-signal] index-watch=${watch.id} ${watch.index_code}`);
+  } catch (error) {
+    console.error(`[error] index-watch=${watch.id} (${watch.index_code}): ${error.message}`);
+    const nextFailures = (watch.consecutive_failures || 0) + 1;
+    const willDisable = nextFailures >= MAX_CONSECUTIVE_FAILURES;
+    await pool.query(`
+      UPDATE watch_alerts SET
+        last_checked_at = NOW(), consecutive_failures = $2, last_error = $3,
+        enabled = CASE WHEN $2 >= $4 THEN FALSE ELSE enabled END, updated_at = NOW()
+      WHERE id = $1
+    `, [watch.id, nextFailures, error.message.slice(0, 500), MAX_CONSECUTIVE_FAILURES]);
+    if (willDisable) {
+      try {
+        await sendAutoDisabledEmail({ ...watch, last_error: error.message.slice(0, 500) });
+        console.log(`[auto-disabled] index-watch=${watch.id} ${watch.index_code} -> notified ${watch.owner_email}`);
+      } catch (emailError) {
+        console.error(`[error] failed to send auto-disabled notice for watch=${watch.id}: ${emailError.message}`);
+      }
+    }
+  }
+}
+
+async function processSymbolWatch(watch) {
   const dbMarket = watch.market === "CN"
     ? (/^[569]/.test(watch.symbol) ? "1" : "0")
     : "US";
