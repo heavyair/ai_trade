@@ -2605,11 +2605,29 @@ async function handleAdminValidatedSearchRunApi(req, res) {
       testYears = lastScanResult.testYears || 2;
       sessionStartedAt = lastScanResult.sessionStartedAt;
     } else {
-      symbols = Array.isArray(payload.symbols)
-        ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
-        : [];
+      const indexMappingId = String(payload.indexMappingId || "").trim();
+      if (indexMappingId) {
+        // "按指数搜索": resolve the index's CURRENT constituents ONCE at trigger time (not
+        // re-resolved mid-run like 指数盯盘 — a validated-search run is a one-shot batch job,
+        // not a persistent recurring watch, so there's no "membership might drift during this
+        // run" concern worth re-checking for). A higher cap than the manual picker's 50 — the
+        // whole point of index-triggered search is scanning a much bigger set (e.g. CSI300's
+        // 300 stocks) than anyone would hand-pick.
+        let resolved;
+        try {
+          resolved = await resolveIndexConstituents(dbPool, indexMappingId);
+        } catch (error) {
+          sendJson(res, 400, { error: error.message || "无法获取该指数的成分股列表。" });
+          return;
+        }
+        symbols = resolved.rows.map((row) => String(row.code || "").trim().toUpperCase()).filter(Boolean).slice(0, 350);
+      } else {
+        symbols = Array.isArray(payload.symbols)
+          ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
+          : [];
+      }
       if (symbols.length === 0) {
-        sendJson(res, 400, { error: "请至少选择一支股票（这个功能不支持全市场扫描）。" });
+        sendJson(res, 400, { error: "请至少选择一支股票，或者选一个指数（这个功能不支持全市场扫描）。" });
         return;
       }
       targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));

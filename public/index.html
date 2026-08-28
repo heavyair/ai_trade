@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-index-catalog">
+    <link rel="stylesheet" href="/styles.css?v=20260828-index-cache-search">
   </head>
   <body>
     <main class="shell">
@@ -347,15 +347,29 @@
           </div>
           <div id="adminValidatedSearchPanel" class="hidden">
             <p class="field-hint">跟 AI自动生成 的区别：对每个模型思路的每次尝试都立即在验证期打分，专门找验证期年化收益能达标的模型；没达标也会保存当前最好成绩，方便下次继续搜索时跳过已经很成熟的股票。</p>
-            <div class="field-hint">股票代码（必选至少一支，不支持全市场搜索）</div>
-            <div id="adminValidatedSearchSymbolPicker" class="admin-symbol-picker">
-              <div class="admin-symbol-picker-toolbar">
-                <input id="adminValidatedSearchSymbolSearch" type="text" placeholder="搜索代码或名称...">
-                <button type="button" id="adminValidatedSearchSymbolSelectAllButton" class="ghost-button">全选（当前筛选）</button>
-                <button type="button" id="adminValidatedSearchSymbolClearButton" class="ghost-button">清除已选</button>
-                <span id="adminValidatedSearchSymbolCount" class="field-hint"></span>
+            <div class="field-hint">选股方式</div>
+            <label>
+              <select id="adminValidatedSearchModeSelect">
+                <option value="manual" selected>手动选择股票</option>
+                <option value="index">按指数搜索（自动用指数当前全部成分股）</option>
+              </select>
+            </label>
+            <div id="adminValidatedSearchManualPicker">
+              <div class="field-hint">股票代码（必选至少一支，不支持全市场搜索）</div>
+              <div id="adminValidatedSearchSymbolPicker" class="admin-symbol-picker">
+                <div class="admin-symbol-picker-toolbar">
+                  <input id="adminValidatedSearchSymbolSearch" type="text" placeholder="搜索代码或名称...">
+                  <button type="button" id="adminValidatedSearchSymbolSelectAllButton" class="ghost-button">全选（当前筛选）</button>
+                  <button type="button" id="adminValidatedSearchSymbolClearButton" class="ghost-button">清除已选</button>
+                  <span id="adminValidatedSearchSymbolCount" class="field-hint"></span>
+                </div>
+                <div id="adminValidatedSearchSymbolGrid" class="admin-symbol-picker-grid"></div>
               </div>
-              <div id="adminValidatedSearchSymbolGrid" class="admin-symbol-picker-grid"></div>
+            </div>
+            <div id="adminValidatedSearchIndexPicker" class="hidden">
+              <label>选择指数
+                <select id="adminValidatedSearchIndexSelect"></select>
+              </label>
             </div>
             <div id="adminValidatedSearchTriggerRow" class="admin-scan-filter-row">
               <label>目标年化收益率(%)
@@ -1336,7 +1350,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260828-index-catalog"></script>
-    <script src="/app.js?v=20260828-index-catalog"></script>
+    <script src="/formula-engine.js?v=20260828-index-cache-search"></script>
+    <script src="/app.js?v=20260828-index-cache-search"></script>
   </body>
 </html>

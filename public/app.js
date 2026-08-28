@@ -165,6 +165,10 @@ const adminWatchAlertsPanel = document.querySelector("#adminWatchAlertsPanel");
 const adminWatchAlertsList = document.querySelector("#adminWatchAlertsList");
 const adminValidatedSearchTabButton = document.querySelector("#adminValidatedSearchTabButton");
 const adminValidatedSearchPanel = document.querySelector("#adminValidatedSearchPanel");
+const adminValidatedSearchModeSelect = document.querySelector("#adminValidatedSearchModeSelect");
+const adminValidatedSearchManualPicker = document.querySelector("#adminValidatedSearchManualPicker");
+const adminValidatedSearchIndexPicker = document.querySelector("#adminValidatedSearchIndexPicker");
+const adminValidatedSearchIndexSelect = document.querySelector("#adminValidatedSearchIndexSelect");
 const adminValidatedSearchSymbolGrid = document.querySelector("#adminValidatedSearchSymbolGrid");
 const adminValidatedSearchSymbolSearchInput = document.querySelector("#adminValidatedSearchSymbolSearch");
 const adminValidatedSearchSymbolSelectAllButton = document.querySelector("#adminValidatedSearchSymbolSelectAllButton");
@@ -3506,6 +3510,8 @@ async function triggerAdminAutoGenerateRun() {
 async function loadAdminValidatedSearch() {
   adminValidatedSearchSymbolPicker.render();
   loadAdminSymbolHistory().then(() => adminValidatedSearchSymbolPicker.render()).catch(() => {});
+  renderAdminValidatedSearchIndexOptions();
+  updateAdminValidatedSearchModeVisibility();
   if (!adminValidatedSearchList) return;
   if (!adminValidatedSearchList.innerHTML.trim()) {
     adminValidatedSearchList.innerHTML = '<div class="ranking-empty">正在读取验证搜索结果...</div>';
@@ -3520,9 +3526,15 @@ async function loadAdminValidatedSearch() {
 }
 
 async function triggerAdminValidatedSearchRun(options = {}) {
-  const symbols = options.resume ? [] : adminValidatedSearchSymbolPicker.getSelected();
-  if (!options.resume && symbols.length === 0) {
-    setStatus("请至少选择一支股票（这个功能不支持全市场搜索）。", true);
+  const isIndexMode = !options.resume && adminValidatedSearchModeSelect && adminValidatedSearchModeSelect.value === "index";
+  const symbols = (options.resume || isIndexMode) ? [] : adminValidatedSearchSymbolPicker.getSelected();
+  const indexMappingId = isIndexMode ? (adminValidatedSearchIndexSelect && adminValidatedSearchIndexSelect.value) : "";
+  if (isIndexMode && !indexMappingId) {
+    setStatus("请选择一个指数。", true);
+    return;
+  }
+  if (!options.resume && !isIndexMode && symbols.length === 0) {
+    setStatus("请至少选择一支股票，或者切换到按指数搜索（这个功能不支持全市场搜索）。", true);
     return;
   }
   const targetPercent = Number(adminValidatedSearchTargetPercentInput && adminValidatedSearchTargetPercentInput.value);
@@ -3546,7 +3558,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
     const response = await fetch("/api/admin/validated-search/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbols, resume: Boolean(options.resume), ...requested }),
+      body: JSON.stringify({ symbols, indexMappingId, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动验证搜索失败。");
     const adjustments = ["targetPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYears", "testYears"]
@@ -3976,32 +3988,60 @@ function renderWatchAlertsPresetOptions() {
 }
 
 // Cached after the first fetch — this list comes from the index_catalog DB table (see
-// scripts/shared/index-catalog.js), no need to re-fetch every time the dialog opens.
-let watchAlertsIndexCatalog = null;
+// scripts/shared/index-catalog.js), shared by 设置盯盘提醒's "整个指数" mode and AI 验证搜索's
+// "按指数搜索" mode, no need to re-fetch every time either dialog/panel opens.
+let sharedIndexCatalog = null;
 
-async function renderWatchAlertsIndexOptions() {
-  if (!watchAlertsIndexSelect) return;
-  if (!watchAlertsIndexCatalog) {
-    try {
-      const response = await fetch("/api/watch-alert-indexes", { cache: "no-store" });
-      const payload = await readJsonResponse(response, "读取指数列表失败。");
-      watchAlertsIndexCatalog = Array.isArray(payload.indexes) ? payload.indexes : [];
-    } catch (error) {
-      watchAlertsIndexSelect.innerHTML = `<option value="">读取指数列表失败：${escapeHtml(error.message)}</option>`;
-      return;
-    }
-  }
-  // The <option> value is the mapping_id (e.g. "CSI300"), sent back as the indexCode field
-  // when creating the watch — the server resolves the actual AKShare code from index_catalog.
-  watchAlertsIndexCatalog = watchAlertsIndexCatalog.sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0));
-  watchAlertsIndexSelect.innerHTML = watchAlertsIndexCatalog
+async function loadIndexCatalogOnce() {
+  if (sharedIndexCatalog) return sharedIndexCatalog;
+  const response = await fetch("/api/watch-alert-indexes", { cache: "no-store" });
+  const payload = await readJsonResponse(response, "读取指数列表失败。");
+  sharedIndexCatalog = (Array.isArray(payload.indexes) ? payload.indexes : [])
+    .sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0));
+  return sharedIndexCatalog;
+}
+
+// The <option> value is the mapping_id (e.g. "CSI300") — the server resolves the actual
+// AKShare code from index_catalog, callers never need the raw code.
+function renderIndexCatalogOptions(selectEl, catalog) {
+  selectEl.innerHTML = catalog
     .map((entry) => {
       const label = `${entry.officialName}（${entry.shortName}，${entry.marketCoverage}，样本${entry.constituentCountHint}）`;
       return `<option value="${escapeHtml(entry.mappingId)}"${entry.available ? "" : " disabled"}>${escapeHtml(label)}${entry.available ? "" : "（暂不支持，指数代码待确认）"}</option>`;
     })
     .join("");
-  const firstAvailable = watchAlertsIndexCatalog.find((entry) => entry.available);
-  if (firstAvailable) watchAlertsIndexSelect.value = firstAvailable.mappingId;
+  const firstAvailable = catalog.find((entry) => entry.available);
+  if (firstAvailable) selectEl.value = firstAvailable.mappingId;
+}
+
+async function renderWatchAlertsIndexOptions() {
+  if (!watchAlertsIndexSelect) return;
+  try {
+    const catalog = await loadIndexCatalogOnce();
+    renderIndexCatalogOptions(watchAlertsIndexSelect, catalog);
+  } catch (error) {
+    watchAlertsIndexSelect.innerHTML = `<option value="">读取指数列表失败：${escapeHtml(error.message)}</option>`;
+  }
+}
+
+async function renderAdminValidatedSearchIndexOptions() {
+  if (!adminValidatedSearchIndexSelect) return;
+  try {
+    const catalog = await loadIndexCatalogOnce();
+    renderIndexCatalogOptions(adminValidatedSearchIndexSelect, catalog);
+  } catch (error) {
+    adminValidatedSearchIndexSelect.innerHTML = `<option value="">读取指数列表失败：${escapeHtml(error.message)}</option>`;
+  }
+}
+
+function updateAdminValidatedSearchModeVisibility() {
+  const isIndexMode = adminValidatedSearchModeSelect && adminValidatedSearchModeSelect.value === "index";
+  if (adminValidatedSearchManualPicker) adminValidatedSearchManualPicker.classList.toggle("hidden", isIndexMode);
+  if (adminValidatedSearchIndexPicker) adminValidatedSearchIndexPicker.classList.toggle("hidden", !isIndexMode);
+}
+
+if (adminValidatedSearchModeSelect) {
+  adminValidatedSearchModeSelect.addEventListener("change", updateAdminValidatedSearchModeVisibility);
 }
 
 function updateWatchAlertsModeVisibility() {
