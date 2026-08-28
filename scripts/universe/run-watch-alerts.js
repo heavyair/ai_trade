@@ -29,7 +29,7 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
-const { runAkshareBridge } = require("../shared/akshare-client.js");
+const { resolveIndexConstituents } = require("../shared/index-catalog.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -225,11 +225,9 @@ async function processWatch(watch) {
 // trades), just applied to every constituent instead of a whole market universe.
 async function processIndexWatch(watch) {
   try {
-    const constituents = await runAkshareBridge("index_cons", { indexCode: watch.index_code });
-    const rowsList = constituents && Array.isArray(constituents.rows) ? constituents.rows : [];
-    if (rowsList.length === 0) {
-      throw new Error("指数成分股列表为空");
-    }
+    // watch.index_code stores an index_catalog.mapping_id (e.g. "CSI300"), not a raw AKShare
+    // code — resolveIndexConstituents looks up the actual code/fetch strategy from there.
+    const { rows: rowsList } = await resolveIndexConstituents(pool, watch.index_code);
 
     const preset = {
       id: watch.preset_id,
@@ -299,12 +297,17 @@ async function processIndexWatch(watch) {
     console.error(`[error] index-watch=${watch.id} (${watch.index_code}): ${error.message}`);
     const nextFailures = (watch.consecutive_failures || 0) + 1;
     const willDisable = nextFailures >= MAX_CONSECUTIVE_FAILURES;
+    // $2 must not be reused inside CASE WHEN $2 >= $4 alongside its direct assignment above —
+    // pg raises "inconsistent types deduced for parameter $2" for that combination (hit this
+    // for real while testing the index-watch feature below), silently aborting the whole
+    // script mid-loop since nothing catches it above main()'s top-level .catch(). Passing the
+    // already-computed boolean instead of re-deriving it in SQL sidesteps the ambiguity.
     await pool.query(`
       UPDATE watch_alerts SET
         last_checked_at = NOW(), consecutive_failures = $2, last_error = $3,
-        enabled = CASE WHEN $2 >= $4 THEN FALSE ELSE enabled END, updated_at = NOW()
+        enabled = CASE WHEN $4 THEN FALSE ELSE enabled END, updated_at = NOW()
       WHERE id = $1
-    `, [watch.id, nextFailures, error.message.slice(0, 500), MAX_CONSECUTIVE_FAILURES]);
+    `, [watch.id, nextFailures, error.message.slice(0, 500), willDisable]);
     if (willDisable) {
       try {
         await sendAutoDisabledEmail({ ...watch, last_error: error.message.slice(0, 500) });
@@ -392,12 +395,17 @@ async function processSymbolWatch(watch) {
     console.error(`[error] watch=${watch.id} (${watch.symbol}): ${error.message}`);
     const nextFailures = (watch.consecutive_failures || 0) + 1;
     const willDisable = nextFailures >= MAX_CONSECUTIVE_FAILURES;
+    // $2 must not be reused inside CASE WHEN $2 >= $4 alongside its direct assignment above —
+    // pg raises "inconsistent types deduced for parameter $2" for that combination (hit this
+    // for real while testing the index-watch feature below), silently aborting the whole
+    // script mid-loop since nothing catches it above main()'s top-level .catch(). Passing the
+    // already-computed boolean instead of re-deriving it in SQL sidesteps the ambiguity.
     await pool.query(`
       UPDATE watch_alerts SET
         last_checked_at = NOW(), consecutive_failures = $2, last_error = $3,
-        enabled = CASE WHEN $2 >= $4 THEN FALSE ELSE enabled END, updated_at = NOW()
+        enabled = CASE WHEN $4 THEN FALSE ELSE enabled END, updated_at = NOW()
       WHERE id = $1
-    `, [watch.id, nextFailures, error.message.slice(0, 500), MAX_CONSECUTIVE_FAILURES]);
+    `, [watch.id, nextFailures, error.message.slice(0, 500), willDisable]);
     if (willDisable) {
       try {
         await sendAutoDisabledEmail({ ...watch, last_error: error.message.slice(0, 500) });

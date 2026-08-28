@@ -3975,8 +3975,8 @@ function renderWatchAlertsPresetOptions() {
   }
 }
 
-// Cached after the first fetch — this list is static server-side (WATCH_INDEX_CATALOG in
-// server.js), no need to re-fetch every time the dialog opens.
+// Cached after the first fetch — this list comes from the index_catalog DB table (see
+// scripts/shared/index-catalog.js), no need to re-fetch every time the dialog opens.
 let watchAlertsIndexCatalog = null;
 
 async function renderWatchAlertsIndexOptions() {
@@ -3991,11 +3991,17 @@ async function renderWatchAlertsIndexOptions() {
       return;
     }
   }
+  // The <option> value is the mapping_id (e.g. "CSI300"), sent back as the indexCode field
+  // when creating the watch — the server resolves the actual AKShare code from index_catalog.
+  watchAlertsIndexCatalog = watchAlertsIndexCatalog.sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0));
   watchAlertsIndexSelect.innerHTML = watchAlertsIndexCatalog
-    .map((entry) => `<option value="${escapeHtml(entry.code || "")}"${entry.available ? "" : " disabled"}>${escapeHtml(entry.name)}${entry.available ? "" : "（暂不支持，指数代码待确认）"}</option>`)
+    .map((entry) => {
+      const label = `${entry.officialName}（${entry.shortName}，${entry.marketCoverage}，样本${entry.constituentCountHint}）`;
+      return `<option value="${escapeHtml(entry.mappingId)}"${entry.available ? "" : " disabled"}>${escapeHtml(label)}${entry.available ? "" : "（暂不支持，指数代码待确认）"}</option>`;
+    })
     .join("");
   const firstAvailable = watchAlertsIndexCatalog.find((entry) => entry.available);
-  if (firstAvailable) watchAlertsIndexSelect.value = firstAvailable.code;
+  if (firstAvailable) watchAlertsIndexSelect.value = firstAvailable.mappingId;
 }
 
 function updateWatchAlertsModeVisibility() {

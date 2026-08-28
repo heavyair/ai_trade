@@ -9,6 +9,7 @@ const ModelGenerator = require("./scripts/shared/model-generator.js");
 const { getStockCategories } = require("./scripts/shared/stock-categories.js");
 const { postJsonToResend } = require("./scripts/shared/send-email.js");
 const { runAkshareBridge } = require("./scripts/shared/akshare-client.js");
+const { ensureIndexCatalogTable, listIndexCatalog, resolveIndexConstituents } = require("./scripts/shared/index-catalog.js");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -419,6 +420,8 @@ async function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS watch_alerts_owner_preset_index_idx
       ON watch_alerts(owner_user_id, preset_id, index_code) WHERE index_code IS NOT NULL;
   `);
+
+  await ensureIndexCatalogTable(dbPool);
 }
 
 function sendJson(res, statusCode, payload) {
@@ -2872,34 +2875,21 @@ function mapWatchAlertRow(row) {
 
 const WATCH_ALERT_FREQUENCY_OPTIONS = new Set([30, 60, 240, 1440]);
 
-// Indices a "指数盯盘" watch can target. `code` is the AKShare-resolvable index code (verified
-// live against index_stock_cons_csindex's own returned 指数名称 before being trusted — CSI
-// index codes are opaque and easy to mix up). Entries with code:null are indices the user
-// asked for that don't have a reliable live constituent-fetch path yet (纳指成份股 has no
-// AKShare live-fetch path found at all; 中证机器人指数/深证人工智能50指数/国证芯片指数 are
-// either not resolvable via index_stock_cons_csindex or are published by a different index
-// company — 国证 indices are published by 深圳证券信息有限公司, not 中证指数公司) — kept in the
-// list (available:false) so the admin/user can see the intended roadmap instead of the option
-// silently not existing, and can be filled in once a working code/source is confirmed.
-const WATCH_INDEX_CATALOG = [
-  { code: "000300", name: "沪深300", market: "CN", available: true },
-  { code: "930713", name: "中证人工智能主题指数", market: "CN", available: true },
-  { code: "000685", name: "上证科创板芯片指数", market: "CN", available: true },
-  { code: null, name: "纳指成份股", market: "US", available: false },
-  { code: null, name: "中证机器人指数", market: "CN", available: false },
-  { code: null, name: "深证人工智能50指数", market: "CN", available: false },
-  { code: null, name: "国证芯片指数", market: "CN", available: false },
-];
-const WATCH_INDEX_BY_CODE = new Map(
-  WATCH_INDEX_CATALOG.filter((entry) => entry.available).map((entry) => [entry.code, entry])
-);
-
-function handleWatchAlertIndexesApi(req, res) {
-  if (req.method !== "GET") {
-    sendJson(res, 405, { error: "Method not allowed" });
-    return;
+// The list of indices a "指数盯盘" watch can target now lives in the index_catalog DB table
+// (scripts/shared/index-catalog.js) instead of a hardcoded array here — see that file's
+// header comment for why (queryable directly, single source of truth shared with
+// run-watch-alerts.js's per-cycle constituent re-resolution).
+async function handleWatchAlertIndexesApi(req, res) {
+  try {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    await ensureDbReady();
+    sendJson(res, 200, { indexes: await listIndexCatalog(dbPool) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取指数列表失败。" });
   }
-  sendJson(res, 200, { indexes: WATCH_INDEX_CATALOG });
 }
 
 // "设置盯盘提醒": a user configures a persistent (model, stock, check-frequency) watch;
@@ -2957,28 +2947,23 @@ async function handleWatchAlertsApi(req, res) {
       }
 
       if (indexCode) {
-        // 指数盯盘: watches an entire index's constituent list instead of one symbol —
+        // 指数盯盘: watches an entire index's constituent list instead of one symbol. The
+        // payload field is still called indexCode for wire-format continuity, but the VALUE is
+        // an index_catalog.mapping_id (e.g. "CSI300"), not a raw numeric index code — the
+        // actual AKShare code lives in index_catalog and can change without touching watch rows.
         // scripts/universe/run-watch-alerts.js re-resolves the CURRENT membership every check
-        // cycle rather than freezing it here, so only a small whitelist of AKShare-resolvable
-        // indices (WATCH_INDEX_CATALOG) is offered, never an arbitrary index code.
-        const indexEntry = WATCH_INDEX_BY_CODE.get(indexCode);
-        if (!indexEntry) {
-          sendJson(res, 400, { error: "不支持的指数，或者这个指数的成分股数据源还没接入。" });
-          return;
-        }
-        // Prove the index is actually resolvable right now, the same way a single-symbol watch
-        // proves its stock code exists via a live kline fetch — not a cached assumption.
-        let liveIndexName = indexEntry.name;
+        // cycle rather than freezing it here.
+        const indexMappingId = indexCode;
+        let resolved;
         try {
-          const constituents = await runAkshareBridge("index_cons", { indexCode });
-          if (!constituents || !Array.isArray(constituents.rows) || constituents.rows.length === 0) {
-            throw new Error("empty constituent list");
-          }
-          liveIndexName = constituents.indexName || indexEntry.name;
+          // Prove the index is actually resolvable right now, the same way a single-symbol
+          // watch proves its stock code exists via a live kline fetch — not a cached assumption.
+          resolved = await resolveIndexConstituents(dbPool, indexMappingId);
         } catch (error) {
-          sendJson(res, 400, { error: "无法获取该指数的成分股列表，请稍后再试。" });
+          sendJson(res, 400, { error: error.message || "无法获取该指数的成分股列表，请稍后再试。" });
           return;
         }
+        const indexEntry = resolved.entry;
 
         const id = randomId("watch");
         const result = await dbQuery(`
@@ -2993,7 +2978,7 @@ async function handleWatchAlertsApi(req, res) {
             last_error = '',
             updated_at = NOW()
           RETURNING *
-        `, [id, ownerUserId, user.email, presetId, presetRow.label, indexCode, liveIndexName, indexEntry.market, frequencyMinutes]);
+        `, [id, ownerUserId, user.email, presetId, presetRow.label, indexMappingId, indexEntry.officialName, indexEntry.market, frequencyMinutes]);
         sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
         return;
       }
