@@ -53,8 +53,6 @@ const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
 const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
-const OWNER_USER_ID = getArgString("ownerUserId") || null;
-const OWNER_EMAIL = getArgString("ownerEmail") || "";
 const SHOULD_SAVE = args.includes("--save");
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
@@ -251,15 +249,11 @@ async function main() {
           const label = reachedTarget
             ? `AI验证达标·${symbolEntry.code}·+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`
             : `AI搜索中·${symbolEntry.code}·当前最佳+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`;
-          const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
-            name,
-            config: bestByTest.best.config,
-            label,
-            targetSymbol: symbolEntry.code,
-            originalText: bestByTest.model.reason || "",
-            ownerUserId: OWNER_USER_ID,
-            ownerEmail: OWNER_EMAIL,
-          });
+          // This candidate never touches strategy_presets — it only ever lives in
+          // optimization_scan_results (see that file's header comment). presetId is just an
+          // internal candidate-pool key, not a real strategy_presets.id; a human promotes it
+          // into a real model via the admin panel's "另存为" button when it's worth keeping.
+          const presetId = name;
           await saveOptimizationResult(pool, {
             symbol: symbolEntry.code,
             market: dbMarket,
@@ -288,6 +282,8 @@ async function main() {
             trainStartDate,
             testStartDate,
             reachedTarget,
+            source: "validated-search",
+            modelReason: bestByTest.model.reason || "",
           });
           saved += 1;
           console.log(`[saved] ${symbolEntry.code}: ${presetId} ${reachedTarget ? "(TARGET MET)" : "(best-so-far, below target)"}`);

@@ -1,14 +1,24 @@
-// Owns the optimization_scan_results table — one row per (symbol, market, preset). Shared by
-// run-optimization-scan.js (re-optimizing existing presets) and run-auto-generate.js (a newly
-// AI-generated preset gets a row here too, right after it's saved), so both pipelines' results
-// live in one place with one schema instead of AI自动生成 only ever showing up as text baked
-// into a preset's label.
+// Owns the optimization_scan_results table — one row per (symbol, market, preset).
+// run-optimization-scan.js writes rows here for existing, already-promoted strategy_presets
+// (preset_id is a real strategy_presets.id in that case). run-auto-generate.js and
+// search-validated-best.js ALSO write here, but for THEM this table is the entire home of
+// their candidate results — they never touch strategy_presets at all (that table is reserved
+// for manually-curated/explicitly-promoted models); preset_id for their rows is just an
+// internal candidate-pool key (e.g. `ai_validated_NET_20260827`), not a real FK. The `source`
+// column distinguishes which of the two AI scripts a row came from ('auto-generate' /
+// 'validated-search'); rows from run-optimization-scan.js leave it blank.
 //
 // Since the train/test methodology change (see scripts/shared/train-test-window.js), the
 // existing baseline_return_rate/best_return_rate/buy_hold_return_rate/rows_tested columns are
 // computed from the TRAIN window slice, not the whole history — same columns, new meaning,
 // no rename (this file's callers just feed them different input than before). New columns
 // hold the out-of-sample TEST-window numbers plus the annualized figures used for ranking.
+
+const crypto = require("crypto");
+
+function randomId(prefix) {
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
+}
 
 async function ensureResultsTable(pool) {
   await pool.query(`
@@ -47,11 +57,18 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_start_date DATE;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_start_date DATE;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS reached_target BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS model_reason TEXT NOT NULL DEFAULT '';
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS numeric_id BIGSERIAL;
   `);
 }
 
 async function saveOptimizationResult(pool, row) {
-  const id = `scan_${row.symbol}_${row.market}_${row.presetId}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  // id is only ever looked up by (symbol, market, preset_id) via the UNIQUE constraint below —
+  // never used as the ON CONFLICT target itself — so a fresh opaque id per first-insert (never
+  // recomputed from symbol/market/presetId) is a safe drop-in replacement for the old
+  // business-derived string.
+  const id = randomId("scan");
   await pool.query(`
     INSERT INTO optimization_scan_results (
       id, symbol, market, symbol_name, preset_id, preset_label, strategy_type, rows_tested,
@@ -60,9 +77,9 @@ async function saveOptimizationResult(pool, row) {
       buy_hold_return_rate, buy_hold_max_drawdown,
       train_annualized_return, test_return_rate, test_max_drawdown, test_annualized_return,
       test_trades, test_rows_tested, annualized_diff, train_start_date, test_start_date,
-      reached_target, scanned_at
+      reached_target, source, model_reason, scanned_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW())
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
       preset_label = EXCLUDED.preset_label,
@@ -88,6 +105,8 @@ async function saveOptimizationResult(pool, row) {
       train_start_date = EXCLUDED.train_start_date,
       test_start_date = EXCLUDED.test_start_date,
       reached_target = EXCLUDED.reached_target,
+      source = EXCLUDED.source,
+      model_reason = EXCLUDED.model_reason,
       scanned_at = NOW()
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
@@ -96,7 +115,7 @@ async function saveOptimizationResult(pool, row) {
     row.buyHoldReturnRate, row.buyHoldMaxDrawdown,
     row.trainAnnualizedReturn, row.testReturnRate, row.testMaxDrawdown, row.testAnnualizedReturn,
     row.testTrades, row.testRowsTested, row.annualizedDiff, row.trainStartDate, row.testStartDate,
-    Boolean(row.reachedTarget),
+    Boolean(row.reachedTarget), row.source || "", row.modelReason || "",
   ]);
 }
 

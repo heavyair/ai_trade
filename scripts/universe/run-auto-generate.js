@@ -78,11 +78,6 @@ const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
 const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
-// Whoever triggered this run (the logged-in admin — only admins can reach the trigger
-// endpoint) owns the resulting presets, same as any other saved preset in this app. Falls
-// back to an ownerless/global preset only if this was invoked by hand without these args.
-const OWNER_USER_ID = getArgString("ownerUserId") || null;
-const OWNER_EMAIL = getArgString("ownerEmail") || "";
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
@@ -312,15 +307,11 @@ async function main() {
           ? `${savedAnnualized >= 0 ? "+" : ""}${savedAnnualized.toFixed(1)}%年化`
           : `${bestQualifying.best.last.returnRate.toFixed(1)}%`;
         const label = `AI自动·${symbolEntry.code}·${returnLabel}·${dateSlug}`;
-        const presetId = await ModelGenerator.saveGeneratedPreset(pool, {
-          name,
-          config: bestQualifying.best.config,
-          label,
-          targetSymbol: symbolEntry.code,
-          originalText: bestQualifying.model.reason || "",
-          ownerUserId: OWNER_USER_ID,
-          ownerEmail: OWNER_EMAIL,
-        });
+        // This candidate never touches strategy_presets — it only ever lives in
+        // optimization_scan_results (see that file's header comment). presetId here is just an
+        // internal candidate-pool key, not a real strategy_presets.id; a human promotes it into
+        // a real model via the admin panel's "另存为" button when they decide it's worth keeping.
+        const presetId = name;
 
         // Out-of-sample: run the EXACT winning config (unchanged) against the test window,
         // which neither the AI nor the parameter search ever saw — then record both periods'
@@ -361,6 +352,8 @@ async function main() {
           annualizedDiff,
           trainStartDate,
           testStartDate,
+          source: "auto-generate",
+          modelReason: bestQualifying.model.reason || "",
         });
 
         console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType}, train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)})`);

@@ -948,6 +948,13 @@ function sanitizeStoredPreset(name, preset) {
       isPublic: Boolean(preset.meta && preset.meta.isPublic),
       isLegacy: Boolean(preset.meta && preset.meta.isLegacy),
       originalModelId: String(preset.meta && preset.meta.originalModelId || "0").slice(0, 120),
+      // A readable snapshot of the source model's own name/id at the moment this preset was
+      // 另存为'd from an AI candidate — AI candidates live in a table that gets cleared out
+      // periodically, so this can't be a live lookup; it has to be captured once, here.
+      originalModelLabel: String(preset.meta && preset.meta.originalModelLabel || "").slice(0, 100),
+      originalModelNumericId: preset.meta && preset.meta.originalModelNumericId !== undefined && preset.meta.originalModelNumericId !== null
+        ? Number(preset.meta.originalModelNumericId)
+        : null,
     },
   };
 }
@@ -972,18 +979,6 @@ function saveCustomStrategyPresets() {
   const customPresets = Object.fromEntries(
     Object.entries(strategyPresets).filter(([name]) => isOwnedEditablePreset(name))
   );
-  const usedLabels = new Map();
-  for (const [name, preset] of Object.entries(customPresets)) {
-    const label = String(preset && preset.label || name).trim();
-    if (!validateVisiblePresetLabel(label, name)) return Promise.resolve(false);
-    const normalizedLabel = normalizePresetLabel(label);
-    const existingName = usedLabels.get(normalizedLabel);
-    if (existingName && existingName !== name) {
-      setStatus(`模型名称“${label}”在自定义模型中重复，请先重命名。`, true);
-      return Promise.resolve(false);
-    }
-    usedLabels.set(normalizedLabel, name);
-  }
   return saveServerCustomStrategyPresets(customPresets).then((payload) => {
     if (!payload) return false;
     localStorage.setItem(customPresetStorageKey, JSON.stringify(customPresets));
@@ -1036,27 +1031,6 @@ function normalizeCustomPresetMap(presets) {
     if (key && safePreset) next[key] = safePreset;
     return next;
   }, {});
-}
-
-function normalizePresetLabel(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function findPresetNameByLabel(label, excludeName = "") {
-  const normalizedLabel = normalizePresetLabel(label);
-  if (!normalizedLabel) return "";
-  const match = Object.entries(strategyPresets).find(([name, preset]) => (
-    name !== excludeName && normalizePresetLabel(preset && preset.label) === normalizedLabel
-  ));
-  return match ? match[0] : "";
-}
-
-function validateVisiblePresetLabel(label, excludeName = "") {
-  const duplicateName = findPresetNameByLabel(label, excludeName);
-  if (!duplicateName) return true;
-  const duplicate = strategyPresets[duplicateName];
-  setStatus(`模型名称“${label}”已经存在：${duplicate && duplicate.label ? duplicate.label : duplicateName}。请换一个全局唯一名称。`, true);
-  return false;
 }
 
 function getCurrentCustomPresets() {
@@ -1334,9 +1308,18 @@ function renderAdminPresetCard(preset, presets) {
   const isOrigin = originalModelId === "0";
   const isHidden = Boolean(preset.hiddenAt);
   const rootPreset = !isOrigin ? presets.find((item) => item.id === originalModelId) : null;
+  // originalModelId can point at an optimization_scan_results row (from 另存为 on an AI
+  // candidate) instead of a strategy_presets row — that table gets cleared out periodically,
+  // so rootPreset legitimately won't resolve forever. Fall back to the readable snapshot
+  // captured at 另存为 time (meta.originalModelLabel/originalModelNumericId) instead of
+  // showing the raw dangling id string.
+  const meta = preset.meta && typeof preset.meta === "object" ? preset.meta : {};
+  const fallbackLabel = meta.originalModelLabel
+    ? `${meta.originalModelNumericId ? `#${meta.originalModelNumericId} · ` : ""}${meta.originalModelLabel}`
+    : originalModelId;
   const lineageText = (isOrigin
     ? "原始手工模型"
-    : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(originalModelId)}`)
+    : `衍生自：${rootPreset ? escapeHtml(rootPreset.label || rootPreset.name) : escapeHtml(fallbackLabel)}`)
     + (isOrigin ? (isHidden ? " · 已隐藏，不参与后台批量扫描" : " · 纳入后台批量扫描") : (isHidden ? " · 已隐藏" : ""));
   const rootOptionIds = presets
     .filter((item) => String(item.originalModelId || "0") === "0" && item.id !== preset.id)
@@ -1886,7 +1869,6 @@ async function saveAdminScanRecordAsPreset(scanId) {
     setStatus("模型名称不能为空。", true);
     return;
   }
-  if (!validateVisiblePresetLabel(trimmed)) return;
   const preset = createPresetFromConfig(trimmed, record.bestConfig || {}, {
     targetSymbol: record.symbol,
     creator: "auto",
@@ -2772,6 +2754,8 @@ function openAiGeneratedParamViewer(presetId, record, sourceLabel) {
     meta: {
       targetSymbol: record.targetSymbol,
       originalText: record.reason || "",
+      originalModelLabel: record.label,
+      originalModelNumericId: record.numericId,
     },
   };
   openPresetParamEditor(presetId, {
@@ -3926,7 +3910,6 @@ async function saveAdminValidationCandidateAsPreset(sourceScanResultId) {
     setStatus("模型名称不能为空。", true);
     return;
   }
-  if (!validateVisiblePresetLabel(trimmed)) return;
   const preset = createPresetFromConfig(trimmed, candidate.bestConfig || {}, {
     targetSymbol: candidate.originSymbol,
     creator: "auto",
@@ -4267,13 +4250,15 @@ async function hideOwnedPreset(name, label) {
   if (!name || !isOwnedEditablePreset(name)) return;
   const ok = window.confirm(`确定删除模型"${label || name}"？`);
   if (!ok) return;
+  const presetId = strategyPresets[name] && strategyPresets[name].id;
+  if (!presetId) return;
   try {
     const response = await fetch("/api/presets", {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ name, hidden: true }),
+      body: JSON.stringify({ id: presetId, hidden: true }),
     });
     await readJsonResponse(response, "删除模型失败。");
     delete strategyPresets[name];
@@ -8276,7 +8261,6 @@ async function renameOwnedPreset(name) {
     return;
   }
   if (trimmed === preset.label) return;
-  if (!validateVisiblePresetLabel(trimmed, name)) return;
   strategyPresets[name] = {
     ...preset,
     label: trimmed,
@@ -8925,6 +8909,8 @@ function openPresetParamEditor(presetName, options = {}) {
     defaultLabel: options.saveDefaultLabel || preset.label || presetName || "模型",
     originalText: (preset.meta && (preset.meta.originalText || preset.meta.modelText)) || "",
     originalModelId: presetName || (preset.meta && preset.meta.originalModelId) || "0",
+    originalModelLabel: (preset.meta && preset.meta.originalModelLabel) || preset.label || "",
+    originalModelNumericId: preset.meta && preset.meta.originalModelNumericId !== undefined ? preset.meta.originalModelNumericId : null,
   } : null;
   const strategyTypeForForm = preset.strategyType || "wave";
   const isBlockRules = strategyTypeForForm === "block-rules";
@@ -9016,15 +9002,20 @@ async function saveEditedPresetParameters() {
 
   let savedName = editingPresetName;
   if (isOwnedEditablePreset(editingPresetName)) {
-    if (!validateVisiblePresetLabel(nextPreset.label, editingPresetName)) return;
     strategyPresets[editingPresetName] = nextPreset;
   } else {
     savedName = `custom_${Date.now()}`;
     const userRenamedPreset = nextPreset.label !== existingLabel;
     const copiedLabel = userRenamedPreset ? nextPreset.label : `${nextPreset.label} 本地修改`;
-    if (!validateVisiblePresetLabel(copiedLabel)) return;
     strategyPresets[savedName] = {
       ...nextPreset,
+      // Forking someone else's (or a public/legacy) preset must save as a genuinely new row —
+      // explicitly drop the source preset's id so the server can't mistake this for an edit of
+      // that original row (it also falls through safely server-side even without this, since
+      // upsertPreset's ownership check on the id would reject the mismatch, but being explicit
+      // here means "this is a new save" is clear at the call site, not just an emergent
+      // property of the ownership guard).
+      id: undefined,
       label: copiedLabel,
       meta: {
         ...nextPreset.meta,
@@ -9303,7 +9294,6 @@ async function saveGeneratedPreset(preset) {
     setStatus("模型内容无效，无法保存。", true);
     return null;
   }
-  if (!validateVisiblePresetLabel(safePreset.label)) return null;
   safePreset.meta.isOwner = true;
   safePreset.meta.isPublic = false;
   strategyPresets[presetName] = safePreset;
@@ -12257,7 +12247,6 @@ if (saveAsNewPresetButton) {
       setStatus("模型名称不能为空。", true);
       return;
     }
-    if (!validateVisiblePresetLabel(trimmed)) return;
     const preset = createPresetFromConfig(trimmed, source.config, {
       targetSymbol: source.targetSymbol,
       creator: "auto",
@@ -12265,6 +12254,8 @@ if (saveAsNewPresetButton) {
       updatedAt: todayText(),
       originalText: source.originalText || `另存自：${source.defaultLabel}`,
       originalModelId: source.originalModelId,
+      originalModelLabel: source.originalModelLabel,
+      originalModelNumericId: source.originalModelNumericId,
     });
     const presetName = await saveGeneratedPreset(preset);
     if (presetName) {

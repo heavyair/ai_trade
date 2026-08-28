@@ -145,12 +145,12 @@ async function initializeDatabase() {
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS model_text TEXT NOT NULL DEFAULT '';
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
 
-    CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_user_name_idx
-      ON strategy_presets(owner_user_id, name)
-      WHERE owner_user_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS strategy_presets_legacy_name_idx
-      ON strategy_presets(name)
-      WHERE owner_user_id IS NULL;
+    -- name/label are just display text now, not identity — id (an opaque randomId("preset"),
+    -- never recomputed from owner+name) is the only thing that has to stay unique. Dropped in
+    -- favor of allowing legitimate repeats (e.g. two different symbols' AI search results
+    -- landing on the same rounded label text).
+    DROP INDEX IF EXISTS strategy_presets_user_name_idx;
+    DROP INDEX IF EXISTS strategy_presets_legacy_name_idx;
 
     CREATE TABLE IF NOT EXISTS ranking_records (
       key TEXT PRIMARY KEY,
@@ -409,8 +409,6 @@ async function initializeDatabase() {
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_trades JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_updated_at TIMESTAMPTZ;
   `);
-
-  await normalizeExistingPresetLabels();
 }
 
 function sendJson(res, statusCode, payload) {
@@ -792,6 +790,14 @@ function sanitizeServerPreset(name, preset) {
       // was derived from (via 优化参数保存 or admin 另存为模型), propagated transitively
       // so a multi-generation derivation chain still collapses to a single root id.
       originalModelId: String(meta.originalModelId || "0").slice(0, 120),
+      // Readable snapshot of the source's own label/numericId, captured once at 另存为 time —
+      // needed because a promoted-from-AI-candidate preset's originalModelId points at an
+      // optimization_scan_results row, a table that gets cleared periodically, so a live
+      // lookup can't be relied on to ever resolve a friendly name later.
+      originalModelLabel: String(meta.originalModelLabel || "").slice(0, 100),
+      originalModelNumericId: meta.originalModelNumericId !== undefined && meta.originalModelNumericId !== null
+        ? Number(meta.originalModelNumericId)
+        : null,
     },
   };
 }
@@ -800,83 +806,9 @@ function buildPresetConfigPayload(preset) {
   const config = { ...(preset || {}) };
   delete config.label;
   delete config.meta;
+  delete config.id;
+  delete config.numericId;
   return config;
-}
-
-function normalizePresetLabel(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function cleanPresetDisplayLabel(label, meta = {}) {
-  let text = String(label || "").trim();
-  const targetSymbol = String(meta && meta.targetSymbol || "").trim();
-  if (targetSymbol && targetSymbol !== "通用") {
-    text = text.replace(new RegExp(targetSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ");
-  }
-  text = text
-    .replace(/本地修改|优化参数/g, " ")
-    .replace(/\b\d{6}\b/g, " ")
-    .replace(/\b(?:513100|588000|000651|NET|QQQ|AMD)\b/gi, " ")
-    .replace(/[＊*|_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/^[\s\-·,，:：]+|[\s\-·,，:：]+$/g, "")
-    .trim();
-  return text || "模型";
-}
-
-async function normalizeExistingPresetLabels() {
-  const result = await dbPool.query(`
-    SELECT id, label, meta, created_at
-    FROM strategy_presets
-    ORDER BY lower(label), created_at, id
-  `);
-  const rows = result.rows.map((row) => ({
-    ...row,
-    baseLabel: cleanPresetDisplayLabel(row.label, row.meta && typeof row.meta === "object" ? row.meta : {}),
-  }));
-  const counts = rows.reduce((next, row) => {
-    const key = normalizePresetLabel(row.baseLabel);
-    next.set(key, (next.get(key) || 0) + 1);
-    return next;
-  }, new Map());
-  const seenByBase = new Map();
-  const usedLabels = new Set();
-
-  for (const row of rows) {
-    const baseKey = normalizePresetLabel(row.baseLabel);
-    const duplicateCount = counts.get(baseKey) || 0;
-    const nextIndex = (seenByBase.get(baseKey) || 0) + 1;
-    seenByBase.set(baseKey, nextIndex);
-
-    let nextLabel = duplicateCount > 1 ? `${row.baseLabel} ${nextIndex}` : row.baseLabel;
-    let suffix = nextIndex;
-    while (usedLabels.has(normalizePresetLabel(nextLabel))) {
-      suffix += 1;
-      nextLabel = `${row.baseLabel} ${suffix}`;
-    }
-    usedLabels.add(normalizePresetLabel(nextLabel));
-
-    if (nextLabel !== row.label) {
-      await dbPool.query("UPDATE strategy_presets SET label = $1, updated_at = NOW() WHERE id = $2", [nextLabel, row.id]);
-    }
-  }
-}
-
-async function assertPresetLabelGloballyUnique(label, presetId) {
-  const normalizedLabel = normalizePresetLabel(label);
-  if (!normalizedLabel) return;
-  const result = await dbPool.query(`
-    SELECT id, label
-    FROM strategy_presets
-    WHERE lower(label) = lower($1)
-      AND id <> $2
-    LIMIT 1
-  `, [label, presetId || ""]);
-  if (result.rows.length > 0) {
-    const error = new Error(`模型名称“${label}”已经存在，请换一个全局唯一的名称。`);
-    error.statusCode = 409;
-    throw error;
-  }
 }
 
 function readCustomPresets() {
@@ -891,33 +823,6 @@ function normalizePresetMap(presets) {
     if (key && safePreset) next[key] = safePreset;
     return next;
   }, {});
-}
-
-function assertIncomingPresetLabelsUnique(incoming) {
-  const labels = new Map();
-  Object.entries(incoming || {}).forEach(([name, preset]) => {
-    const key = normalizePresetKey(name);
-    const safePreset = sanitizeServerPreset(key, preset);
-    if (!key || !safePreset) return;
-    const labelKey = normalizePresetLabel(safePreset.label);
-    const existingName = labels.get(labelKey);
-    if (existingName && existingName !== key) {
-      const error = new Error(`模型名称“${safePreset.label}”在本次保存中重复，请先重命名。`);
-      error.statusCode = 409;
-      throw error;
-    }
-    labels.set(labelKey, key);
-  });
-}
-
-async function assertIncomingPresetLabelsGloballyUnique(incoming, ownerUserId) {
-  for (const [name, preset] of Object.entries(incoming || {})) {
-    const key = normalizePresetKey(name);
-    const safePreset = sanitizeServerPreset(key, preset);
-    if (!key || !safePreset) continue;
-    const presetId = ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`;
-    await assertPresetLabelGloballyUnique(safePreset.label, presetId);
-  }
 }
 
 function normalizeEmail(value) {
@@ -990,43 +895,58 @@ async function ensureImportedUser(email) {
   return id;
 }
 
+// Identity here is the row's opaque `id` (randomId("preset") on first insert), never
+// recomputed from owner+name — that's what let a rename/re-own require rewriting the primary
+// key, and let two saves that happened to produce the same owner+name collide. A preset object
+// carrying its own real `.id` (sanitizeStoredPreset/sanitizeServerPreset preserve it through
+// every edit round-trip) means "update this exact row"; no matching row (missing id, or an id
+// that doesn't belong to this owner — e.g. echoed back from a read-only view of someone else's
+// preset) means "insert a new one" rather than erroring or hijacking another row.
 async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options = {}) {
   const key = normalizePresetKey(name);
   const safePreset = sanitizeServerPreset(key, preset);
-  if (!key || !safePreset) return;
-  const presetId = ownerUserId ? `preset_${ownerUserId}_${key}` : `preset_legacy_${key}`;
-  if (options.enforceLabelUnique !== false) {
-    await assertPresetLabelGloballyUnique(safePreset.label, presetId);
-  }
+  if (!key || !safePreset) return null;
   const configPayload = buildPresetConfigPayload(safePreset);
+  const meta = safePreset.meta || {};
+  const existingId = preset && typeof preset.id === "string" && preset.id ? preset.id : null;
+
+  if (existingId) {
+    const updated = await dbPool.query(`
+      UPDATE strategy_presets
+      SET name = $2, label = $3, strategy_type = $4, config = $5::jsonb, meta = $6::jsonb,
+          original_text = COALESCE(NULLIF(strategy_presets.original_text, ''), $7),
+          model_text = $8, is_legacy = $9, original_model_id = $10, updated_at = NOW()
+      WHERE id = $1 AND ((owner_user_id = $11::text) OR (owner_user_id IS NULL AND $11::text IS NULL))
+      RETURNING id
+    `, [
+      existingId, key, safePreset.label, safePreset.strategyType, JSON.stringify(configPayload),
+      JSON.stringify(meta), meta.originalText || "", meta.modelText || "", Boolean(isLegacy),
+      meta.originalModelId || "0", ownerUserId,
+    ]);
+    if (updated.rows.length > 0) return updated.rows[0].id;
+    // id present but not this caller's own row — fall through to inserting a fresh one.
+  }
+
+  const newId = randomId("preset");
   await dbPool.query(`
     INSERT INTO strategy_presets (
       id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, original_model_id, created_at, updated_at
     )
     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, NOW(), NOW())
-    ON CONFLICT (id) DO UPDATE
-      SET label = EXCLUDED.label,
-          strategy_type = EXCLUDED.strategy_type,
-          config = EXCLUDED.config,
-          meta = EXCLUDED.meta,
-          original_text = COALESCE(NULLIF(strategy_presets.original_text, ''), EXCLUDED.original_text),
-          model_text = EXCLUDED.model_text,
-          is_legacy = EXCLUDED.is_legacy,
-          original_model_id = EXCLUDED.original_model_id,
-          updated_at = NOW()
   `, [
-    presetId,
+    newId,
     ownerUserId,
     key,
     safePreset.label,
     safePreset.strategyType,
     JSON.stringify(configPayload),
-    JSON.stringify(safePreset.meta || {}),
-    safePreset.meta && safePreset.meta.originalText ? safePreset.meta.originalText : "",
-    safePreset.meta && safePreset.meta.modelText ? safePreset.meta.modelText : "",
+    JSON.stringify(meta),
+    meta.originalText || "",
+    meta.modelText || "",
     Boolean(isLegacy),
-    safePreset.meta && safePreset.meta.originalModelId ? safePreset.meta.originalModelId : "0",
+    meta.originalModelId || "0",
   ]);
+  return newId;
 }
 
 function presetRowsToMap(rows) {
@@ -1516,7 +1436,7 @@ function writeRankingRecords(records) {
 async function upsertRankingRecord(record, ownerUserId = null) {
   const safeRecord = sanitizeServerRankingRecord(record);
   if (!safeRecord) return;
-  const presetId = ownerUserId ? `preset_${ownerUserId}_${safeRecord.presetName}` : safeRecord.presetId || null;
+  const presetId = safeRecord.presetId || null;
   await dbPool.query(`
     INSERT INTO ranking_records (
       key, owner_user_id, symbol, symbol_name, period_years, period_label, start_date, end_date,
@@ -1664,12 +1584,11 @@ async function handlePresetsApi(req, res) {
       const userId = userIdForEmail(user.email);
       const body = await readRequestBody(req);
       const payload = body ? JSON.parse(body) : {};
-      const key = normalizePresetKey(payload.name);
-      if (!key) {
-        sendJson(res, 400, { error: "缺少模型名称。" });
+      const presetId = String(payload.id || "").trim();
+      if (!presetId) {
+        sendJson(res, 400, { error: "缺少模型 id。" });
         return;
       }
-      const presetId = `preset_${userId}_${key}`;
       const hidden = Boolean(payload.hidden);
       const result = await dbQuery(`
         UPDATE strategy_presets
@@ -1690,12 +1609,11 @@ async function handlePresetsApi(req, res) {
       const userId = userIdForEmail(user.email);
       const body = await readRequestBody(req);
       const payload = body ? JSON.parse(body) : {};
-      const key = normalizePresetKey(payload.name);
-      if (!key) {
-        sendJson(res, 400, { error: "缺少模型名称。" });
+      const presetId = String(payload.id || "").trim();
+      if (!presetId) {
+        sendJson(res, 400, { error: "缺少模型 id。" });
         return;
       }
-      const presetId = `preset_${userId}_${key}`;
       const result = await dbQuery(`
         DELETE FROM strategy_presets
         WHERE id = $1 AND owner_user_id = $2
@@ -1722,8 +1640,6 @@ async function handlePresetsApi(req, res) {
       : {};
     const userId = userIdForEmail(user.email);
 
-    assertIncomingPresetLabelsUnique(incoming);
-    await assertIncomingPresetLabelsGloballyUnique(incoming, userId);
     for (const [name, preset] of Object.entries(incoming)) {
       await upsertPreset(userId, name, preset, false);
     }
@@ -1925,43 +1841,22 @@ async function handleAdminPresetsApi(req, res) {
         sendJson(res, 400, { error: "缺少 owner。" });
         return;
       }
-      const current = await dbQuery("SELECT id, name FROM strategy_presets WHERE id = $1", [id]);
-      if (current.rows.length === 0) {
-        sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
-        return;
-      }
       const ownerUserId = owner.toLowerCase() === PUBLIC_OWNER_LABEL
         ? null
         : await ensureImportedUser(owner);
-      const name = current.rows[0].name;
-      const nextId = ownerUserId ? `preset_${ownerUserId}_${name}` : `preset_legacy_${name}`;
-      const idConflict = await dbQuery("SELECT id FROM strategy_presets WHERE id = $1 AND id <> $2 LIMIT 1", [nextId, id]);
-      if (idConflict.rows.length > 0) {
-        sendJson(res, 409, { error: "目标 owner 下的模型 ID 已经存在，请先删除冲突模型。" });
-        return;
-      }
-      const conflict = await dbQuery(`
-        SELECT id
-        FROM strategy_presets
-        WHERE name = $1
-          AND id <> $2
-          AND (($3::text IS NULL AND owner_user_id IS NULL) OR owner_user_id = $3)
-        LIMIT 1
-      `, [name, id, ownerUserId]);
-      if (conflict.rows.length > 0) {
-        sendJson(res, 409, { error: "目标 owner 下已经存在同 key 模型，请先重命名或删除冲突模型。" });
-        return;
-      }
+      // id is opaque now — never encodes the owner — so reassigning ownership is just a plain
+      // field update, no primary-key rewrite, no conflict-checking, no need to re-point
+      // ranking_records (it was never referencing the id by FK anyway).
       const updated = await dbQuery(`
         UPDATE strategy_presets
-        SET id = $1,
-            owner_user_id = $2,
-            is_legacy = FALSE,
-            updated_at = NOW()
-        WHERE id = $3
+        SET owner_user_id = $1, is_legacy = FALSE, updated_at = NOW()
+        WHERE id = $2
         RETURNING id
-      `, [nextId, ownerUserId, id]);
-      await dbQuery("UPDATE ranking_records SET preset_id = $1 WHERE preset_id = $2", [nextId, id]);
+      `, [ownerUserId, id]);
+      if (updated.rows.length === 0) {
+        sendJson(res, 404, { error: "模型不存在，可能已经删除。" });
+        return;
+      }
       sendJson(res, 200, { updated: updated.rows[0], owner: ownerUserId ? owner : PUBLIC_OWNER_LABEL });
       return;
     }
@@ -2560,62 +2455,41 @@ async function handleAdminOptimizationScanStatusApi(req, res) {
 // search-validated-best.js uses `ai_validated_<symbol>_<date>` (see saveGeneratedPreset's
 // `preset_<ownerUserId>_<normalizePresetKey(name)>` id convention) — pass exactly one of
 // idLikePattern/idExcludePattern to pick a side, otherwise the two admin panels' lists overlap.
-async function queryAiGeneratedPresets({ idLikePattern, idExcludePattern }) {
+async function queryAiGeneratedPresets({ source }) {
   const hasResultsTable = await dbQuery(`
     SELECT 1 FROM information_schema.tables WHERE table_name = 'optimization_scan_results'
   `);
-  const filterSql = idExcludePattern
-    ? `sp.meta->>'creator' = 'ai-auto' AND sp.id NOT LIKE $1`
-    : `sp.meta->>'creator' = 'ai-auto' AND sp.id LIKE $1`;
-  const filterParam = idExcludePattern || idLikePattern;
-  // LEFT JOIN (not INNER) so a preset that hasn't made it into optimization_scan_results
-  // yet still shows up instead of silently disappearing — its train/test fields just come
-  // back as defaults below. Also joined on osr.symbol = the preset's OWN targetSymbol, not
-  // just preset_id — once one of these presets becomes a root model, "对全部模型重新扫描"
-  // scans it against every stock in the universe, leaving MANY optimization_scan_results rows
-  // per preset_id (one per stock); without the symbol match the JOIN fans out into duplicate
-  // rows with mostly-irrelevant numbers — this list should only ever show the one result
-  // that's actually about the stock this model was generated/searched for.
-  const result = hasResultsTable.rows.length > 0
-    ? await dbQuery(`
-      SELECT sp.id, sp.numeric_id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.updated_at,
-        osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff,
-        osr.train_start_date, osr.test_start_date, osr.best_trades, osr.tested_candidates,
-        osr.test_trades, osr.reached_target
-      FROM strategy_presets sp
-      LEFT JOIN optimization_scan_results osr
-        ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
-      WHERE ${filterSql}
-      ORDER BY (osr.train_start_date IS NULL) ASC, osr.reached_target DESC NULLS LAST, osr.test_annualized_return DESC NULLS LAST, sp.updated_at DESC
-      LIMIT 500
-    `, [filterParam])
-    : await dbQuery(`
-      SELECT id, numeric_id, label, strategy_type, config, meta, created_at, updated_at
-      FROM strategy_presets WHERE ${filterSql} ORDER BY updated_at DESC LIMIT 500
-    `, [filterParam]);
-  return result.rows.map((row) => {
-    const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
-    return {
-      id: row.id,
-      numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
-      label: row.label,
-      strategyType: row.strategy_type,
-      bestConfig: row.config && typeof row.config === "object" ? row.config : {},
-      targetSymbol: meta.targetSymbol || "",
-      reason: meta.originalText || "",
-      createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
-      trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
-      testAnnualizedReturn: Number(row.test_annualized_return) || 0,
-      annualizedDiff: Number(row.annualized_diff) || 0,
-      trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
-      testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
-      bestTrades: row.best_trades || 0,
-      testedCandidates: row.tested_candidates || 0,
-      testTrades: row.test_trades || 0,
-      reachedTarget: Boolean(row.reached_target),
-    };
-  });
+  if (hasResultsTable.rows.length === 0) return [];
+  const result = await dbQuery(`
+    SELECT id, numeric_id, symbol, preset_label, strategy_type, best_config, model_reason,
+      train_annualized_return, test_annualized_return, annualized_diff,
+      train_start_date, test_start_date, best_trades, tested_candidates, test_trades, reached_target,
+      scanned_at
+    FROM optimization_scan_results
+    WHERE source = $1
+    ORDER BY (train_start_date IS NULL) ASC, reached_target DESC NULLS LAST, test_annualized_return DESC NULLS LAST, scanned_at DESC
+    LIMIT 500
+  `, [source]);
+  return result.rows.map((row) => ({
+    id: row.id,
+    numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+    label: row.preset_label,
+    strategyType: row.strategy_type,
+    bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+    targetSymbol: row.symbol || "",
+    reason: row.model_reason || "",
+    createdAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
+    updatedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
+    trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+    testAnnualizedReturn: Number(row.test_annualized_return) || 0,
+    annualizedDiff: Number(row.annualized_diff) || 0,
+    trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+    testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
+    bestTrades: row.best_trades || 0,
+    testedCandidates: row.tested_candidates || 0,
+    testTrades: row.test_trades || 0,
+    reachedTarget: Boolean(row.reached_target),
+  }));
 }
 
 // Lists presets scripts/universe/run-auto-generate.js has saved (meta.creator = "ai-auto"),
@@ -2628,7 +2502,7 @@ async function handleAdminAutoGenerateListApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const presets = await queryAiGeneratedPresets({ idExcludePattern: "%ai_validated_%" });
+    const presets = await queryAiGeneratedPresets({ source: "auto-generate" });
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       presets,
@@ -2654,7 +2528,7 @@ async function handleAdminValidatedSearchListApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const presets = await queryAiGeneratedPresets({ idLikePattern: "%ai_validated_%" });
+    const presets = await queryAiGeneratedPresets({ source: "validated-search" });
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       presets,
