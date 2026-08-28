@@ -26,15 +26,18 @@
 //
 // Train/test split (scripts/shared/train-test-window.js): the AI only ever sees the TRAIN
 // window's data profile, and parameter search only ever runs against the TRAIN window — the
-// TEST window (most recent --testYearsAgo years) is never shown to the AI or the optimizer,
-// so its out-of-sample result is a genuine, uncontaminated stability check. The winning
-// model's train/test annualized returns (and their difference) get saved into
+// TEST years (--testYears separate 1-year windows, most recent --testYears years) are never
+// shown to the AI or the optimizer, so their out-of-sample results are a genuine, uncontaminated
+// stability check. Each test year is scored INDEPENDENTLY (never blended into one number) — a
+// model that did great in one year and terrible in the other is not the same as one that was
+// consistently good, and blending would hide that. The winning model's train annualized return
+// and each test year's annualized return (and diff vs train) get saved into
 // optimization_scan_results — the same table run-optimization-scan.js writes — instead of
 // only ever existing as text baked into the saved preset's label.
 //
 // Usage: node scripts/universe/run-auto-generate.js [--symbols=513100,588000] [--limit=5]
 //   [--maxAttempts=20] [--attemptsPerSymbol=10] [--candidates=400] [--pointCount=5]
-//   [--minTrainRows=200] [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1]
+//   [--minTrainRows=200] [--minTestRows=50] [--trainYears=4] [--testYears=2]
 //   --pointCount (3-10) controls how many discrete values each freshly-discovered parameter
 //   range gets tested at (engine.js's setOptimizationPointCountOverride).
 
@@ -47,7 +50,7 @@ const { searchBestConfig } = require("./search-best-config.js");
 const ModelGenerator = require("../shared/model-generator.js");
 const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
-const { splitTrainTestRows } = require("../shared/train-test-window.js");
+const { splitTrainTestWindows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -75,16 +78,11 @@ const MIN_TRAIN_ROWS = Math.max(30, getArg("minTrainRows", 200));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 // Whole years only — shiftYears (scripts/shared/train-test-window.js) uses Date.setFullYear,
 // which truncates a fractional argument rather than applying it proportionally.
-const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
-const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
+const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
+const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
-
-if (TRAIN_YEARS_AGO <= TEST_YEARS_AGO) {
-  console.error(`usage error: --trainYearsAgo (${TRAIN_YEARS_AGO}) must be greater than --testYearsAgo (${TEST_YEARS_AGO})`);
-  process.exit(1);
-}
 
 // Live progress, polled by server.js's /api/admin/auto-generate status endpoint so the admin
 // panel can show "currently trying model X, attempt N/M" instead of just "running" — same
@@ -162,7 +160,7 @@ async function main() {
   }
   if (SYMBOL_LIMIT > 0) symbols = symbols.slice(0, SYMBOL_LIMIT);
 
-  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO}`);
+  console.log(`symbols=${symbols.length} maxAttempts=${MAX_ATTEMPTS} attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} candidatesPerSymbol=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS}`);
   if (symbols.length === 0) {
     console.log("[warn] no symbols to process (empty --symbols list or empty universe manifest) — exiting without doing anything.");
   }
@@ -215,19 +213,22 @@ async function main() {
         console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before generating`);
       }
       const allRows = await loadRows(symbolEntry.code, dbMarket);
-      const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(allRows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
-      if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
-        console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${testRows.length} (<${MIN_TEST_ROWS}?)`);
+      const { trainRows, trainStartDate, trainEndDate, testWindows } = splitTrainTestWindows(allRows, TRAIN_YEARS, TEST_YEARS);
+      const testWindowRowCounts = testWindows.map(
+        (window) => allRows.filter((row) => row.date >= window.startDate && row.date < window.endDate).length,
+      );
+      if (trainRows.length < MIN_TRAIN_ROWS || testWindowRowCounts.some((count) => count < MIN_TEST_ROWS)) {
+        console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testWindowRows=${testWindowRowCounts.join("/")} (<${MIN_TEST_ROWS}?)`);
         dataSkipped += 1;
-        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testRows.length}行），跳过` });
+        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testWindowRowCounts.join("+")}行），跳过` });
         continue;
       }
 
-      // The AI only ever sees the TRAIN window's profile — the test window must stay
-      // completely unseen by both the model design and the parameter search for its later
-      // out-of-sample result to mean anything.
+      // The AI only ever sees the TRAIN window's profile — the test windows must stay
+      // completely unseen by both the model design and the parameter search for their later
+      // out-of-sample results to mean anything.
       const profile = ModelGenerator.buildSymbolDataProfile(trainRows);
-      console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${testStartDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
+      console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${trainEndDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
 
       engine.setActiveLotSizeSymbol(symbolEntry.code);
       const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
@@ -313,17 +314,24 @@ async function main() {
         // a real model via the admin panel's "另存为" button when they decide it's worth keeping.
         const presetId = name;
 
-        // Out-of-sample: run the EXACT winning config (unchanged) against the test window,
-        // which neither the AI nor the parameter search ever saw — then record both periods'
-        // annualized returns into the SAME results table run-optimization-scan.js writes, so
-        // this model is rankable by "train/test consistency" the same way as any other. Scored
-        // against the FULL history (not just testRows) so rolling-window indicators have real
-        // warmup data instead of being starved by a test window shorter than their own
+        // Out-of-sample: run the EXACT winning config (unchanged) against EACH validation year
+        // separately, which neither the AI nor the parameter search ever saw — then record both
+        // years' annualized returns into the SAME results table run-optimization-scan.js writes,
+        // so this model is rankable by "train/test consistency" the same way as any other. Scored
+        // against the FULL history (not just the window's own rows) so rolling-window indicators
+        // have real warmup data instead of being starved by a test window shorter than their own
         // lookback — see engine.js's buildScoredBacktestStates comment for why this matters.
-        const scoredTest = engine.buildScoredBacktestStates(allRows, bestQualifying.best.config, testStartDate);
+        const scoredYear1 = engine.buildScoredBacktestStates(
+          allRows, bestQualifying.best.config, testWindows[0].startDate, testWindows[0].endDate,
+        );
+        const scoredYear2 = engine.buildScoredBacktestStates(
+          allRows, bestQualifying.best.config, testWindows[1].startDate, testWindows[1].endDate,
+        );
         const trainAnnualizedReturn = savedAnnualized || 0;
-        const testAnnualizedReturn = annualizedReturnRate(scoredTest.returnRate, scoredTest.rowsScored) || 0;
-        const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
+        const testYear1AnnualizedReturn = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
+        const testYear2AnnualizedReturn = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
+        const annualizedDiffYear1 = Math.abs(testYear1AnnualizedReturn - trainAnnualizedReturn);
+        const annualizedDiffYear2 = Math.abs(testYear2AnnualizedReturn - trainAnnualizedReturn);
 
         await saveOptimizationResult(pool, {
           symbol: symbolEntry.code,
@@ -344,19 +352,29 @@ async function main() {
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
           trainAnnualizedReturn,
-          testReturnRate: scoredTest.returnRate,
-          testMaxDrawdown: scoredTest.maxDrawdown,
-          testAnnualizedReturn,
-          testTrades: scoredTest.trades.length,
-          testRowsTested: scoredTest.rowsScored,
-          annualizedDiff,
+          testYear1ReturnRate: scoredYear1.returnRate,
+          testYear1MaxDrawdown: scoredYear1.maxDrawdown,
+          testYear1AnnualizedReturn,
+          testYear1Trades: scoredYear1.trades.length,
+          testYear1RowsTested: scoredYear1.rowsScored,
+          testYear1StartDate: testWindows[0].startDate,
+          testYear1EndDate: testWindows[0].endDate,
+          testYear2ReturnRate: scoredYear2.returnRate,
+          testYear2MaxDrawdown: scoredYear2.maxDrawdown,
+          testYear2AnnualizedReturn,
+          testYear2Trades: scoredYear2.trades.length,
+          testYear2RowsTested: scoredYear2.rowsScored,
+          testYear2StartDate: testWindows[1].startDate,
+          testYear2EndDate: testWindows[1].endDate,
+          annualizedDiffYear1,
+          annualizedDiffYear2,
           trainStartDate,
-          testStartDate,
+          trainEndDate,
           source: "auto-generate",
           modelReason: bestQualifying.model.reason || "",
         });
 
-        console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType}, train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)})`);
+        console.log(`[saved] ${symbolEntry.code}: ${presetId} (${label}, best of ${previousAttempts.length} attempts, strategyType=${bestQualifying.model.strategyType}, train=${trainAnnualizedReturn.toFixed(1)}%年化 testYear1=${testYear1AnnualizedReturn.toFixed(1)}%年化 testYear2=${testYear2AnnualizedReturn.toFixed(1)}%年化 diff1=${annualizedDiffYear1.toFixed(1)} diff2=${annualizedDiffYear2.toFixed(1)})`);
         saved += 1;
         writeProgress({ saved, currentReason: `已保存：${label}（${bestQualifying.model.strategyType}）` });
       } else if (attemptedAny) {

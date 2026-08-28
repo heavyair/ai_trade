@@ -2059,7 +2059,13 @@ function buildScoreRuleBacktestStates(rows, config) {
 // this, a strategy whose lookback period exceeds the scored window's own row count (e.g. a
 // 357-day moving average measured over a 1-year test window) can never produce a valid
 // signal at all — its 0% "result" would be a warmup artifact, not a real backtest outcome.
-function buildScoredBacktestStates(rows, config, scoringStartDate) {
+//
+// scoringEndDate (optional, exclusive upper bound) bounds the TOP of the window too, so a
+// caller can score a single bounded year out of a multi-year rows array (e.g. "2 years ago to
+// 1 year ago") instead of always scoring open-ended through to the end of rows. Omitting it
+// preserves the original "score to the end of rows" behavior exactly — every existing caller
+// that only ever passed 3 args is unaffected.
+function buildScoredBacktestStates(rows, config, scoringStartDate, scoringEndDate = null) {
   const states = buildBacktestStates(rows, config);
   if (states.length === 0) {
     return {
@@ -2073,20 +2079,27 @@ function buildScoredBacktestStates(rows, config, scoringStartDate) {
     ? states[effectiveStartIndex - 1].equity
     : (Number(config.initialCash) || 0);
 
-  const finalState = states[states.length - 1];
+  let effectiveEndIndex = states.length - 1;
+  if (scoringEndDate) {
+    const endIndex = rows.findIndex((row) => row.date >= scoringEndDate);
+    effectiveEndIndex = endIndex < 0 ? states.length - 1 : Math.max(effectiveStartIndex, endIndex - 1);
+  }
+
+  const finalState = states[Math.min(effectiveEndIndex, states.length - 1)];
   const finalEquity = finalState.equity;
   const returnRate = baselineEquity > 0 ? ((finalEquity - baselineEquity) / baselineEquity) * 100 : 0;
 
   let peakEquity = baselineEquity;
   let maxDrawdown = 0;
-  for (let i = effectiveStartIndex; i < states.length; i += 1) {
+  for (let i = effectiveStartIndex; i <= effectiveEndIndex && i < states.length; i += 1) {
     const equity = states[i].equity;
     peakEquity = Math.max(peakEquity, equity);
     const drawdown = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
     maxDrawdown = Math.max(maxDrawdown, drawdown);
   }
 
-  const trades = (finalState.trades || []).filter((trade) => trade.date >= scoringStartDate);
+  const trades = (finalState.trades || []).filter((trade) => trade.date >= scoringStartDate
+    && (!scoringEndDate || trade.date < scoringEndDate));
 
   // cash/shares/equity are rebased the same way returnRate already is: scaled as if the
   // account had actually been reset to config.initialCash at the baseline (scoringStartDate),
@@ -2102,7 +2115,7 @@ function buildScoredBacktestStates(rows, config, scoringStartDate) {
     returnRate,
     maxDrawdown,
     trades,
-    rowsScored: states.length - effectiveStartIndex,
+    rowsScored: Math.min(effectiveEndIndex, states.length - 1) - effectiveStartIndex + 1,
     equity: finalEquity * scale,
     cash: finalState.cash * scale,
     shares: finalState.shares * scale,

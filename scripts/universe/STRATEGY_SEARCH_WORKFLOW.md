@@ -6,8 +6,8 @@
 
 1. **每只股票单独探索，不合并**。`run-auto-generate.js` 本身就是按股票逐个循环、每只股票各自跑 `attemptsPerSymbol` 次 AI 尝试，互不共享数据画像（`ModelGenerator.buildSymbolDataProfile` 只看这只股票自己的历史）——所以哪怕在同一次 `--symbols=` 里传多只股票，天然就是"分开探索"，不需要为每只股票单独起一次任务。
 2. **不同股票波动特征不同，适合的策略类型也不同**，不用人工先猜——让 AI 在每只股票上各自尝试多种策略类型（wave/block-rules/score-rules/order-grid/ma-rsi-band/pe-volume/stagnation-reversal 等），交给训练/验证两段式评估去挑出真正稳的。
-3. **筛选标准是"训练期和验证期年化收益差异最小"，不是"训练期收益最高"**。训练期（最近5年到最近1年，4年跨度）用来搜参数，验证期（最近1年，样本外、AI和参数搜索都没见过）用来检验是否稳定。差异越小说明模型在没见过的新数据上表现和训练时越一致。
-4. **验证期年化收益率本身也要看**——差异小但两边都很差的模型没有实际意义；理想情况是差异小、且验证期年化收益本身也可观（比如 30%+）。
+3. **筛选标准是"训练期和验证期年化收益差异最小"，不是"训练期收益最高"**。训练期（默认最近6年到最近2年，4年跨度）用来搜参数，验证期是训练结束之后的 2 个**各自独立的 1 年窗口**（样本外、AI和参数搜索都没见过），分别打分、分别展示，不合并成一个数字——这样一年运气好不会掩盖另一年可能表现很差的问题。差异越小说明模型在没见过的新数据上表现和训练时越一致。
+4. **两个验证年份的年化收益率本身也都要看**——差异小但两边都很差的模型没有实际意义；理想情况是差异小、且**两年**的验证期年化收益都可观（比如 30%+）。"达标"要求两年都达到目标，只有一年达标不算。
 
 ## 怎么跑
 
@@ -22,8 +22,8 @@ docker exec ai_trade node scripts/universe/run-auto-generate.js \
   --maxAttempts=100 \
   --candidates=400 \
   --pointCount=5 \
-  --trainYearsAgo=5 \
-  --testYearsAgo=1
+  --trainYears=4 \
+  --testYears=2
 ```
 - `--maxAttempts` 是这次运行总共能打的 AI 调用次数上限（安全阀），要设得比"股票数 × attemptsPerSymbol"大，否则会提前截断没跑完的股票。
 - 这个命令会真的花 AI API 的钱（每次尝试一次调用），跑之前告诉用户预计花多少次调用。
@@ -33,23 +33,26 @@ docker exec ai_trade node scripts/universe/run-auto-generate.js \
 ## 跑完之后怎么找"稳定又好"的模型
 
 ```sql
--- 这次运行新保存的模型，按验证期/训练期年化差异从小到大排序
+-- 这次运行新保存的模型，按第2年（离现在最近那一年）验证期/训练期年化差异从小到大排序
 SELECT sp.id, sp.label, sp.meta->>'targetSymbol' AS symbol,
-       osr.train_annualized_return, osr.test_annualized_return, osr.annualized_diff, osr.test_trades
+       osr.train_annualized_return,
+       osr.test_year1_annualized_return, osr.test_year2_annualized_return,
+       osr.annualized_diff_year1, osr.annualized_diff_year2,
+       osr.test_year1_trades, osr.test_year2_trades
 FROM strategy_presets sp
 JOIN optimization_scan_results osr
   ON osr.preset_id = sp.id AND osr.symbol = sp.meta->>'targetSymbol'
 WHERE sp.meta->>'creator' = 'ai-auto' AND sp.created_at >= '<这次运行开始时间>'
-ORDER BY osr.annualized_diff ASC;
+ORDER BY osr.annualized_diff_year2 ASC;
 ```
 重点关注：
-- `annualized_diff` 小（训练/验证一致）。
-- `test_annualized_return` 本身够高（比如 > 50%，这种直接告诉用户）。
-- `test_trades` 不能是 0——0 笔交易可能是这只股票在验证期真的没触发信号（合理），也可能是回看窗口比验证期还长导致指标算不出来（bug，已经修过，但如果又看到要重新确认）。
+- `annualized_diff_year1`/`annualized_diff_year2` 都小（训练/验证两年都一致）。
+- `test_year1_annualized_return`/`test_year2_annualized_return` 本身都够高（比如都 > 50%，这种直接告诉用户）——只有一年高不算数。
+- `test_year1_trades`/`test_year2_trades` 不能是 0——0 笔交易可能是这只股票在那一年真的没触发信号（合理），也可能是回看窗口比验证期还长导致指标算不出来（bug，已经修过，但如果又看到要重新确认）。
 
 ## 已知局限
 
-- 验证期是固定锚定在"今天往前推1年"的日历区间，所有股票、所有模型共享同一个验证窗口——如果这一年市场整体走势比较单一（比如全年上涨没有大跌），依赖"大幅回撤买入"这类逻辑的模型会显得验证期交易很少，不代表模型设计得不好。
+- 验证期是固定锚定在"今天往前推 N 年"（默认 2 个各自 1 年的窗口）的日历区间，所有股票、所有模型共享同一套验证窗口——如果某一年市场整体走势比较单一（比如全年上涨没有大跌），依赖"大幅回撤买入"这类逻辑的模型会显得那一年验证期交易很少，不代表模型设计得不好。
 - "稳定"只是相对这一次训练/验证切分而言，不等于未来一定继续有效，只是排除了明显过拟合的情况。
 - 这套方法只覆盖 `run-auto-generate.js` 已支持的策略类型，不会凭空发明新指标；如果想要的策略逻辑现有指标覆盖不了（比如某个新的技术形态），需要先在 `public/app.js`/`scripts/universe/engine.js` 里加对应指标（两边要同步改，见两个文件里都存在的手工同步约定）。
 
@@ -80,15 +83,15 @@ curl "http://<host>/api/klines?code=TSM&start=2021-08-27&end=2026-08-27"
 
 `run-auto-generate.js` 的选择逻辑是：每次尝试只按**训练期**打分，多次尝试里选分数最高的那一个，*然后*才对这一个跑验证期评估——如果某次尝试训练期打分不是最高，但换到验证期表现其实更好更稳，这次尝试从一开始就不会被选中，也就永远不会被验证。
 
-新增的 `scripts/universe/search-validated-best.js` 改成：**每一次跑赢买入持有的尝试，立刻在验证期上评估**，全程跟踪"验证期年化收益最高的那一次"，而不是"训练期打分最高的那一次"。用法（**务必带上 `--ownerUserId`/`--ownerEmail`，这类经过验证的模型默认要挂在 admin 账户下，不能是无主的公开模型**——管理员的 userId 是 `user_d2392eab3f9892a9d11fb99efd0a0791`，邮箱 `victor.gm.liu@gmail.com`）：
+新增的 `scripts/universe/search-validated-best.js` 改成：**每一次跑赢买入持有的尝试，立刻在两个验证年份上分别评估**，全程跟踪"两年中较差那一年年化收益最高的那一次尝试"，而不是"训练期打分最高的那一次"——用较差年份挑选，是为了避免选出"一年爆发、一年打回原形"、平均起来还行但实际不稳的模型。用法（**务必带上 `--ownerUserId`/`--ownerEmail`，这类经过验证的模型默认要挂在 admin 账户下，不能是无主的公开模型**——管理员的 userId 是 `user_d2392eab3f9892a9d11fb99efd0a0791`，邮箱 `victor.gm.liu@gmail.com`）：
 ```
 node scripts/universe/search-validated-best.js --symbols=NET --targetPercent=50 \
   --attemptsPerSymbol=25 --maxAttempts=25 --candidates=400 --pointCount=5 \
-  --trainYearsAgo=5 --testYearsAgo=1 \
+  --trainYears=4 --testYears=2 \
   --ownerUserId=user_d2392eab3f9892a9d11fb99efd0a0791 --ownerEmail=victor.gm.liu@gmail.com \
   --save
 ```
-`--targetPercent` 是验证期年化收益目标（默认50），一旦某次尝试达标就提前停止这只股票的搜索；`--save` 才会真的存成模型，不加就是只探索不保存。2026-08-27 第一批结果（NET/GOOGL/TSM）跑的时候忘了带 owner 参数，后来手动把这三条记录的 `owner_user_id`/`meta.isPublic` 改成了 admin 账户——以后跑记得直接带上，不用事后补。
+`--targetPercent` 是验证期年化收益目标（默认50），**两年都**达标才会提前停止这只股票的搜索；`--save` 才会真的存成模型，不加就是只探索不保存。2026-08-27 第一批结果（NET/GOOGL/TSM）跑的时候忘了带 owner 参数，后来手动把这三条记录的 `owner_user_id`/`meta.isPublic` 改成了 admin 账户——以后跑记得直接带上，不用事后补。
 
 **重要：验证期表现好不等于是"真实策略"，还要看交易次数和差异**。碰到过两种需要警惕的假阳性：
 - **训练/验证差异巨大**（比如差20-40）但验证期数字本身达标——可能是这次尝试的触发条件很宽松，恰好在验证期这一年"蒙对了"，不代表真的找到了可重复的规律。

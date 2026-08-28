@@ -60,6 +60,30 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS model_reason TEXT NOT NULL DEFAULT '';
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS numeric_id BIGSERIAL;
+
+    -- Two-separate-validation-years methodology (train N years, then TWO independent 1-year
+    -- test windows scored separately — never blended into one number). The old bare test_*/
+    -- annualized_diff columns above are left in place but no longer written by any script —
+    -- see this file's header comment; every writer now populates test_year1_*/test_year2_*
+    -- instead. year1 = the OLDER validation year (right after training ends), year2 = the
+    -- MORE RECENT year (closest to today).
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_annualized_return DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_trades INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_rows_tested INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_start_date DATE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_end_date DATE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_return_rate DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_max_drawdown DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_annualized_return DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_trades INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_rows_tested INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_start_date DATE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_end_date DATE;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year1 DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year2 DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_end_date DATE;
   `);
 }
 
@@ -75,11 +99,22 @@ async function saveOptimizationResult(pool, row) {
       baseline_return_rate, baseline_max_drawdown, best_return_rate, best_max_drawdown,
       best_score, best_trades, tested_candidates, best_config,
       buy_hold_return_rate, buy_hold_max_drawdown,
-      train_annualized_return, test_return_rate, test_max_drawdown, test_annualized_return,
-      test_trades, test_rows_tested, annualized_diff, train_start_date, test_start_date,
+      train_annualized_return, train_start_date, train_end_date,
+      test_year1_return_rate, test_year1_max_drawdown, test_year1_annualized_return,
+      test_year1_trades, test_year1_rows_tested, test_year1_start_date, test_year1_end_date,
+      test_year2_return_rate, test_year2_max_drawdown, test_year2_annualized_return,
+      test_year2_trades, test_year2_rows_tested, test_year2_start_date, test_year2_end_date,
+      annualized_diff_year1, annualized_diff_year2,
       reached_target, source, model_reason, scanned_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,NOW())
+    VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
+      $19,$20,$21,
+      $22,$23,$24,$25,$26,$27,$28,
+      $29,$30,$31,$32,$33,$34,$35,
+      $36,$37,
+      $38,$39,$40,NOW()
+    )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
       preset_label = EXCLUDED.preset_label,
@@ -96,14 +131,24 @@ async function saveOptimizationResult(pool, row) {
       buy_hold_return_rate = EXCLUDED.buy_hold_return_rate,
       buy_hold_max_drawdown = EXCLUDED.buy_hold_max_drawdown,
       train_annualized_return = EXCLUDED.train_annualized_return,
-      test_return_rate = EXCLUDED.test_return_rate,
-      test_max_drawdown = EXCLUDED.test_max_drawdown,
-      test_annualized_return = EXCLUDED.test_annualized_return,
-      test_trades = EXCLUDED.test_trades,
-      test_rows_tested = EXCLUDED.test_rows_tested,
-      annualized_diff = EXCLUDED.annualized_diff,
       train_start_date = EXCLUDED.train_start_date,
-      test_start_date = EXCLUDED.test_start_date,
+      train_end_date = EXCLUDED.train_end_date,
+      test_year1_return_rate = EXCLUDED.test_year1_return_rate,
+      test_year1_max_drawdown = EXCLUDED.test_year1_max_drawdown,
+      test_year1_annualized_return = EXCLUDED.test_year1_annualized_return,
+      test_year1_trades = EXCLUDED.test_year1_trades,
+      test_year1_rows_tested = EXCLUDED.test_year1_rows_tested,
+      test_year1_start_date = EXCLUDED.test_year1_start_date,
+      test_year1_end_date = EXCLUDED.test_year1_end_date,
+      test_year2_return_rate = EXCLUDED.test_year2_return_rate,
+      test_year2_max_drawdown = EXCLUDED.test_year2_max_drawdown,
+      test_year2_annualized_return = EXCLUDED.test_year2_annualized_return,
+      test_year2_trades = EXCLUDED.test_year2_trades,
+      test_year2_rows_tested = EXCLUDED.test_year2_rows_tested,
+      test_year2_start_date = EXCLUDED.test_year2_start_date,
+      test_year2_end_date = EXCLUDED.test_year2_end_date,
+      annualized_diff_year1 = EXCLUDED.annualized_diff_year1,
+      annualized_diff_year2 = EXCLUDED.annualized_diff_year2,
       reached_target = EXCLUDED.reached_target,
       source = EXCLUDED.source,
       model_reason = EXCLUDED.model_reason,
@@ -113,25 +158,31 @@ async function saveOptimizationResult(pool, row) {
     row.baselineReturnRate, row.baselineMaxDrawdown, row.bestReturnRate, row.bestMaxDrawdown,
     row.bestScore, row.bestTrades, row.testedCandidates, JSON.stringify(row.bestConfig),
     row.buyHoldReturnRate, row.buyHoldMaxDrawdown,
-    row.trainAnnualizedReturn, row.testReturnRate, row.testMaxDrawdown, row.testAnnualizedReturn,
-    row.testTrades, row.testRowsTested, row.annualizedDiff, row.trainStartDate, row.testStartDate,
+    row.trainAnnualizedReturn, row.trainStartDate, row.trainEndDate,
+    row.testYear1ReturnRate, row.testYear1MaxDrawdown, row.testYear1AnnualizedReturn,
+    row.testYear1Trades, row.testYear1RowsTested, row.testYear1StartDate, row.testYear1EndDate,
+    row.testYear2ReturnRate, row.testYear2MaxDrawdown, row.testYear2AnnualizedReturn,
+    row.testYear2Trades, row.testYear2RowsTested, row.testYear2StartDate, row.testYear2EndDate,
+    row.annualizedDiffYear1, row.annualizedDiffYear2,
     Boolean(row.reachedTarget), row.source || "", row.modelReason || "",
   ]);
 }
 
 // Whether (symbol, market, presetId) should be treated as "not yet scanned" — true if there's
 // no row at all, OR if the existing row predates the train/test methodology (train_start_date
-// IS NULL, i.e. it was written by the single-window scan this replaced). That second case lets
-// a normal (non --rescan) run incrementally upgrade old rows over time without the admin
-// needing to force a full rescan of everything at once.
+// IS NULL, i.e. it was written by the single-window scan this replaced), OR if it predates the
+// two-separate-validation-years methodology (test_year1_start_date IS NULL, i.e. it was written
+// by the old single-test-window scoring). Any of these cases lets a normal (non --rescan) run
+// incrementally upgrade old rows over time without the admin needing to force a full rescan of
+// everything at once.
 async function needsScan(pool, symbol, market, presetId, { rescan, sessionSince }) {
   if (!rescan) {
     const result = await pool.query(
-      "SELECT train_start_date FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3",
+      "SELECT train_start_date, test_year1_start_date FROM optimization_scan_results WHERE symbol = $1 AND market = $2 AND preset_id = $3",
       [symbol, market, presetId]
     );
     if (result.rowCount === 0) return true;
-    return result.rows[0].train_start_date === null;
+    return result.rows[0].train_start_date === null || result.rows[0].test_year1_start_date === null;
   }
   if (!sessionSince) return true;
   // Resuming: only skip a pair if it was already redone since THIS rescan session started,

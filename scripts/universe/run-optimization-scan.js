@@ -2,15 +2,19 @@
 // active (non-hidden) saved strategy preset, re-optimizes that preset's own parameters — but
 // with a train/test split instead of optimizing and evaluating on the same data:
 //
-//   - TRAIN window: [trainYearsAgo years ago, testYearsAgo years ago) — parameter search runs
-//     here, picking the best-scoring config.
-//   - TEST window: [testYearsAgo years ago, today] — that SAME (unchanged) config is then run
-//     once more against this out-of-sample data the search never saw, purely to measure it.
+//   - TRAIN window: trainYears years of history, ending testYears years ago — parameter
+//     search runs here, picking the best-scoring config.
+//   - TEST windows: testYears SEPARATE, non-overlapping 1-year windows right after training,
+//     each scored independently — that SAME (unchanged) config is then run once more against
+//     each year of out-of-sample data the search never saw, purely to measure it. Never merged
+//     into one blended number: a strategy that does great in year 1 and terrible in year 2
+//     should not be able to hide behind an averaged figure.
 //
-// Both the train-period and test-period annualized returns get saved, along with their
-// absolute difference (annualized_diff) — the smaller that difference, the more consistent
-// the model's real-world behavior was with what the parameter search "promised", which is
-// what the admin list defaults to sorting by (ascending) instead of raw return.
+// Both the train-period and each test year's annualized return get saved, along with their
+// absolute differences (annualized_diff_year1/year2) — the smaller those differences, the more
+// consistent the model's real-world behavior was with what the parameter search "promised",
+// which is what the admin list defaults to sorting by (ascending, on the most recent year)
+// instead of raw return.
 //
 // This is intentionally decoupled from server.js/app.js: it reads directly from the
 // symbols/daily_prices/strategy_presets tables that already exist for the live app, and
@@ -23,7 +27,7 @@
 // unscanned regardless, so normal runs incrementally upgrade old rows over time.
 //
 // Usage: node scripts/universe/run-optimization-scan.js [--candidates=300] [--minTrainRows=200]
-//   [--minTestRows=50] [--trainYearsAgo=5] [--testYearsAgo=1] [--rescan] [--presetIds=id1,id2]
+//   [--minTestRows=50] [--trainYears=4] [--testYears=2] [--rescan] [--presetIds=id1,id2]
 //   [--symbols=513100,AMD]
 //   --presetIds restricts the scan to specific (already-active) preset IDs, e.g. for an
 //   admin-triggered "rescan just this model" run instead of the full active set.
@@ -39,7 +43,7 @@ const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { searchBestConfig } = require("./search-best-config.js");
 const { loadExpandedUniverse, inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
-const { splitTrainTestRows } = require("../shared/train-test-window.js");
+const { splitTrainTestWindows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult, needsScan } = require("../shared/optimization-results.js");
 
 // Live progress, polled by server.js's optimization-scan status endpoint so the admin panel
@@ -76,8 +80,8 @@ const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 // Whole years only — shiftYears (scripts/shared/train-test-window.js) uses Date.setFullYear,
 // which truncates a fractional argument rather than applying it proportionally, so a
 // fractional value here wouldn't do what it looks like it does.
-const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
-const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
+const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
+const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOL_LIMIT = getArg("limit", 0);
 const RESCAN = args.includes("--rescan");
 const PRESET_IDS_FILTER = getArgString("presetIds").split(",").map((s) => s.trim()).filter(Boolean);
@@ -89,11 +93,6 @@ const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).f
 const SESSION_SINCE = getArgString("sessionSince") || null;
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
-
-if (TRAIN_YEARS_AGO <= TEST_YEARS_AGO) {
-  console.error(`usage error: --trainYearsAgo (${TRAIN_YEARS_AGO}) must be greater than --testYearsAgo (${TEST_YEARS_AGO})`);
-  process.exit(1);
-}
 
 // Source of truth for "which presets does the batch scan test" is
 // original_model_id = '0' — a preset is scanned iff it's itself a root
@@ -149,7 +148,7 @@ async function main() {
   const symbols = SYMBOL_LIMIT > 0 ? universe.slice(0, SYMBOL_LIMIT) : universe;
   const presetIdFilterSet = PRESET_IDS_FILTER.length > 0 ? new Set(PRESET_IDS_FILTER) : null;
   const presets = (await loadActivePresets()).filter((p) => !presetIdFilterSet || presetIdFilterSet.has(p.id));
-  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}${SYMBOLS_FILTER.length > 0 ? ` symbolsFilter=${SYMBOLS_FILTER.join(",")}` : ""}`);
+  console.log(`symbols=${symbols.length} active presets=${presets.length} candidatesPerPair=${CANDIDATES_PER_PAIR} minTrainRows=${MIN_TRAIN_ROWS} minTestRows=${MIN_TEST_ROWS} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} rescan=${RESCAN}${presetIdFilterSet ? ` presetFilter=${PRESET_IDS_FILTER.join(",")}` : ""}${SYMBOLS_FILTER.length > 0 ? ` symbolsFilter=${SYMBOLS_FILTER.join(",")}` : ""}`);
   presets.forEach((p) => console.log(`  preset: ${p.label} (${p.strategyType}) id=${p.id}`));
 
   writeProgress({
@@ -165,7 +164,7 @@ async function main() {
     dataSkipped: 0,
   });
 
-  const windowCache = new Map(); // symbol:market -> { trainRows, testRows, trainStartDate, testStartDate, buyHold }
+  const windowCache = new Map(); // symbol:market -> { trainRows, testWindows, trainStartDate, trainEndDate, buyHold }
   let pairIndex = 0;
   let skipped = 0;
   let dataSkipped = 0;
@@ -195,14 +194,17 @@ async function main() {
           console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before scanning`);
         }
         const rows = await loadRows(symbolEntry.code, dbMarket);
-        const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(rows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
+        const { trainRows, trainStartDate, trainEndDate, testWindows } = splitTrainTestWindows(rows, TRAIN_YEARS, TEST_YEARS);
+        const testWindowRowCounts = testWindows.map(
+          (win) => rows.filter((row) => row.date >= win.startDate && row.date < win.endDate).length,
+        );
 
-        if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
-          window = { insufficientData: true, trainRows, testRows };
+        if (trainRows.length < MIN_TRAIN_ROWS || testWindowRowCounts.some((count) => count < MIN_TEST_ROWS)) {
+          window = { insufficientData: true, trainRows, testWindowRowCounts };
         } else {
           const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
           const buyHold = buyHoldStates[buyHoldStates.length - 1];
-          window = { rows, trainRows, testRows, trainStartDate, testStartDate, buyHold };
+          window = { rows, trainRows, testWindows, trainStartDate, trainEndDate, buyHold };
         }
         windowCache.set(cacheKey, window);
       }
@@ -211,7 +213,7 @@ async function main() {
         dataSkipped += presets.length;
         pairIndex += presets.length;
         writeProgress({ pairIndex, dataSkipped });
-        console.log(`[skip-data] ${symbolEntry.code} trainRows=${window.trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${window.testRows.length} (<${MIN_TEST_ROWS}?), skipping all presets`);
+        console.log(`[skip-data] ${symbolEntry.code} trainRows=${window.trainRows.length} (<${MIN_TRAIN_ROWS}?) testWindowRows=${window.testWindowRowCounts.join("/")} (<${MIN_TEST_ROWS}?), skipping all presets`);
         continue;
       }
     } catch (error) {
@@ -221,7 +223,7 @@ async function main() {
       continue;
     }
 
-    const { rows, trainRows, testRows, trainStartDate, testStartDate, buyHold } = window;
+    const { rows, trainRows, testWindows, trainStartDate, trainEndDate, buyHold } = window;
     engine.setActiveLotSizeSymbol(symbolEntry.code);
     const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: "wave" };
 
@@ -255,16 +257,20 @@ async function main() {
         }
         const bestScore = best.score;
 
-        // Out-of-sample: run the EXACT found config (unchanged) against the test window,
-        // which the parameter search above never saw. Scored against the FULL history (not
-        // just testRows) so rolling-window indicators (moving averages, N-day highs, etc.)
-        // have real warmup data instead of being starved by a test window shorter than their
-        // own lookback — see buildScoredBacktestStates's comment for why this matters.
-        const scoredTest = engine.buildScoredBacktestStates(rows, best.config, testStartDate);
+        // Out-of-sample: run the EXACT found config (unchanged) against EACH validation year
+        // separately, which the parameter search above never saw. Scored against the FULL
+        // history (not just each window's own rows) so rolling-window indicators (moving
+        // averages, N-day highs, etc.) have real warmup data instead of being starved by a
+        // test window shorter than their own lookback — see buildScoredBacktestStates's
+        // comment for why this matters.
+        const scoredYear1 = engine.buildScoredBacktestStates(rows, best.config, testWindows[0].startDate, testWindows[0].endDate);
+        const scoredYear2 = engine.buildScoredBacktestStates(rows, best.config, testWindows[1].startDate, testWindows[1].endDate);
 
         const trainAnnualizedReturn = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        const testAnnualizedReturn = annualizedReturnRate(scoredTest.returnRate, scoredTest.rowsScored) || 0;
-        const annualizedDiff = Math.abs(testAnnualizedReturn - trainAnnualizedReturn);
+        const testYear1AnnualizedReturn = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
+        const testYear2AnnualizedReturn = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
+        const annualizedDiffYear1 = Math.abs(testYear1AnnualizedReturn - trainAnnualizedReturn);
+        const annualizedDiffYear2 = Math.abs(testYear2AnnualizedReturn - trainAnnualizedReturn);
 
         await saveOptimizationResult(pool, {
           symbol: symbolEntry.code,
@@ -285,20 +291,30 @@ async function main() {
           buyHoldReturnRate: buyHold.returnRate,
           buyHoldMaxDrawdown: buyHold.maxDrawdown,
           trainAnnualizedReturn,
-          testReturnRate: scoredTest.returnRate,
-          testMaxDrawdown: scoredTest.maxDrawdown,
-          testAnnualizedReturn,
-          testTrades: scoredTest.trades.length,
-          testRowsTested: scoredTest.rowsScored,
-          annualizedDiff,
+          testYear1ReturnRate: scoredYear1.returnRate,
+          testYear1MaxDrawdown: scoredYear1.maxDrawdown,
+          testYear1AnnualizedReturn,
+          testYear1Trades: scoredYear1.trades.length,
+          testYear1RowsTested: scoredYear1.rowsScored,
+          testYear1StartDate: testWindows[0].startDate,
+          testYear1EndDate: testWindows[0].endDate,
+          testYear2ReturnRate: scoredYear2.returnRate,
+          testYear2MaxDrawdown: scoredYear2.maxDrawdown,
+          testYear2AnnualizedReturn,
+          testYear2Trades: scoredYear2.trades.length,
+          testYear2RowsTested: scoredYear2.rowsScored,
+          testYear2StartDate: testWindows[1].startDate,
+          testYear2EndDate: testWindows[1].endDate,
+          annualizedDiffYear1,
+          annualizedDiffYear2,
           trainStartDate,
-          testStartDate,
+          trainEndDate,
         });
 
         writeProgress({ sessionTestedCandidates: progressState.sessionTestedCandidates + best.testedCandidates });
 
         if (pairIndex % 20 === 0 || pairIndex === totalPairs) {
-          console.log(`[${pairIndex}/${totalPairs}] ${symbolEntry.code} x ${preset.label}: train=${trainAnnualizedReturn.toFixed(1)}%年化 test=${testAnnualizedReturn.toFixed(1)}%年化 diff=${annualizedDiff.toFixed(1)}`);
+          console.log(`[${pairIndex}/${totalPairs}] ${symbolEntry.code} x ${preset.label}: train=${trainAnnualizedReturn.toFixed(1)}%年化 year1=${testYear1AnnualizedReturn.toFixed(1)}%年化 year2=${testYear2AnnualizedReturn.toFixed(1)}%年化 diff1=${annualizedDiffYear1.toFixed(1)} diff2=${annualizedDiffYear2.toFixed(1)}`);
         }
       } catch (error) {
         console.error(`[error] ${symbolEntry.code} x ${preset.label}: ${error.message}`);

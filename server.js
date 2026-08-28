@@ -1939,14 +1939,24 @@ function mapAdminOptimizationScanRow(row, universeIndexByCode) {
     buyHoldReturnRate: Number(row.buy_hold_return_rate) || 0,
     buyHoldMaxDrawdown: Number(row.buy_hold_max_drawdown) || 0,
     trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
-    testReturnRate: Number(row.test_return_rate) || 0,
-    testMaxDrawdown: Number(row.test_max_drawdown) || 0,
-    testAnnualizedReturn: Number(row.test_annualized_return) || 0,
-    testTrades: row.test_trades || 0,
-    testRowsTested: row.test_rows_tested || 0,
-    annualizedDiff: Number(row.annualized_diff) || 0,
     trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
-    testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
+    trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
+    testYear1ReturnRate: Number(row.test_year1_return_rate) || 0,
+    testYear1MaxDrawdown: Number(row.test_year1_max_drawdown) || 0,
+    testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
+    testYear1Trades: row.test_year1_trades || 0,
+    testYear1RowsTested: row.test_year1_rows_tested || 0,
+    testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+    testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+    testYear2ReturnRate: Number(row.test_year2_return_rate) || 0,
+    testYear2MaxDrawdown: Number(row.test_year2_max_drawdown) || 0,
+    testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
+    testYear2Trades: row.test_year2_trades || 0,
+    testYear2RowsTested: row.test_year2_rows_tested || 0,
+    testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+    testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+    annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
+    annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
     scannedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
   };
 }
@@ -1969,7 +1979,7 @@ async function handleAdminOptimizationScanApi(req, res) {
       SELECT osr.*, sp.numeric_id AS preset_numeric_id
       FROM optimization_scan_results osr
       LEFT JOIN strategy_presets sp ON sp.id = osr.preset_id
-      ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff ASC
+      ORDER BY (osr.train_start_date IS NULL) ASC, osr.annualized_diff_year2 ASC
       LIMIT 3000
     `);
     const universeIndexByCode = new Map(
@@ -2088,7 +2098,7 @@ function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt
   });
 }
 
-function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy }) {
+function launchScanProcess({ presetIds, symbols, trainYears, testYears, sessionStartedAt, triggeredBy }) {
   // Clear any progress left over from a previous run so the panel doesn't briefly show stale
   // "currently on symbol X..." detail before the freshly-spawned process writes its first update.
   try {
@@ -2098,7 +2108,7 @@ function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, se
   }
   const scriptArgs = [
     "--rescan", "--candidates=300", "--minTrainRows=200", "--minTestRows=50",
-    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, `--sessionSince=${sessionStartedAt}`,
+    `--trainYears=${trainYears}`, `--testYears=${testYears}`, `--sessionSince=${sessionStartedAt}`,
   ];
   if (presetIds.length > 0) scriptArgs.push(`--presetIds=${presetIds.join(",")}`);
   if (symbols && symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
@@ -2108,7 +2118,7 @@ function launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, se
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { presetIds, symbols: symbols || [], trainYearsAgo, testYearsAgo },
+    extra: { presetIds, symbols: symbols || [], trainYears, testYears },
   });
 }
 
@@ -2128,7 +2138,7 @@ function readScanProgress() {
   }
 }
 
-function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYears, testYears, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   // Clear any progress left over from a previous run so the panel doesn't briefly show stale
   // "currently trying..." detail before the freshly-spawned process writes its first update.
   try {
@@ -2138,7 +2148,7 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
   }
   const scriptArgs = [
     `--maxAttempts=${maxAttempts}`, `--attemptsPerSymbol=${attemptsPerSymbol}`, `--pointCount=${pointCount}`,
-    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`,
+    `--trainYears=${trainYears}`, `--testYears=${testYears}`,
   ];
   if (limit > 0) scriptArgs.push(`--limit=${limit}`);
   if (symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
@@ -2150,7 +2160,7 @@ function launchAutoGenerateProcess({ symbols, limit, attemptsPerSymbol, maxAttem
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo },
+    extra: { symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYears, testYears },
   });
 }
 
@@ -2162,7 +2172,7 @@ function readValidatedSearchProgress() {
   }
 }
 
-function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   try {
     fs.unlinkSync(VALIDATED_SEARCH_PROGRESS_FILE);
   } catch (error) {
@@ -2171,7 +2181,7 @@ function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbo
   const scriptArgs = [
     `--symbols=${symbols.join(",")}`, `--targetPercent=${targetPercent}`, `--attemptsPerSymbol=${attemptsPerSymbol}`,
     `--maxAttempts=${maxAttempts}`, `--candidates=${candidates}`, `--pointCount=${pointCount}`,
-    `--trainYearsAgo=${trainYearsAgo}`, `--testYearsAgo=${testYearsAgo}`, "--save",
+    `--trainYears=${trainYears}`, `--testYears=${testYears}`, "--save",
   ];
   if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
   if (ownerEmail) scriptArgs.push(`--ownerEmail=${ownerEmail}`);
@@ -2181,7 +2191,7 @@ function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbo
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo },
+    extra: { symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears },
   });
 }
 
@@ -2229,8 +2239,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
     let presetIds;
     let symbols;
     let sessionStartedAt;
-    let trainYearsAgo;
-    let testYearsAgo;
+    let trainYears;
+    let testYears;
     if (payload.resume) {
       if (!lastScanResult || lastScanResult.exitCode === 0) {
         sendJson(res, 400, { error: "没有可以继续的中断扫描（上一次不是异常退出）。" });
@@ -2241,8 +2251,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       sessionStartedAt = lastScanResult.sessionStartedAt;
       // Keep a resumed run consistent with the interrupted one rather than picking up
       // whatever the train/test inputs happen to say right now.
-      trainYearsAgo = lastScanResult.trainYearsAgo || 5;
-      testYearsAgo = lastScanResult.testYearsAgo || 1;
+      trainYears = lastScanResult.trainYears || 4;
+      testYears = lastScanResult.testYears || 2;
     } else {
       presetIds = Array.isArray(payload.presetIds)
         ? payload.presetIds.map((id) => String(id || "").trim()).filter(Boolean)
@@ -2251,8 +2261,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
         ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)
         : [];
       sessionStartedAt = new Date().toISOString();
-      trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
-      testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+      trainYears = Math.max(1, Math.min(10, Math.round(Number(payload.trainYears)) || 4));
+      testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
 
       // A fresh (non-resume) trigger means "rescan from scratch", not "pick up where
       // the last run left off" — clear old rows for the presets in scope up front so the
@@ -2280,8 +2290,8 @@ async function handleAdminOptimizationScanRunApi(req, res) {
       writeScanSessionState({ status: "idle", result: null });
     }
 
-    launchScanProcess({ presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, triggeredBy: admin.email });
-    sendJson(res, 200, { started: true, presetIds, symbols, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
+    launchScanProcess({ presetIds, symbols, trainYears, testYears, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, presetIds, symbols, trainYears, testYears, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动扫描失败。" });
   }
@@ -2462,12 +2472,15 @@ async function queryAiGeneratedPresets({ source }) {
   if (hasResultsTable.rows.length === 0) return [];
   const result = await dbQuery(`
     SELECT id, numeric_id, symbol, preset_label, strategy_type, best_config, model_reason,
-      train_annualized_return, test_annualized_return, annualized_diff,
-      train_start_date, test_start_date, best_trades, tested_candidates, test_trades, reached_target,
-      scanned_at
+      train_annualized_return, train_start_date, train_end_date,
+      test_year1_annualized_return, test_year1_start_date, test_year1_end_date, test_year1_trades,
+      test_year2_annualized_return, test_year2_start_date, test_year2_end_date, test_year2_trades,
+      annualized_diff_year1, annualized_diff_year2,
+      best_trades, tested_candidates, reached_target, scanned_at
     FROM optimization_scan_results
     WHERE source = $1
-    ORDER BY (train_start_date IS NULL) ASC, reached_target DESC NULLS LAST, test_annualized_return DESC NULLS LAST, scanned_at DESC
+    ORDER BY (train_start_date IS NULL) ASC, reached_target DESC NULLS LAST,
+      LEAST(test_year1_annualized_return, test_year2_annualized_return) DESC NULLS LAST, scanned_at DESC
     LIMIT 500
   `, [source]);
   return result.rows.map((row) => ({
@@ -2481,13 +2494,20 @@ async function queryAiGeneratedPresets({ source }) {
     createdAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
     updatedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
     trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
-    testAnnualizedReturn: Number(row.test_annualized_return) || 0,
-    annualizedDiff: Number(row.annualized_diff) || 0,
     trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
-    testStartDate: row.test_start_date ? new Date(row.test_start_date).toISOString().slice(0, 10) : "",
+    trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
+    testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
+    testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+    testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+    testYear1Trades: row.test_year1_trades || 0,
+    testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
+    testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+    testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+    testYear2Trades: row.test_year2_trades || 0,
+    annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
+    annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
-    testTrades: row.test_trades || 0,
     reachedTarget: Boolean(row.reached_target),
   }));
 }
@@ -2556,7 +2576,7 @@ async function handleAdminValidatedSearchRunApi(req, res) {
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
 
-    let symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt;
+    let symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt;
     if (payload.resume) {
       if (!lastScanResult || lastScanResult.jobType !== "validatedSearch" || lastScanResult.exitCode === 0) {
         sendJson(res, 400, { error: "没有可以继续的中断验证搜索（上一次不是异常退出）。" });
@@ -2568,8 +2588,8 @@ async function handleAdminValidatedSearchRunApi(req, res) {
       maxAttempts = lastScanResult.maxAttempts || 400;
       candidates = lastScanResult.candidates || 400;
       pointCount = lastScanResult.pointCount || 5;
-      trainYearsAgo = lastScanResult.trainYearsAgo || 5;
-      testYearsAgo = lastScanResult.testYearsAgo || 1;
+      trainYears = lastScanResult.trainYears || 4;
+      testYears = lastScanResult.testYears || 2;
       sessionStartedAt = lastScanResult.sessionStartedAt;
     } else {
       symbols = Array.isArray(payload.symbols)
@@ -2584,8 +2604,8 @@ async function handleAdminValidatedSearchRunApi(req, res) {
       maxAttempts = Math.max(1, Math.min(2000, Math.round(Number(payload.maxAttempts)) || 400));
       candidates = Math.max(1, Math.min(2000, Math.round(Number(payload.candidates)) || 400));
       pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
-      trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
-      testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+      trainYears = Math.max(1, Math.min(10, Math.round(Number(payload.trainYears)) || 4));
+      testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
       sessionStartedAt = new Date().toISOString();
 
       // A fresh (non-resume) trigger means "search these symbols again", not "pick up where
@@ -2604,10 +2624,10 @@ async function handleAdminValidatedSearchRunApi(req, res) {
     // Per the standing rule established for validated/found models this session: they default
     // to the admin's own account, never left ownerless — same as NET/GOOGL/TSM earlier.
     launchValidatedSearchProcess({
-      symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo,
+      symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears,
       sessionStartedAt, triggeredBy: admin.email, ownerUserId: userIdForEmail(admin.email), ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt, resumed: Boolean(payload.resume) });
+    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动验证搜索失败。" });
   }
@@ -2656,17 +2676,17 @@ async function handleAdminAutoGenerateRunApi(req, res) {
     const attemptsPerSymbol = Math.max(1, Math.min(90, Math.round(Number(payload.attemptsPerSymbol)) || 10));
     const maxAttempts = Math.max(1, Math.min(200, Math.round(Number(payload.maxAttempts)) || 20));
     const pointCount = Math.max(3, Math.min(10, Math.round(Number(payload.pointCount)) || 5));
-    const trainYearsAgo = Math.max(2, Math.min(10, Math.round(Number(payload.trainYearsAgo)) || 5));
-    const testYearsAgo = Math.max(1, Math.min(trainYearsAgo - 1, Math.round(Number(payload.testYearsAgo)) || 1));
+    const trainYears = Math.max(1, Math.min(10, Math.round(Number(payload.trainYears)) || 4));
+    const testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
     const sessionStartedAt = new Date().toISOString();
 
     launchAutoGenerateProcess({
-      symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt,
+      symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYears, testYears, sessionStartedAt,
       triggeredBy: admin.email,
       ownerUserId: userIdForEmail(admin.email),
       ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYearsAgo, testYearsAgo, sessionStartedAt });
+    sendJson(res, 200, { started: true, symbols, limit, attemptsPerSymbol, maxAttempts, pointCount, trainYears, testYears, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动自动生成失败。" });
   }

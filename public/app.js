@@ -1638,10 +1638,11 @@ async function loadAdminRankings() {
 let adminScanCache = [];
 let adminScanPage = 0;
 const adminScanPageSize = 10;
-// Default sort is "most stable first" — smallest gap between train-period and test-period
-// annualized return, not highest raw return (see scripts/universe/run-optimization-scan.js's
-// train/test split methodology).
-let adminScanSortKey = "annualizedDiff";
+// Default sort is "most stable first" — smallest gap between train-period and the MOST RECENT
+// validation year's annualized return, not highest raw return (see
+// scripts/universe/run-optimization-scan.js's train/test split methodology — validation is two
+// separate 1-year windows, never blended into one number).
+let adminScanSortKey = "annualizedDiffYear2";
 let adminScanSortDirection = "asc";
 let adminScanFilterSymbol = "";
 let adminScanFilterBuyHoldMax = 50;
@@ -1662,8 +1663,10 @@ const ADMIN_SCAN_COLUMNS = [
   { key: "buyHoldReturnRate", label: "全仓买入持有收益率" },
   { key: "vsBuyHold", label: "跑赢买入持有" },
   { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
-  { key: "testAnnualizedReturn", label: "验证期年化收益率" },
-  { key: "annualizedDiff", label: "年化差异" },
+  { key: "testYear1AnnualizedReturn", label: "验证期年化收益率(第1年)" },
+  { key: "testYear2AnnualizedReturn", label: "验证期年化收益率(第2年)" },
+  { key: "annualizedDiffYear1", label: "年化差异(第1年)" },
+  { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
   { key: "bestTrades", label: "交易次数" },
   { key: "testedCandidates", label: "测试组合数" },
   { key: "scannedAt", label: "扫描时间" },
@@ -1697,11 +1700,14 @@ function filterAdminScanRecords(records) {
 }
 
 // A record whose trainStartDate is empty has never been scanned under the train/test
-// methodology — its trainAnnualizedReturn/testAnnualizedReturn/annualizedDiff are just
+// methodology — its trainAnnualizedReturn/testYear1*/testYear2*/annualizedDiff* are just
 // unset-default zeros, not a genuine "diff of 0" (which would misleadingly look like the
-// most stable result of all). Sorting by any of those three columns pushes such records to
+// most stable result of all). Sorting by any of these columns pushes such records to
 // the end regardless of direction, matching the server's own default ORDER BY.
-const ADMIN_TRAIN_TEST_SORT_KEYS = new Set(["trainAnnualizedReturn", "testAnnualizedReturn", "annualizedDiff"]);
+const ADMIN_TRAIN_TEST_SORT_KEYS = new Set([
+  "trainAnnualizedReturn", "testYear1AnnualizedReturn", "testYear2AnnualizedReturn",
+  "annualizedDiffYear1", "annualizedDiffYear2",
+]);
 
 function sortAdminScanRecords(records) {
   const key = adminScanSortKey;
@@ -1771,7 +1777,8 @@ function renderAdminScanList() {
     const vsBuyHold = record.bestReturnRate - record.buyHoldReturnRate;
     const vsBuyHoldClass = vsBuyHold > 0 ? "up" : vsBuyHold < 0 ? "down" : "";
     const trainClass = record.trainAnnualizedReturn > 0 ? "up" : record.trainAnnualizedReturn < 0 ? "down" : "";
-    const testClass = record.testAnnualizedReturn > 0 ? "up" : record.testAnnualizedReturn < 0 ? "down" : "";
+    const testYear1Class = record.testYear1AnnualizedReturn > 0 ? "up" : record.testYear1AnnualizedReturn < 0 ? "down" : "";
+    const testYear2Class = record.testYear2AnnualizedReturn > 0 ? "up" : record.testYear2AnnualizedReturn < 0 ? "down" : "";
     const hasTrainTest = Boolean(record.trainStartDate);
     return `
       <tr>
@@ -1789,8 +1796,10 @@ function renderAdminScanList() {
         <td>${formatPercent(record.buyHoldReturnRate)}</td>
         <td class="${vsBuyHoldClass}">${formatPercent(vsBuyHold)}</td>
         <td class="${trainClass}">${hasTrainTest ? formatPercent(record.trainAnnualizedReturn) : "待重新扫描"}</td>
-        <td class="${testClass}">${hasTrainTest ? formatPercent(record.testAnnualizedReturn) : "待重新扫描"}</td>
-        <td>${hasTrainTest ? formatPercent(record.annualizedDiff) : "--"}</td>
+        <td class="${testYear1Class}">${hasTrainTest ? formatPercent(record.testYear1AnnualizedReturn) : "待重新扫描"}</td>
+        <td class="${testYear2Class}">${hasTrainTest ? formatPercent(record.testYear2AnnualizedReturn) : "待重新扫描"}</td>
+        <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear1) : "--"}</td>
+        <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear2) : "--"}</td>
         <td>${record.bestTrades || 0}</td>
         <td>${record.testedCandidates || 0}</td>
         <td>${escapeHtml(formatAdminDate(record.scannedAt))}</td>
@@ -1837,9 +1846,10 @@ async function loadAdminScanResults() {
 }
 
 // Shared default-naming rule for "另存为模型" across 后台模型排行 and AI自动生成: 股票代码
-// + 验证期年化收益 + 验证期交易次数 + 原模型名缩写(前6字符) — uses the TEST/validation-period
-// numbers (not train) since that's the out-of-sample figure that actually reflects whether
-// the model held up, and is what both lists sort by default.
+// + 验证期年化收益 + 验证期交易次数 + 原模型名缩写(前6字符) — the caller passes in the WORSE
+// of the two validation years (not train, and not the better year) since that's the
+// out-of-sample figure that actually reflects whether the model held up, consistent with
+// reachedTarget requiring both years to clear the target.
 function buildAutoSaveLabel({ symbol, annualizedReturn, trades, modelLabel }) {
   const symbolPart = String(symbol || "").trim();
   const returnPart = Number.isFinite(annualizedReturn) ? `${annualizedReturn >= 0 ? "+" : ""}${annualizedReturn.toFixed(1)}%` : "";
@@ -1864,8 +1874,8 @@ function openAdminScanParamViewer(scanId) {
     subtitle: `优化后收益率 ${formatPercent(record.bestReturnRate)} · 最大回撤 ${formatPercent(record.bestMaxDrawdown)} · 只读`,
     saveDefaultLabel: buildAutoSaveLabel({
       symbol: record.symbol,
-      annualizedReturn: record.testAnnualizedReturn,
-      trades: record.testTrades,
+      annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
+      trades: record.testYear2Trades,
       modelLabel: record.presetLabel,
     }),
   });
@@ -1876,8 +1886,8 @@ async function saveAdminScanRecordAsPreset(scanId) {
   if (!record) return;
   const defaultLabel = buildAutoSaveLabel({
     symbol: record.symbol,
-    annualizedReturn: record.testAnnualizedReturn,
-    trades: record.testTrades,
+    annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
+    trades: record.testYear2Trades,
     modelLabel: record.presetLabel,
   });
   const label = window.prompt("输入新模型名称：", defaultLabel);
@@ -2526,8 +2536,8 @@ async function triggerAdminScanRun(presetIds, options = {}) {
   const testYearsAgoInput = document.querySelector("#adminScanTestYearsAgo");
   const symbols = adminScanSymbolPicker.getSelected();
   const requested = {
-    trainYearsAgo: trainYearsAgoInput ? Number(trainYearsAgoInput.value) || 5 : 5,
-    testYearsAgo: testYearsAgoInput ? Number(testYearsAgoInput.value) || 1 : 1,
+    trainYears: trainYearsAgoInput ? Number(trainYearsAgoInput.value) || 4 : 4,
+    testYears: testYearsAgoInput ? Number(testYearsAgoInput.value) || 2 : 2,
   };
   try {
     const response = await fetch("/api/admin/optimization-scan/run", {
@@ -2536,7 +2546,7 @@ async function triggerAdminScanRun(presetIds, options = {}) {
       body: JSON.stringify({ presetIds, symbols, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动扫描失败。");
-    const adjustments = ["trainYearsAgo", "testYearsAgo"]
+    const adjustments = ["trainYears", "testYears"]
       .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     const symbolsScopeText = symbols.length > 0 ? `（限定 ${symbols.length} 只股票：${symbols.join("、")}）` : "";
@@ -2784,11 +2794,11 @@ function openAiGeneratedParamViewer(presetId, record, sourceLabel) {
     preset: viewPreset,
     readonly: true,
     title: `查看${sourceLabel}参数：${record.targetSymbol}（${record.label}）`,
-    subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率 ${formatPercent(record.testAnnualizedReturn)} · 只读`,
+    subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率(第1年) ${formatPercent(record.testYear1AnnualizedReturn)} · 验证期年化收益率(第2年) ${formatPercent(record.testYear2AnnualizedReturn)} · 只读`,
     saveDefaultLabel: buildAutoSaveLabel({
       symbol: record.targetSymbol,
-      annualizedReturn: record.testAnnualizedReturn,
-      trades: record.testTrades,
+      annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
+      trades: record.testYear2Trades,
       modelLabel: record.label,
     }),
   });
@@ -2995,7 +3005,7 @@ function formatAdminAutoGenerateReason(reason) {
 
 // Same "smallest train/test annualized-return gap first" default as adminScanList — see
 // scripts/universe/run-auto-generate.js's train/test split methodology.
-let adminAutoGenerateSortKey = "annualizedDiff";
+let adminAutoGenerateSortKey = "annualizedDiffYear2";
 let adminAutoGenerateSortDirection = "asc";
 
 const ADMIN_AUTO_GENERATE_COLUMNS = [
@@ -3003,8 +3013,10 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "label", label: "模型名称" },
   { key: "strategyType", label: "策略类型" },
   { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
-  { key: "testAnnualizedReturn", label: "验证期年化收益率" },
-  { key: "annualizedDiff", label: "年化差异" },
+  { key: "testYear1AnnualizedReturn", label: "验证期年化收益率(第1年)" },
+  { key: "testYear2AnnualizedReturn", label: "验证期年化收益率(第2年)" },
+  { key: "annualizedDiffYear1", label: "年化差异(第1年)" },
+  { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
   { key: "bestTrades", label: "交易次数" },
   { key: "testedCandidates", label: "测试组合数" },
   { key: "reason", label: "AI 生成理由" },
@@ -3045,9 +3057,13 @@ function sortAiGeneratedRecords(records, sortKey, sortDirection) {
 function renderAiGeneratedPresetRow(p, options = {}) {
   const hasTrainTest = Boolean(p.trainStartDate);
   const trainClass = p.trainAnnualizedReturn > 0 ? "up" : p.trainAnnualizedReturn < 0 ? "down" : "";
-  const testClass = p.testAnnualizedReturn > 0 ? "up" : p.testAnnualizedReturn < 0 ? "down" : "";
+  const testYear1Class = p.testYear1AnnualizedReturn > 0 ? "up" : p.testYear1AnnualizedReturn < 0 ? "down" : "";
+  const testYear2Class = p.testYear2AnnualizedReturn > 0 ? "up" : p.testYear2AnnualizedReturn < 0 ? "down" : "";
+  // "最差年份" (not the better year) keeps this consistent with reachedTarget requiring BOTH
+  // years to clear the bar — showing the better year here would be misleading about progress.
+  const worstTestAnnualized = Math.min(p.testYear1AnnualizedReturn, p.testYear2AnnualizedReturn);
   const statusCell = options.showStatus
-    ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最佳${formatPercent(p.testAnnualizedReturn)}</span>`}</td>`
+    ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最差年份${formatPercent(worstTestAnnualized)}</span>`}</td>`
     : "";
   return `
     <tr>
@@ -3060,8 +3076,10 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
       <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
-      <td class="${testClass}">${hasTrainTest ? formatPercent(p.testAnnualizedReturn) : "--"}</td>
-      <td>${hasTrainTest ? formatPercent(p.annualizedDiff) : "--"}</td>
+      <td class="${testYear1Class}">${hasTrainTest ? formatPercent(p.testYear1AnnualizedReturn) : "--"}</td>
+      <td class="${testYear2Class}">${hasTrainTest ? formatPercent(p.testYear2AnnualizedReturn) : "--"}</td>
+      <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear1) : "--"}</td>
+      <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear2) : "--"}</td>
       <td>${p.bestTrades || 0}</td>
       <td>${p.testedCandidates || 0}</td>
       <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
@@ -3352,8 +3370,8 @@ async function triggerAdminAutoGenerateRun() {
     attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 10,
     maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 20,
     pointCount: Number.isFinite(pointCount) ? pointCount : 5,
-    trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
-    testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
+    trainYears: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 4,
+    testYears: Number.isFinite(testYearsAgo) ? testYearsAgo : 2,
   };
   if (adminAutoGenerateRunStatus) adminAutoGenerateRunStatus.textContent = "正在启动自动生成...";
   try {
@@ -3363,12 +3381,12 @@ async function triggerAdminAutoGenerateRun() {
       body: JSON.stringify({ symbols, ...requested }),
     });
     const result = await readJsonResponse(response, "启动自动生成失败。");
-    // The server clamps limit/attemptsPerSymbol/maxAttempts/trainYearsAgo/testYearsAgo to
+    // The server clamps limit/attemptsPerSymbol/maxAttempts/trainYears/testYears to
     // sane ranges — if what actually got used differs from what was typed, say so explicitly
     // instead of silently running with a different number than the admin asked for (that's
     // exactly what caused this to be confusing before: the cap existed but nothing ever told
     // you your input got adjusted).
-    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts", "pointCount", "trainYearsAgo", "testYearsAgo"]
+    const adjustments = ["limit", "attemptsPerSymbol", "maxAttempts", "pointCount", "trainYears", "testYears"]
       .filter((key) => Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0
@@ -3419,8 +3437,8 @@ async function triggerAdminValidatedSearchRun(options = {}) {
     maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 400,
     candidates: Number.isFinite(candidates) ? candidates : 400,
     pointCount: Number.isFinite(pointCount) ? pointCount : 5,
-    trainYearsAgo: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 5,
-    testYearsAgo: Number.isFinite(testYearsAgo) ? testYearsAgo : 1,
+    trainYears: Number.isFinite(trainYearsAgo) ? trainYearsAgo : 4,
+    testYears: Number.isFinite(testYearsAgo) ? testYearsAgo : 2,
   };
   if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = options.resume ? "正在继续上次中断的验证搜索..." : "正在启动验证搜索...";
   try {
@@ -3430,7 +3448,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
       body: JSON.stringify({ symbols, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动验证搜索失败。");
-    const adjustments = ["targetPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYearsAgo", "testYearsAgo"]
+    const adjustments = ["targetPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYears", "testYears"]
       .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0
@@ -3456,7 +3474,7 @@ async function pauseAdminValidatedSearch() {
   }
 }
 
-let adminValidatedSearchSortKey = "annualizedDiff";
+let adminValidatedSearchSortKey = "annualizedDiffYear2";
 let adminValidatedSearchSortDirection = "asc";
 let adminValidatedSearchLastPayload = null;
 let adminValidatedSearchPollTimer = null;

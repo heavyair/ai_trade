@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-validated-search-status">
+    <link rel="stylesheet" href="/styles.css?v=20260828-two-year-validation">
   </head>
   <body>
     <main class="shell">
@@ -251,11 +251,11 @@
               <div id="adminScanSymbolGrid" class="admin-symbol-picker-grid"></div>
             </div>
             <div id="adminScanTrainTestRow" class="admin-scan-filter-row">
-              <label>训练起点（N年前）
-                <input id="adminScanTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              <label>训练年数
+                <input id="adminScanTrainYearsAgo" type="number" step="1" min="1" max="10" value="4">
               </label>
-              <label>验证起点（最近N年，也是训练终点）
-                <input id="adminScanTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
+              <label>验证年数（每年单独评估，不合并）
+                <input id="adminScanTestYearsAgo" type="number" step="1" min="1" max="5" value="2">
               </label>
             </div>
             <div class="admin-rerun-controls">
@@ -316,11 +316,11 @@
               <label>参数选点数量
                 <input id="adminAutoGeneratePointCount" type="number" step="1" min="3" max="10" value="5">
               </label>
-              <label>训练起点（N年前）
-                <input id="adminAutoGenerateTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              <label>训练年数
+                <input id="adminAutoGenerateTrainYearsAgo" type="number" step="1" min="1" max="10" value="4">
               </label>
-              <label>验证起点（最近N年，也是训练终点）
-                <input id="adminAutoGenerateTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
+              <label>验证年数（每年单独评估，不合并）
+                <input id="adminAutoGenerateTestYearsAgo" type="number" step="1" min="1" max="5" value="2">
               </label>
               <button type="button" id="adminAutoGenerateRunButton" class="ghost-button">启动自动生成</button>
               <span id="adminAutoGenerateRunStatus" class="field-hint"></span>
@@ -364,11 +364,11 @@
               <label>参数选点数量
                 <input id="adminValidatedSearchPointCount" type="number" step="1" min="3" max="10" value="5">
               </label>
-              <label>训练起点（N年前）
-                <input id="adminValidatedSearchTrainYearsAgo" type="number" step="1" min="2" max="10" value="5">
+              <label>训练年数
+                <input id="adminValidatedSearchTrainYearsAgo" type="number" step="1" min="1" max="10" value="4">
               </label>
-              <label>验证起点（最近N年，也是训练终点）
-                <input id="adminValidatedSearchTestYearsAgo" type="number" step="1" min="1" max="9" value="1">
+              <label>验证年数（每年单独评估，不合并）
+                <input id="adminValidatedSearchTestYearsAgo" type="number" step="1" min="1" max="5" value="2">
               </label>
               <button type="button" id="adminValidatedSearchRunButton" class="ghost-button">启动验证搜索</button>
               <button type="button" id="adminValidatedSearchPauseResumeButton" class="ghost-button hidden">暂停</button>
@@ -1325,7 +1325,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260828-validated-search-status"></script>
-    <script src="/app.js?v=20260828-validated-search-status"></script>
+    <script src="/formula-engine.js?v=20260828-two-year-validation"></script>
+    <script src="/app.js?v=20260828-two-year-validation"></script>
   </body>
 </html>

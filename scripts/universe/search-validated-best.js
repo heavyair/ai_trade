@@ -7,14 +7,15 @@
 // and ONLY THEN evaluates it against the test window. An attempt that would have generalized
 // better but scored lower on train (e.g. a simpler, less-overfit rule set) never even gets
 // test-evaluated, because it was discarded before that step. Here, EVERY qualifying attempt
-// (beats buy-hold on train) is immediately scored on the test window too, and the one with
-// the best test-period annualized return is what gets tracked/saved — directly optimizing for
-// the number that actually matters (does this hold up on data the search never saw), not a
-// proxy for it.
+// (beats buy-hold on train) is immediately scored on BOTH validation years too, and the one
+// whose WORSE year has the best annualized return is what gets tracked/saved — directly
+// optimizing for a model that holds up in its weakest year, not one that looks good only on
+// average because one good year is masking a bad one. "Target reached" likewise requires BOTH
+// years to individually clear --targetPercent, not just their average.
 //
 // Usage: node scripts/universe/search-validated-best.js --symbols=QQQ,NET [--targetPercent=50]
 //   [--attemptsPerSymbol=60] [--maxAttempts=400] [--candidates=400] [--pointCount=5]
-//   [--trainYearsAgo=5] [--testYearsAgo=1] [--minTrainRows=200] [--minTestRows=50]
+//   [--trainYears=4] [--testYears=2] [--minTrainRows=200] [--minTestRows=50]
 //   [--save] (omit to dry-run/report only; with --save, the best-by-test attempt for each
 //   symbol is always saved even if it didn't reach --targetPercent, so re-running later can
 //   pick up where this run left off instead of losing progress that fell just short)
@@ -28,7 +29,7 @@ const { searchBestConfig } = require("./search-best-config.js");
 const ModelGenerator = require("../shared/model-generator.js");
 const { inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
-const { splitTrainTestRows } = require("../shared/train-test-window.js");
+const { splitTrainTestWindows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -50,17 +51,13 @@ const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
 const POINT_COUNT = Math.max(3, Math.min(10, Math.round(getArg("pointCount", 5))));
 const MIN_TRAIN_ROWS = Math.max(30, getArg("minTrainRows", 200));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
-const TRAIN_YEARS_AGO = Math.max(1, Math.round(getArg("trainYearsAgo", 5)));
-const TEST_YEARS_AGO = Math.max(1, Math.round(getArg("testYearsAgo", 1)));
+const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
+const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 const SHOULD_SAVE = args.includes("--save");
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
-if (TRAIN_YEARS_AGO <= TEST_YEARS_AGO) {
-  console.error(`usage error: --trainYearsAgo (${TRAIN_YEARS_AGO}) must be greater than --testYearsAgo (${TEST_YEARS_AGO})`);
-  process.exit(1);
-}
 if (SYMBOLS_FILTER.length === 0) {
   console.error("usage error: --symbols=CODE1,CODE2 is required (this script never falls back to the full universe).");
   process.exit(1);
@@ -121,7 +118,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`targetPercent=${TARGET_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYearsAgo=${TRAIN_YEARS_AGO} testYearsAgo=${TEST_YEARS_AGO} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`targetPercent=${TARGET_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -159,23 +156,26 @@ async function main() {
         console.log(`[refresh] ${symbolEntry.code} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before searching`);
       }
       const allRows = await loadRows(symbolEntry.code, dbMarket);
-      const { trainRows, testRows, trainStartDate, testStartDate } = splitTrainTestRows(allRows, TRAIN_YEARS_AGO, TEST_YEARS_AGO);
-      if (trainRows.length < MIN_TRAIN_ROWS || testRows.length < MIN_TEST_ROWS) {
-        console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testRows=${testRows.length} (<${MIN_TEST_ROWS}?)`);
+      const { trainRows, trainStartDate, trainEndDate, testWindows } = splitTrainTestWindows(allRows, TRAIN_YEARS, TEST_YEARS);
+      const testWindowRowCounts = testWindows.map(
+        (win) => allRows.filter((row) => row.date >= win.startDate && row.date < win.endDate).length,
+      );
+      if (trainRows.length < MIN_TRAIN_ROWS || testWindowRowCounts.some((count) => count < MIN_TEST_ROWS)) {
+        console.log(`[skip-data] ${symbolEntry.code} trainRows=${trainRows.length} (<${MIN_TRAIN_ROWS}?) testWindowRows=${testWindowRowCounts.join("/")} (<${MIN_TEST_ROWS}?)`);
         dataSkipped += 1;
-        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testRows.length}行），跳过` });
+        writeProgress({ dataSkipped, currentReason: `历史数据不足（训练${trainRows.length}行/验证${testWindowRowCounts.join("+")}行），跳过` });
         continue;
       }
 
       const profile = ModelGenerator.buildSymbolDataProfile(trainRows);
-      console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${testStartDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
+      console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${trainEndDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
 
       engine.setActiveLotSizeSymbol(symbolEntry.code);
       const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
       const buyHold = buyHoldStates[buyHoldStates.length - 1];
 
       const previousAttempts = [];
-      let bestByTest = null; // { model, best, testAnnualized, testScored }
+      let bestByTest = null; // { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2 }
       let reachedTarget = false;
 
       for (let attempt = 0; attempt < ATTEMPTS_PER_SYMBOL; attempt += 1) {
@@ -213,47 +213,52 @@ async function main() {
           continue;
         }
 
-        // This is the actual methodological change: score EVERY qualifying attempt on the
-        // test window immediately, instead of only ever test-evaluating a single train-picked
-        // winner at the very end.
-        const scoredTest = engine.buildScoredBacktestStates(allRows, best.config, testStartDate);
+        // This is the actual methodological change: score EVERY qualifying attempt on BOTH
+        // validation years immediately, instead of only ever test-evaluating a single
+        // train-picked winner at the very end. Selection (and "target reached") is driven by
+        // the WORSE of the two years, so a model can't hide a bad year behind a good one.
+        const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
+        const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        const testAnnualized = annualizedReturnRate(scoredTest.returnRate, scoredTest.rowsScored) || 0;
-        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${trainAnnualized.toFixed(1)}%年化 TEST=${testAnnualized.toFixed(1)}%年化 (${scoredTest.trades.length}笔) diff=${Math.abs(testAnnualized - trainAnnualized).toFixed(1)}`);
+        const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
+        const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
+        const worstTestAnnualized = Math.min(year1Annualized, year2Annualized);
+        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化 worst=${worstTestAnnualized.toFixed(1)}%年化`);
 
-        if (!bestByTest || testAnnualized > bestByTest.testAnnualized) {
-          bestByTest = { model, best, trainAnnualized, testAnnualized, scoredTest };
+        if (!bestByTest || worstTestAnnualized > bestByTest.worstTestAnnualized) {
+          bestByTest = { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2 };
         }
-        if (bestAnnualizedReturn === null || testAnnualized > bestAnnualizedReturn) {
-          bestAnnualizedReturn = testAnnualized;
+        if (bestAnnualizedReturn === null || worstTestAnnualized > bestAnnualizedReturn) {
+          bestAnnualizedReturn = worstTestAnnualized;
           bestAnnualizedSymbol = symbolEntry.code;
         }
         writeProgress({
           aiCalls,
-          currentReason: `${model.strategyType}：train ${trainAnnualized.toFixed(1)}%年化 / TEST ${testAnnualized.toFixed(1)}%年化（${scoredTest.trades.length}笔）`,
+          currentReason: `${model.strategyType}：train ${trainAnnualized.toFixed(1)}%年化 / 验证第1年 ${year1Annualized.toFixed(1)}%年化 / 验证第2年 ${year2Annualized.toFixed(1)}%年化`,
           bestAnnualizedReturn, bestAnnualizedSymbol,
         });
-        if (testAnnualized >= TARGET_PERCENT) {
+        if (year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT) {
           reachedTarget = true;
-          console.log(`[TARGET REACHED] ${symbolEntry.code}: attempt ${attempt + 1} validated at ${testAnnualized.toFixed(1)}%年化 (>= ${TARGET_PERCENT}%)`);
+          console.log(`[TARGET REACHED] ${symbolEntry.code}: attempt ${attempt + 1} validated at year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化 (both >= ${TARGET_PERCENT}%)`);
         }
       }
 
       if (bestByTest) {
         results.push({ symbol: symbolEntry.code, ...bestByTest, reachedTarget });
-        console.log(`[best-by-test] ${symbolEntry.code}: strategyType=${bestByTest.model.strategyType} train=${bestByTest.trainAnnualized.toFixed(1)}% TEST=${bestByTest.testAnnualized.toFixed(1)}% ${reachedTarget ? "— TARGET MET" : "— below target"}`);
+        console.log(`[best-by-test] ${symbolEntry.code}: strategyType=${bestByTest.model.strategyType} train=${bestByTest.trainAnnualized.toFixed(1)}% year1=${bestByTest.year1Annualized.toFixed(1)}% year2=${bestByTest.year2Annualized.toFixed(1)}% ${reachedTarget ? "— TARGET MET" : "— below target"}`);
 
         if (SHOULD_SAVE) {
           const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
           const name = `ai_validated_${symbolEntry.code}_${dateSlug}`;
           const label = reachedTarget
-            ? `AI验证达标·${symbolEntry.code}·+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`
-            : `AI搜索中·${symbolEntry.code}·当前最佳+${bestByTest.testAnnualized.toFixed(1)}%验证期年化·${dateSlug}`;
+            ? `AI验证达标·${symbolEntry.code}·第1年+${bestByTest.year1Annualized.toFixed(1)}%·第2年+${bestByTest.year2Annualized.toFixed(1)}%·${dateSlug}`
+            : `AI搜索中·${symbolEntry.code}·当前最差年份+${bestByTest.worstTestAnnualized.toFixed(1)}%年化·${dateSlug}`;
           // This candidate never touches strategy_presets — it only ever lives in
           // optimization_scan_results (see that file's header comment). presetId is just an
           // internal candidate-pool key, not a real strategy_presets.id; a human promotes it
           // into a real model via the admin panel's "另存为" button when it's worth keeping.
           const presetId = name;
+          const trainAnnualizedReturn = bestByTest.trainAnnualized;
           await saveOptimizationResult(pool, {
             symbol: symbolEntry.code,
             market: dbMarket,
@@ -272,15 +277,25 @@ async function main() {
             bestConfig: bestByTest.best.config,
             buyHoldReturnRate: buyHold.returnRate,
             buyHoldMaxDrawdown: buyHold.maxDrawdown,
-            trainAnnualizedReturn: bestByTest.trainAnnualized,
-            testReturnRate: bestByTest.scoredTest.returnRate,
-            testMaxDrawdown: bestByTest.scoredTest.maxDrawdown,
-            testAnnualizedReturn: bestByTest.testAnnualized,
-            testTrades: bestByTest.scoredTest.trades.length,
-            testRowsTested: bestByTest.scoredTest.rowsScored,
-            annualizedDiff: Math.abs(bestByTest.testAnnualized - bestByTest.trainAnnualized),
+            trainAnnualizedReturn,
+            testYear1ReturnRate: bestByTest.scoredYear1.returnRate,
+            testYear1MaxDrawdown: bestByTest.scoredYear1.maxDrawdown,
+            testYear1AnnualizedReturn: bestByTest.year1Annualized,
+            testYear1Trades: bestByTest.scoredYear1.trades.length,
+            testYear1RowsTested: bestByTest.scoredYear1.rowsScored,
+            testYear1StartDate: testWindows[0].startDate,
+            testYear1EndDate: testWindows[0].endDate,
+            testYear2ReturnRate: bestByTest.scoredYear2.returnRate,
+            testYear2MaxDrawdown: bestByTest.scoredYear2.maxDrawdown,
+            testYear2AnnualizedReturn: bestByTest.year2Annualized,
+            testYear2Trades: bestByTest.scoredYear2.trades.length,
+            testYear2RowsTested: bestByTest.scoredYear2.rowsScored,
+            testYear2StartDate: testWindows[1].startDate,
+            testYear2EndDate: testWindows[1].endDate,
+            annualizedDiffYear1: Math.abs(bestByTest.year1Annualized - trainAnnualizedReturn),
+            annualizedDiffYear2: Math.abs(bestByTest.year2Annualized - trainAnnualizedReturn),
             trainStartDate,
-            testStartDate,
+            trainEndDate,
             reachedTarget,
             source: "validated-search",
             modelReason: bestByTest.model.reason || "",
@@ -302,7 +317,8 @@ async function main() {
   console.log(`\ndone. aiCalls=${aiCalls}`);
   console.log("summary:", JSON.stringify(results.map((r) => ({
     symbol: r.symbol, strategyType: r.model.strategyType,
-    train: Number(r.trainAnnualized.toFixed(1)), test: Number(r.testAnnualized.toFixed(1)),
+    train: Number(r.trainAnnualized.toFixed(1)),
+    year1: Number(r.year1Annualized.toFixed(1)), year2: Number(r.year2Annualized.toFixed(1)),
     reachedTarget: r.reachedTarget,
   })), null, 2));
   writeProgress({
