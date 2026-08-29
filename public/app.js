@@ -229,6 +229,16 @@ const modelActionSaveAsButton = document.querySelector("#modelActionSaveAsButton
 const modelActionReloadSimButton = document.querySelector("#modelActionReloadSimButton");
 const modelActionCreateWatchButton = document.querySelector("#modelActionCreateWatchButton");
 const modelActionScreenMarketButton = document.querySelector("#modelActionScreenMarketButton");
+const modelActionRevalidateButton = document.querySelector("#modelActionRevalidateButton");
+const revalidateDialog = document.querySelector("#revalidateDialog");
+const revalidateTitle = document.querySelector("#revalidateTitle");
+const closeRevalidateButton = document.querySelector("#closeRevalidateButton");
+const revalidateTrainYearsInput = document.querySelector("#revalidateTrainYears");
+const revalidateTestYearsInput = document.querySelector("#revalidateTestYears");
+const revalidateTargetPercentInput = document.querySelector("#revalidateTargetPercent");
+const revalidateRunButton = document.querySelector("#revalidateRunButton");
+const revalidateStatus = document.querySelector("#revalidateStatus");
+const revalidateResult = document.querySelector("#revalidateResult");
 const adminRerunTitle = document.querySelector("#adminRerunTitle");
 const adminRerunSubtitle = document.querySelector("#adminRerunSubtitle");
 const closeAdminRerunButton = document.querySelector("#closeAdminRerunButton");
@@ -2880,6 +2890,8 @@ function openModelActionMenu(context) {
   // 的股票池），没有关联股票的模型（比如"通用"模型）这两个按钮先禁用。
   if (modelActionCreateWatchButton) modelActionCreateWatchButton.disabled = !hasSymbol;
   if (modelActionScreenMarketButton) modelActionScreenMarketButton.disabled = !hasSymbol;
+  // 重新验证同样需要具体股票代码——用的是这个模型自己的参数原样回测，不是重新搜索。
+  if (modelActionRevalidateButton) modelActionRevalidateButton.disabled = !hasSymbol;
   showDialog(modelActionDialog);
 }
 
@@ -3098,6 +3110,82 @@ if (modelActionScreenMarketButton) {
       setStatus(`已用「${resolved.label}」启动${market === "CN" ? "A股" : "美股"}全市场扫描，可以在"选股"页面查看结果。`);
     } catch (error) {
       setStatus(`启动扫描失败：${error.message}`, true);
+    }
+  });
+}
+
+// 重新验证：用当前模型自己的配置原样回测（不重新搜索/优化参数），只换历史数据区间和目标
+// 年化收益率——不需要先另存/克隆AI候选，context 里已经有 symbol/config/strategyType，直接
+// 送给服务端跑，几秒内同步拿到结果。
+function openRevalidateDialog() {
+  const context = modelActionContext;
+  if (!context || !context.symbol) return;
+  if (revalidateTitle) {
+    revalidateTitle.textContent = `重新验证：${context.numericId ? `#${context.numericId} · ` : ""}${context.label || "模型"}（${context.symbol}）`;
+  }
+  if (revalidateStatus) revalidateStatus.textContent = "";
+  if (revalidateResult) revalidateResult.innerHTML = "";
+  showDialog(revalidateDialog);
+}
+
+if (modelActionRevalidateButton) {
+  modelActionRevalidateButton.addEventListener("click", () => {
+    if (!modelActionContext || !modelActionContext.symbol) return;
+    closeDialog(modelActionDialog);
+    openRevalidateDialog();
+  });
+}
+
+if (closeRevalidateButton && revalidateDialog) {
+  closeRevalidateButton.addEventListener("click", () => closeDialog(revalidateDialog));
+}
+
+function renderRevalidateResult(payload) {
+  if (!revalidateResult) return;
+  const badge = payload.reachedTarget
+    ? '<span class="up">已达标（两年都 ≥ 目标）</span>'
+    : '<span class="down">未达标</span>';
+  revalidateResult.innerHTML = `
+    <div class="admin-progress-banner-stats">
+      <div>训练期（${escapeHtml(payload.trainStartDate)} ~ ${escapeHtml(payload.trainEndDate)}）年化：${formatPercent(payload.trainAnnualizedReturn)}</div>
+      <div>验证第1年（${escapeHtml(payload.testYear1.startDate)} ~ ${escapeHtml(payload.testYear1.endDate)}）年化：${formatPercent(payload.testYear1.annualizedReturn)} · ${payload.testYear1.trades}笔交易</div>
+      <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · ${payload.testYear2.trades}笔交易</div>
+      <div>目标年化收益率 ${formatPercent(payload.targetPercent)}：${badge}</div>
+    </div>
+  `;
+}
+
+if (revalidateRunButton) {
+  revalidateRunButton.addEventListener("click", async () => {
+    const context = modelActionContext;
+    if (!context || !context.symbol) return;
+    const trainYears = Number(revalidateTrainYearsInput && revalidateTrainYearsInput.value) || 4;
+    const testYears = Number(revalidateTestYearsInput && revalidateTestYearsInput.value) || 2;
+    const targetPercent = Number(revalidateTargetPercentInput && revalidateTargetPercentInput.value) || 50;
+    if (revalidateStatus) revalidateStatus.textContent = "正在用现有参数重新回测...";
+    if (revalidateResult) revalidateResult.innerHTML = "";
+    revalidateRunButton.disabled = true;
+    try {
+      const response = await fetch("/api/presets/revalidate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: context.symbol,
+          strategyType: context.strategyType,
+          config: context.config || {},
+          trainYears,
+          testYears,
+          targetPercent,
+        }),
+      });
+      const payload = await readJsonResponse(response, "重新验证失败。");
+      if (revalidateStatus) revalidateStatus.textContent = "已完成。";
+      renderRevalidateResult(payload);
+    } catch (error) {
+      if (revalidateStatus) revalidateStatus.textContent = "";
+      setStatus(`重新验证失败：${error.message}`, true);
+    } finally {
+      revalidateRunButton.disabled = false;
     }
   });
 }

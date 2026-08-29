@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260828-index-cache-search">
+    <link rel="stylesheet" href="/styles.css?v=20260829-revalidate">
   </head>
   <body>
     <main class="shell">
@@ -432,7 +432,36 @@
             <button type="button" id="modelActionReloadSimButton" class="ghost-button">重新加载历史模拟</button>
             <button type="button" id="modelActionCreateWatchButton" class="ghost-button">建立盯盘</button>
             <button type="button" id="modelActionScreenMarketButton" class="ghost-button">扫描市场</button>
+            <button type="button" id="modelActionRevalidateButton" class="ghost-button">重新验证</button>
           </div>
+        </form>
+      </dialog>
+
+      <dialog id="revalidateDialog" class="param-dialog" aria-label="重新验证">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="revalidateTitle">重新验证</h2>
+              <p class="field-hint">用模型现有参数原样回测（不重新搜索/优化参数），只更换历史数据区间和目标年化收益率，几秒到几十秒内出结果。</p>
+            </div>
+            <button id="closeRevalidateButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div class="dialog-grid">
+            <label>训练年数
+              <input id="revalidateTrainYears" type="number" step="1" min="1" max="10" value="4">
+            </label>
+            <label>验证年数（每年单独评估，不合并）
+              <input id="revalidateTestYears" type="number" step="1" min="1" max="5" value="2">
+            </label>
+            <label>目标年化收益率(%)
+              <input id="revalidateTargetPercent" type="number" step="1" min="1" max="500" value="50">
+            </label>
+          </div>
+          <div class="dialog-actions">
+            <button type="button" id="revalidateRunButton" class="ghost-button">开始验证</button>
+            <span id="revalidateStatus" class="field-hint"></span>
+          </div>
+          <div id="revalidateResult"></div>
         </form>
       </dialog>
 
@@ -1350,7 +1379,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260828-index-cache-search"></script>
-    <script src="/app.js?v=20260828-index-cache-search"></script>
+    <script src="/formula-engine.js?v=20260829-revalidate"></script>
+    <script src="/app.js?v=20260829-revalidate"></script>
   </body>
 </html>

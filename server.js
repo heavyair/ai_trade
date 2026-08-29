@@ -10,6 +10,10 @@ const { getStockCategories } = require("./scripts/shared/stock-categories.js");
 const { postJsonToResend } = require("./scripts/shared/send-email.js");
 const { runAkshareBridge } = require("./scripts/shared/akshare-client.js");
 const { ensureIndexCatalogTable, listIndexCatalog, resolveIndexConstituents } = require("./scripts/shared/index-catalog.js");
+const { loadRowsForSymbol } = require("./scripts/shared/load-rows.js");
+const { splitTrainTestWindows } = require("./scripts/shared/train-test-window.js");
+const { annualizedReturnRate } = require("./scripts/shared/annualize.js");
+const engine = require("./scripts/universe/engine.js");
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -4282,6 +4286,120 @@ async function fetchKlines({ code, start, end }) {
   };
 }
 
+const REVALIDATE_MIN_TRAIN_ROWS = 200;
+const REVALIDATE_MIN_TEST_ROWS = 50;
+
+// "重新验证": takes a model's EXISTING config exactly as-is (no re-optimization/AI search —
+// just a fresh backtest + two-year-separate-validation), lets the user pick a different
+// train/test window and target percent, and answers synchronously — a couple of backtests,
+// no AI calls, so unlike the admin batch jobs this doesn't need the spawn/background-job/
+// progress-polling machinery. Available to any signed-in user (not admin-gated), matching
+// the other actions already reachable from the unified model-action popup.
+async function handlePresetRevalidateApi(req, res) {
+  try {
+    await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+
+    const symbol = normalizeCode(payload.symbol);
+    const strategyType = String(payload.strategyType || "wave");
+    const rawConfig = payload.config && typeof payload.config === "object" ? payload.config : {};
+    const trainYears = Math.max(1, Math.min(10, Math.round(Number(payload.trainYears)) || 4));
+    const testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
+    const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+
+    await ensureDbReady();
+    const market = isChinaCode(symbol) ? inferMarket(symbol) : "US";
+
+    // Same staleness check as scripts/universe/ensure-fresh-data.js, just in-process — server.js
+    // IS the /api/klines endpoint, so there's no need to hop out over HTTP the way a standalone
+    // script has to.
+    const freshnessResult = await dbPool.query(
+      `SELECT MAX(trade_date) AS last_date FROM daily_prices WHERE symbol = $1 AND market = $2`,
+      [symbol, market]
+    );
+    const lastDate = freshnessResult.rows[0] && freshnessResult.rows[0].last_date
+      ? new Date(freshnessResult.rows[0].last_date).toISOString().slice(0, 10)
+      : null;
+    const today = new Date().toISOString().slice(0, 10);
+    const daysSinceLast = lastDate ? Math.round((new Date(today) - new Date(lastDate)) / 86400000) : Infinity;
+    if (daysSinceLast > 4) {
+      const start = lastDate
+        ? new Date(new Date(lastDate).getTime() - 3 * 86400000).toISOString().slice(0, 10)
+        : new Date(new Date().setFullYear(new Date().getFullYear() - (trainYears + testYears))).toISOString().slice(0, 10);
+      try {
+        await fetchKlines({ code: symbol, start, end: today });
+      } catch (error) {
+        // Best-effort — if the live fetch fails, fall through and try with whatever's already
+        // stored; the data-sufficiency check below will catch a genuinely unusable symbol.
+      }
+    }
+
+    const allRows = await loadRowsForSymbol(dbPool, symbol, market);
+    const { trainRows, trainStartDate, trainEndDate, testWindows } = splitTrainTestWindows(allRows, trainYears, testYears);
+    const testWindowRowCounts = testWindows.map(
+      (window) => allRows.filter((row) => row.date >= window.startDate && row.date < window.endDate).length
+    );
+    if (trainRows.length < REVALIDATE_MIN_TRAIN_ROWS || testWindowRowCounts.some((count) => count < REVALIDATE_MIN_TEST_ROWS)) {
+      sendJson(res, 400, {
+        error: `历史数据不足，无法重新验证（训练${trainRows.length}行/验证${testWindowRowCounts.join("+")}行，至少需要训练${REVALIDATE_MIN_TRAIN_ROWS}行、每个验证年${REVALIDATE_MIN_TEST_ROWS}行）。`,
+      });
+      return;
+    }
+
+    const initialCash = 2000000;
+    const tradeFee = 5;
+    const baseConfig = engine.buildConfigFromPresetObject(
+      { ...rawConfig, strategyType },
+      { initialCash, tradeFee, strategyType }
+    );
+    engine.setActiveLotSizeSymbol(symbol);
+
+    const trainStates = engine.buildBacktestStates(trainRows, baseConfig);
+    const trainLast = trainStates[trainStates.length - 1];
+    const trainAnnualizedReturn = annualizedReturnRate(trainLast.returnRate, trainRows.length) || 0;
+
+    const scoredYear1 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[0].startDate, testWindows[0].endDate);
+    const scoredYear2 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[1].startDate, testWindows[1].endDate);
+    const testYear1AnnualizedReturn = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
+    const testYear2AnnualizedReturn = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
+    const reachedTarget = testYear1AnnualizedReturn >= targetPercent && testYear2AnnualizedReturn >= targetPercent;
+
+    sendJson(res, 200, {
+      symbol,
+      trainYears,
+      testYears,
+      targetPercent,
+      trainStartDate,
+      trainEndDate,
+      trainAnnualizedReturn,
+      testYear1: {
+        startDate: testWindows[0].startDate,
+        endDate: testWindows[0].endDate,
+        annualizedReturn: testYear1AnnualizedReturn,
+        returnRate: scoredYear1.returnRate,
+        maxDrawdown: scoredYear1.maxDrawdown,
+        trades: scoredYear1.trades.length,
+      },
+      testYear2: {
+        startDate: testWindows[1].startDate,
+        endDate: testWindows[1].endDate,
+        annualizedReturn: testYear2AnnualizedReturn,
+        returnRate: scoredYear2.returnRate,
+        maxDrawdown: scoredYear2.maxDrawdown,
+        trades: scoredYear2.trades.length,
+      },
+      reachedTarget,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "重新验证失败。" });
+  }
+}
+
 async function handleApi(req, res, requestUrl) {
   try {
     const code = normalizeCode(requestUrl.searchParams.get("code") || "513100");
@@ -4541,6 +4659,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/watch-alert-indexes") {
     handleWatchAlertIndexesApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/presets/revalidate") {
+    handlePresetRevalidateApi(req, res);
     return;
   }
 
