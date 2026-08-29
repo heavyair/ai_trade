@@ -1001,7 +1001,7 @@ function getPreviousLow(rows, index, lookbackDays) {
 }
 
 
-function buildStagnationReversalBacktestStates(rows, config) {
+function buildStagnationReversalBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const rule = readStagnationReversalRule(config.stagnationReversalRule || defaultStagnationReversalRule);
@@ -1028,7 +1028,7 @@ function buildStagnationReversalBacktestStates(rows, config) {
       noNewLowDays = row.low < previousLow.low ? 0 : noNewLowDays + 1;
     }
 
-    if (!waitingForSell && previousLow && noNewLowDays >= rule.buyStalledDays) {
+    if (index >= accountStartIndex && !waitingForSell && previousLow && noNewLowDays >= rule.buyStalledDays) {
       const trade = buyToTarget(
         account,
         row,
@@ -1119,7 +1119,7 @@ function buildStagnationReversalBacktestStates(rows, config) {
 }
 
 
-function buildWaveBacktestStates(rows, config) {
+function buildWaveBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const account = {
@@ -1169,7 +1169,7 @@ function buildWaveBacktestStates(rows, config) {
         }
       }
     });
-    if (deepestUntriggeredBuyRule) {
+    if (index >= accountStartIndex && deepestUntriggeredBuyRule) {
       const rule = deepestUntriggeredBuyRule;
       const trade = buyToTarget(
         account,
@@ -1300,7 +1300,7 @@ function getRollingHigh(rows, index, lookbackDays) {
 }
 
 
-function buildLocalLadderBacktestStates(rows, config) {
+function buildLocalLadderBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const rule = config.localLadderRule || defaultLocalLadderRule;
@@ -1347,7 +1347,7 @@ function buildLocalLadderBacktestStates(rows, config) {
     }
 
     const pullback = anchorHigh.high > 0 ? ((anchorHigh.high - row.close) / anchorHigh.high) * 100 : 0;
-    if (pullback >= rule.entryDrop) {
+    if (index >= accountStartIndex && pullback >= rule.entryDrop) {
       const level = 1 + Math.floor((pullback - rule.entryDrop) / rule.ladderDrop);
       while (deepestLevelBought < level) {
         const currentRatio = getPositionRatio(account, row);
@@ -1460,7 +1460,7 @@ function buildLocalLadderBacktestStates(rows, config) {
 }
 
 
-function buildMaRsiBandBacktestStates(rows, config) {
+function buildMaRsiBandBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const rule = config.maRsiBandRule || defaultMaRsiBandRule;
@@ -1481,41 +1481,43 @@ function buildMaRsiBandBacktestStates(rows, config) {
   rows.forEach((row, index) => {
     const decision = getMaRsiBandDecision(row, index, series, rule);
 
-    if (decision.target > previousTarget + 0.5) {
-      targetUpSignals.push({
-        date: row.date,
-        price: row.close,
-        rowIndex: index,
-        confirmDate: row.date,
-        confirmPrice: decision.slowMa || row.close,
-        confirmRowIndex: index,
-        confirmLabel: "慢均线",
-        version: targetUpSignals.length + 1,
-      });
-    } else if (decision.target < previousTarget - 0.5) {
-      targetDownSignals.push({
-        date: row.date,
-        price: row.close,
-        rowIndex: index,
-        confirmDate: row.date,
-        confirmPrice: decision.fastMa || row.close,
-        confirmRowIndex: index,
-        confirmLabel: "快均线",
-        version: targetDownSignals.length + 1,
-      });
-    }
+    if (index >= accountStartIndex) {
+      if (decision.target > previousTarget + 0.5) {
+        targetUpSignals.push({
+          date: row.date,
+          price: row.close,
+          rowIndex: index,
+          confirmDate: row.date,
+          confirmPrice: decision.slowMa || row.close,
+          confirmRowIndex: index,
+          confirmLabel: "慢均线",
+          version: targetUpSignals.length + 1,
+        });
+      } else if (decision.target < previousTarget - 0.5) {
+        targetDownSignals.push({
+          date: row.date,
+          price: row.close,
+          rowIndex: index,
+          confirmDate: row.date,
+          confirmPrice: decision.fastMa || row.close,
+          confirmRowIndex: index,
+          confirmLabel: "快均线",
+          version: targetDownSignals.length + 1,
+        });
+      }
 
-    const currentRatio = getPositionRatio(account, row);
-    const reference = {
-      type: "indicator",
-      label: "目标仓位",
-      date: row.date,
-      price: row.close,
-    };
-    const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
-    const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
-    rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
-    previousTarget = decision.target;
+      const currentRatio = getPositionRatio(account, row);
+      const reference = {
+        type: "indicator",
+        label: "目标仓位",
+        date: row.date,
+        price: row.close,
+      };
+      const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
+      const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
+      rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
+      previousTarget = decision.target;
+    }
 
     const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
     peakEquity = snapshot.peakEquity;
@@ -1530,7 +1532,7 @@ function buildMaRsiBandBacktestStates(rows, config) {
 }
 
 
-function buildOrderGridBacktestStates(rows, config) {
+function buildOrderGridBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const rule = config.orderGridRule || defaultOrderGridRule;
@@ -1590,7 +1592,7 @@ function buildOrderGridBacktestStates(rows, config) {
 
     if (lots.length === 0) {
       const pullback = rollingHigh.high > 0 ? ((rollingHigh.high - row.close) / rollingHigh.high) * 100 : 0;
-      if (pullback >= rule.entryDrop) {
+      if (index >= accountStartIndex && pullback >= rule.entryDrop) {
         const trade = buyFixedCapitalLot(
           account,
           row,
@@ -1672,7 +1674,7 @@ function buildOrderGridBacktestStates(rows, config) {
 }
 
 
-function buildPeVolumeBacktestStates(rows, config) {
+function buildPeVolumeBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const rule = config.peVolumeRule || defaultPeVolumeRule;
@@ -1693,33 +1695,35 @@ function buildPeVolumeBacktestStates(rows, config) {
   rows.forEach((row, index) => {
     const decision = getPeVolumeDecision(row, index, series, rule);
 
-    if (decision.target > previousTarget + 0.5) {
-      targetUpSignals.push({
-        date: row.date,
-        price: row.close,
-        rowIndex: index,
-        version: targetUpSignals.length + 1,
-      });
-    } else if (decision.target < previousTarget - 0.5) {
-      targetDownSignals.push({
-        date: row.date,
-        price: row.close,
-        rowIndex: index,
-        version: targetDownSignals.length + 1,
-      });
-    }
+    if (index >= accountStartIndex) {
+      if (decision.target > previousTarget + 0.5) {
+        targetUpSignals.push({
+          date: row.date,
+          price: row.close,
+          rowIndex: index,
+          version: targetUpSignals.length + 1,
+        });
+      } else if (decision.target < previousTarget - 0.5) {
+        targetDownSignals.push({
+          date: row.date,
+          price: row.close,
+          rowIndex: index,
+          version: targetDownSignals.length + 1,
+        });
+      }
 
-    const currentRatio = getPositionRatio(account, row);
-    const reference = {
-      type: "pe-volume",
-      label: "PE-成交量",
-      date: row.date,
-      price: row.close,
-    };
-    const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
-    const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
-    rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
-    previousTarget = decision.target;
+      const currentRatio = getPositionRatio(account, row);
+      const reference = {
+        type: "pe-volume",
+        label: "PE-成交量",
+        date: row.date,
+        price: row.close,
+      };
+      const actionText = decision.target >= currentRatio ? "加仓" : "减仓";
+      const reason = `${actionText}到 ${formatPercent(decision.target)}；${decision.reason}`;
+      rebalanceToTarget(account, row, index, decision.target, reference, reason, trades, config.tradeFee);
+      previousTarget = decision.target;
+    }
 
     const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
     peakEquity = snapshot.peakEquity;
@@ -1917,7 +1921,7 @@ function describeBlockAction(action) {
 }
 
 
-function buildGenericBacktestStates(rows, config) {
+function buildGenericBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const buyBlockRules = Array.isArray(config.buyBlockRules) ? config.buyBlockRules : defaultBuyBlockRules;
@@ -1938,6 +1942,16 @@ function buildGenericBacktestStates(rows, config) {
   let maxDrawdown = 0;
 
   rows.forEach((row, index) => {
+    // Edge-detection flags (buyBlockWasActive/sellBlockWasActive) track whether each rule's
+    // conditions were ALREADY true on the previous row so a still-true condition doesn't
+    // re-fire every day — reset them right as the "real" (post-reset) simulation begins so a
+    // condition that's been sitting true since before accountStartIndex is treated as a fresh
+    // opportunity here, not silently skipped for having "already fired" during warmup that no
+    // longer counts as a trade.
+    if (index === accountStartIndex) {
+      buyBlockWasActive.fill(false);
+      sellBlockWasActive.fill(false);
+    }
     const currentRatio = getPositionRatio(account, row);
     positionRatioHistory[index] = currentRatio;
     holdingDaysCounter = account.shares > 0 ? holdingDaysCounter + 1 : 0;
@@ -1972,10 +1986,10 @@ function buildGenericBacktestStates(rows, config) {
     });
 
     const reference = { type: "block-rules", label: "组合规则", date: row.date, price: row.close };
-    if (sellTarget !== null) {
+    if (index >= accountStartIndex && sellTarget !== null) {
       const trade = rebalanceToTarget(account, row, index, sellTarget, reference, sellReason, trades, config.tradeFee);
       if (trade) sellSignals.push({ date: row.date, price: row.close, rowIndex: index, version: sellSignals.length + 1 });
-    } else if (buyTarget !== null) {
+    } else if (index >= accountStartIndex && buyTarget !== null) {
       const trade = rebalanceToTarget(account, row, index, buyTarget, reference, buyReason, trades, config.tradeFee);
       if (trade) buySignals.push({ date: row.date, price: row.close, rowIndex: index, version: buySignals.length + 1 });
     }
@@ -1993,7 +2007,7 @@ function buildGenericBacktestStates(rows, config) {
 }
 
 
-function buildScoreRuleBacktestStates(rows, config) {
+function buildScoreRuleBacktestStates(rows, config, accountStartIndex = 0) {
   if (!rows || rows.length === 0) return [];
 
   const scoreRules = Array.isArray(config.scoreRules) ? config.scoreRules : defaultScoreRules;
@@ -2033,8 +2047,10 @@ function buildScoreRuleBacktestStates(rows, config) {
     const targetPercent = matchedBand ? Math.min(100, Math.max(0, Number(matchedBand.targetPercent) || 0)) : 0;
     const reason = `总分${totalScore}：${hitDescriptions.join("、") || "无命中规则"} → 目标仓位${formatPercent(targetPercent)}`;
     const reference = { type: "score-rules", label: "打分模型", date: row.date, price: row.close };
-    const trade = rebalanceToTarget(account, row, index, targetPercent, reference, reason, trades, config.tradeFee);
-    if (trade) tradeSignals.push({ date: row.date, price: row.close, rowIndex: index, version: tradeSignals.length + 1 });
+    if (index >= accountStartIndex) {
+      const trade = rebalanceToTarget(account, row, index, targetPercent, reference, reason, trades, config.tradeFee);
+      if (trade) tradeSignals.push({ date: row.date, price: row.close, rowIndex: index, version: tradeSignals.length + 1 });
+    }
 
     const snapshot = getAccountSnapshot(account, row, config.initialCash, peakEquity, trades);
     peakEquity = snapshot.peakEquity;
@@ -2066,18 +2082,25 @@ function buildScoreRuleBacktestStates(rows, config) {
 // preserves the original "score to the end of rows" behavior exactly — every existing caller
 // that only ever passed 3 args is unaffected.
 function buildScoredBacktestStates(rows, config, scoringStartDate, scoringEndDate = null) {
-  const states = buildBacktestStates(rows, config);
+  const scoringStartIndex = rows.findIndex((row) => row.date >= scoringStartDate);
+  const effectiveStartIndex = scoringStartIndex < 0 ? rows.length : scoringStartIndex;
+  // The account genuinely starts fresh — cash=config.initialCash, shares=0, zero prior trades
+  // — right at effectiveStartIndex (see buildBacktestStates' accountStartIndex param), not
+  // just "whatever the full-history-compounded balance happened to be at that point". This is
+  // what makes a validation year's score reflect the model actually trading during that year,
+  // not coasting on a position built up during training (or an earlier validation year) that
+  // never got touched again — a real problem this fixes: a model that built a position in
+  // training and then never traded again could show a large "return" during a 0-trade
+  // validation year purely from holding while the price rose, which isn't the strategy proving
+  // anything, just a buy-and-hold artifact wearing a strategy's label.
+  const states = buildBacktestStates(rows, config, effectiveStartIndex);
   if (states.length === 0) {
     return {
       returnRate: 0, maxDrawdown: 0, trades: [], rowsScored: 0, equity: config.initialCash || 0,
       cash: config.initialCash || 0, shares: 0, positionRatio: 0,
     };
   }
-  const scoringStartIndex = rows.findIndex((row) => row.date >= scoringStartDate);
-  const effectiveStartIndex = scoringStartIndex < 0 ? states.length : scoringStartIndex;
-  const baselineEquity = effectiveStartIndex > 0
-    ? states[effectiveStartIndex - 1].equity
-    : (Number(config.initialCash) || 0);
+  const baselineEquity = Number(config.initialCash) || 0;
 
   let effectiveEndIndex = states.length - 1;
   if (scoringEndDate) {
@@ -2101,52 +2124,53 @@ function buildScoredBacktestStates(rows, config, scoringStartDate, scoringEndDat
   const trades = (finalState.trades || []).filter((trade) => trade.date >= scoringStartDate
     && (!scoringEndDate || trade.date < scoringEndDate));
 
-  // cash/shares/equity are rebased the same way returnRate already is: scaled as if the
-  // account had actually been reset to config.initialCash at the baseline (scoringStartDate),
-  // not left at whatever dollar value the backtest happened to compound to across the full
-  // (possibly multi-year) rows array before that point. Without this, a caller asking "what
-  // would my account look like if I'd started trading on this date" would see the account's
-  // true full-history-compounded balance (e.g. $18M from a 5-year warmup run) instead of a
-  // number consistent with returnRate and a real starting balance — positionRatio needs no
-  // scaling since it's already a ratio, invariant to the account's absolute size.
-  const scale = baselineEquity > 0 ? (Number(config.initialCash) || 0) / baselineEquity : 1;
-
   return {
     returnRate,
     maxDrawdown,
     trades,
     rowsScored: Math.min(effectiveEndIndex, states.length - 1) - effectiveStartIndex + 1,
-    equity: finalEquity * scale,
-    cash: finalState.cash * scale,
-    shares: finalState.shares * scale,
+    equity: finalEquity,
+    cash: finalState.cash,
+    shares: finalState.shares,
     positionRatio: finalState.positionRatio,
   };
 }
 
 
-function buildBacktestStates(rows, config) {
+// accountStartIndex (default 0, fully backward compatible): the row index at which the
+// account actually starts trading — cash=config.initialCash, shares=0, no prior trades, as if
+// the account had genuinely never existed before that row. Rows before it still run through
+// each strategy's own signal/indicator logic (so rolling-window indicators — moving averages,
+// N-day highs/lows, RSI, etc. — have real warmup data, exactly like today), they just never
+// mutate the account or record a trade. Used by buildScoredBacktestStates so a "验证年份"
+// window's own result reflects a genuinely fresh account, not whatever position happened to
+// carry over from training or a prior validation year (see that function's comment for why
+// this matters — a model that built a position during training and never traded again could
+// otherwise show a large "return" during a 0-trade validation year purely from holding while
+// the price rose, which isn't the strategy proving anything).
+function buildBacktestStates(rows, config, accountStartIndex = 0) {
   if (config.strategyType === "block-rules") {
-    return buildGenericBacktestStates(rows, config);
+    return buildGenericBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "score-rules") {
-    return buildScoreRuleBacktestStates(rows, config);
+    return buildScoreRuleBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "local-high-ladder") {
-    return buildLocalLadderBacktestStates(rows, config);
+    return buildLocalLadderBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "ma-rsi-band") {
-    return buildMaRsiBandBacktestStates(rows, config);
+    return buildMaRsiBandBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "order-grid") {
-    return buildOrderGridBacktestStates(rows, config);
+    return buildOrderGridBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "pe-volume") {
-    return buildPeVolumeBacktestStates(rows, config);
+    return buildPeVolumeBacktestStates(rows, config, accountStartIndex);
   }
   if (config.strategyType === "stagnation-reversal") {
-    return buildStagnationReversalBacktestStates(rows, config);
+    return buildStagnationReversalBacktestStates(rows, config, accountStartIndex);
   }
-  return buildWaveBacktestStates(rows, config);
+  return buildWaveBacktestStates(rows, config, accountStartIndex);
 }
 
 
