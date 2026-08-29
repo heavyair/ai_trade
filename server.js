@@ -4461,6 +4461,14 @@ async function handleAdminSymbolHistoryApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
+    // LIMIT was 200 — fine when this was written, but this session alone pushed total
+    // distinct queried codes past 550 (index-constituent backfills, batch validated-search
+    // runs across 50-symbol indices, etc.), which silently dropped older-but-still-relevant
+    // codes (e.g. TSM, queried a couple days ago) out of the admin symbol picker entirely,
+    // even though they're exactly the kind of already-validated symbol an admin would want to
+    // re-select. Raised generously — the client already does its own substring-search
+    // filtering over whatever this returns, so a bigger list just means a more complete
+    // picker, not a slower one.
     const result = await dbQuery(`
       SELECT code, description, last_used_at FROM (
         SELECT code, description, last_used_at,
@@ -4469,7 +4477,7 @@ async function handleAdminSymbolHistoryApi(req, res) {
       ) t
       WHERE rn = 1
       ORDER BY last_used_at DESC
-      LIMIT 200
+      LIMIT 3000
     `);
     sendJson(res, 200, {
       symbols: result.rows.map((row) => ({
