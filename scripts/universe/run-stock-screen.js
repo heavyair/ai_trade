@@ -68,8 +68,16 @@ async function loadRows(symbol, market) {
     SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume,
            dv.pe, dv.pe_ttm, dv.pb
     FROM daily_prices dp
-    LEFT JOIN daily_valuations dv
-      ON dv.symbol = dp.symbol AND dv.market = dp.market AND dv.trade_date = dp.trade_date
+    LEFT JOIN LATERAL (
+      -- Forward-fill: see run-watch-alerts.js's loadRows for why (US PE lands once a day,
+      -- up to ~10 days lookback so a real data outage still surfaces as missing PE).
+      SELECT pe, pe_ttm, pb
+      FROM daily_valuations
+      WHERE symbol = dp.symbol AND market = dp.market
+        AND trade_date <= dp.trade_date AND trade_date >= dp.trade_date - INTERVAL '10 days'
+      ORDER BY trade_date DESC
+      LIMIT 1
+    ) dv ON TRUE
     WHERE dp.symbol = $1 AND dp.market = $2
     ORDER BY dp.trade_date ASC
   `, [symbol, market]);

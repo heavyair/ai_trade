@@ -49,8 +49,20 @@ async function loadRows(symbol, dbMarket) {
     SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume,
            dv.pe, dv.pe_ttm, dv.pb
     FROM daily_prices dp
-    LEFT JOIN daily_valuations dv
-      ON dv.symbol = dp.symbol AND dv.market = dp.market AND dv.trade_date = dp.trade_date
+    LEFT JOIN LATERAL (
+      -- Forward-fill: US PE only lands once a day (see backfill_us_pe_from_huggingface.py),
+      -- so "today"'s price can be in daily_prices for up to ~13 hours before "today"'s PE
+      -- is backfilled. Falling back to the most recent PE on or before this date (instead of
+      -- an exact trade_date match) means a pe-volume-type model doesn't see a false "no PE"
+      -- gap on the very latest trading day — bounded to 10 days back so a genuinely long
+      -- data outage still shows up as missing rather than silently reusing a stale value.
+      SELECT pe, pe_ttm, pb
+      FROM daily_valuations
+      WHERE symbol = dp.symbol AND market = dp.market
+        AND trade_date <= dp.trade_date AND trade_date >= dp.trade_date - INTERVAL '10 days'
+      ORDER BY trade_date DESC
+      LIMIT 1
+    ) dv ON TRUE
     WHERE dp.symbol = $1 AND dp.market = $2
     ORDER BY dp.trade_date ASC
   `, [symbol, dbMarket]);

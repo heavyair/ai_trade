@@ -3763,7 +3763,19 @@ async function persistKlineData({ code, market, name, source, info, rows }) {
         source || "",
       ]);
 
-      if (Number.isFinite(Number(row.peTtm)) || Number.isFinite(Number(row.pe)) || Number.isFinite(Number(row.pb))) {
+      // BUG FIXED HERE (was silently corrupting real PE data): `Number.isFinite(Number(x))`
+      // treats a genuinely-missing `null`/`undefined` value as finite, because `Number(null)`
+      // is `0` — not `NaN` — so a row with no PE at all (pe/peTtm/pb all null, e.g. every US
+      // row before fetchStoredUsValuations existed, or any date the daily HuggingFace PE
+      // backfill hasn't reached yet) was treated as "has valuation data" and written as a
+      // literal `0`, overwriting whatever correct PE value was already stored for that date.
+      // toValidNumberOrNull (used elsewhere in this file for exactly this reason) correctly
+      // distinguishes "no data" (stays null) from a genuine, meaningful 0/negative PE (kept,
+      // per backfill_us_pe_from_huggingface.py's own convention for negative-EPS periods).
+      const validPe = toValidNumberOrNull(row.pe);
+      const validPeTtm = toValidNumberOrNull(row.peTtm);
+      const validPb = toValidNumberOrNull(row.pb);
+      if (validPe !== null || validPeTtm !== null || validPb !== null) {
         await dbPool.query(`
           INSERT INTO daily_valuations (symbol, market, trade_date, pe, pe_ttm, pb, source, updated_at)
           VALUES ($1, $2, $3::date, $4, $5, $6, $7, NOW())
@@ -3773,15 +3785,7 @@ async function persistKlineData({ code, market, name, source, info, rows }) {
                 pb = EXCLUDED.pb,
                 source = EXCLUDED.source,
                 updated_at = NOW()
-        `, [
-          code,
-          market,
-          tradeDate,
-          Number.isFinite(Number(row.pe)) ? Number(row.pe) : null,
-          Number.isFinite(Number(row.peTtm)) ? Number(row.peTtm) : null,
-          Number.isFinite(Number(row.pb)) ? Number(row.pb) : null,
-          source || "",
-        ]);
+        `, [code, market, tradeDate, validPe, validPeTtm, validPb, source || ""]);
       }
     }
 
@@ -4177,6 +4181,36 @@ async function fetchYahooKlines({ code, market, start, end }) {
   };
 }
 
+// US market has no LIVE PE-fetch source (Yahoo's chart API — the only US kline source — has
+// no valuation fields, and EastMoney/AKShare's PE endpoints only cover A股). PE for US symbols
+// instead gets computed once a day straight into daily_valuations by
+// scripts/backfill_us_pe_from_huggingface.py (see that script's header comment for why). Read
+// it back out here so interactive 历史模拟 (which fetches through this same /api/klines path)
+// sees the same PE data the batch scripts (run-auto-generate.js etc., which query
+// daily_valuations directly via SQL) already had all along — without this, a pe-volume-type
+// model always computed target=0 for every US symbol in the browser (getPeVolumeDecision
+// treats missing PE as "no usable signal"), even though the identical model backtests and
+// validates correctly server-side.
+async function fetchStoredUsValuations({ code, market, start, end }) {
+  try {
+    const result = await dbQuery(`
+      SELECT trade_date, pe, pe_ttm, pb
+      FROM daily_valuations
+      WHERE symbol = $1 AND market = $2 AND trade_date >= $3 AND trade_date <= $4
+      ORDER BY trade_date ASC
+    `, [code, market, start, end]);
+    return result.rows.map((row) => ({
+      date: new Date(row.trade_date).toISOString().slice(0, 10),
+      peTtm: toValidNumberOrNull(row.pe_ttm),
+      pe: toValidNumberOrNull(row.pe),
+      pb: toValidNumberOrNull(row.pb),
+      source: "stored",
+    }));
+  } catch (error) {
+    return [];
+  }
+}
+
 async function fetchKlines({ code, start, end }) {
   const market = isChinaCode(code) ? inferMarket(code) : "US";
   let result;
@@ -4210,6 +4244,12 @@ async function fetchKlines({ code, start, end }) {
       valuationSource = " + AKShare PE";
     } else if (hasPeValuations(eastMoneyValuations)) {
       valuationSource = " + EastMoney PE";
+    }
+  } else {
+    const storedUsValuations = await fetchStoredUsValuations({ code, market, start, end });
+    if (hasPeValuations(storedUsValuations)) {
+      valuations = storedUsValuations;
+      valuationSource = " + Hugging Face PE (cached)";
     }
   }
   const rows = mergeValuationsIntoRows(result.rows, valuations);
