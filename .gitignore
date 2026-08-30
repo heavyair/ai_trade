@@ -6,3 +6,5 @@ node_modules/
 __pycache__/
 data/*.json
 data/*.tmp
+.env.local
+.env.local.tmp
