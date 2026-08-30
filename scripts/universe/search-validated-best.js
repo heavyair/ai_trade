@@ -183,15 +183,16 @@ async function main() {
       const buyHold = buyHoldStates[buyHoldStates.length - 1];
 
       const previousAttempts = [];
-      let bestByTest = null; // { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2 }
-      let reachedTarget = false;
+      const qualifyingAttempts = []; // { model, best, trainAnnualized } — every attempt that beat buy-hold on TRAIN
 
+      // Phase 1: run the FULL requested attempt budget against TRAIN data only, collecting
+      // every attempt that beats buy-hold — no early exit once one candidate looks good, and
+      // no test-period evaluation yet (keeps this phase strictly train-only).
       for (let attempt = 0; attempt < ATTEMPTS_PER_SYMBOL; attempt += 1) {
         if (aiCalls >= MAX_ATTEMPTS) {
           console.log(`[budget] reached --maxAttempts=${MAX_ATTEMPTS} AI calls total, stopping entirely`);
           break;
         }
-        if (reachedTarget) break;
 
         writeProgress({ attempt: attempt + 1, currentReason: "AI 正在分析数据、设计模型…" });
         aiCalls += 1;
@@ -217,100 +218,114 @@ async function main() {
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
         if (!beatsReturn || !beatsDrawdown) {
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping test eval`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
           continue;
         }
 
-        // This is the actual methodological change: score EVERY qualifying attempt on BOTH
-        // validation years immediately, instead of only ever test-evaluating a single
-        // train-picked winner at the very end. Selection (and "target reached") is driven by
-        // the WORSE of the two years, so a model can't hide a bad year behind a good one.
+        const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
+        qualifyingAttempts.push({ model, best, trainAnnualized });
+        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
+        writeProgress({
+          aiCalls,
+          currentReason: `训练阶段第${attempt + 1}/${ATTEMPTS_PER_SYMBOL}次：${model.strategyType} 跑赢买入持有，已收集${qualifyingAttempts.length}个候选（训练阶段跑完后统一验证）`,
+        });
+      }
+
+      // Phase 2: NOW validate every train-qualifying candidate against both validation years
+      // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
+      // gets checked, not just whichever happened to be found first or scored best on train.
+      console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
-        const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
         const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
         const worstTestAnnualized = Math.min(year1Annualized, year2Annualized);
-        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化 worst=${worstTestAnnualized.toFixed(1)}%年化`);
+        const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT;
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}): train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化${reachedTarget ? " — TARGET MET" : ""}`);
+        writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
+        return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget };
+      });
 
-        if (!bestByTest || worstTestAnnualized > bestByTest.worstTestAnnualized) {
-          bestByTest = { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2 };
-        }
-        if (bestAnnualizedReturn === null || worstTestAnnualized > bestAnnualizedReturn) {
-          bestAnnualizedReturn = worstTestAnnualized;
+      const passing = validated.filter((v) => v.reachedTarget);
+      if (validated.length > 0) {
+        const topByWorst = validated.reduce((a, b) => (b.worstTestAnnualized > a.worstTestAnnualized ? b : a), validated[0]);
+        if (bestAnnualizedReturn === null || topByWorst.worstTestAnnualized > bestAnnualizedReturn) {
+          bestAnnualizedReturn = topByWorst.worstTestAnnualized;
           bestAnnualizedSymbol = symbolEntry.code;
-        }
-        writeProgress({
-          aiCalls,
-          currentReason: `${model.strategyType}：train ${trainAnnualized.toFixed(1)}%年化 / 验证第1年 ${year1Annualized.toFixed(1)}%年化 / 验证第2年 ${year2Annualized.toFixed(1)}%年化`,
-          bestAnnualizedReturn, bestAnnualizedSymbol,
-        });
-        if (year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT) {
-          reachedTarget = true;
-          console.log(`[TARGET REACHED] ${symbolEntry.code}: attempt ${attempt + 1} validated at year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化 (both >= ${TARGET_PERCENT}%)`);
         }
       }
 
-      if (bestByTest) {
-        results.push({ symbol: symbolEntry.code, ...bestByTest, reachedTarget });
-        console.log(`[best-by-test] ${symbolEntry.code}: strategyType=${bestByTest.model.strategyType} train=${bestByTest.trainAnnualized.toFixed(1)}% year1=${bestByTest.year1Annualized.toFixed(1)}% year2=${bestByTest.year2Annualized.toFixed(1)}% ${reachedTarget ? "— TARGET MET" : "— below target"}`);
+      // Every candidate that reached target gets saved (not just one "best" pick). If NONE
+      // reached target, fall back to saving just the single best-by-worst-year attempt (as
+      // before) so "继续寻找" progress tracking still shows how close this symbol got.
+      const toSave = passing.length > 0
+        ? passing
+        : (validated.length > 0
+          ? [validated.reduce((a, b) => (b.worstTestAnnualized > a.worstTestAnnualized ? b : a), validated[0])]
+          : []);
+      toSave.forEach((entry) => results.push({ symbol: symbolEntry.code, ...entry }));
 
+      if (toSave.length > 0) {
+        console.log(`[${symbolEntry.code}] ${passing.length}/${validated.length} candidate(s) reached target; saving ${toSave.length}`);
         if (SHOULD_SAVE) {
-          const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-          const name = `ai_validated_${symbolEntry.code}_${dateSlug}`;
-          const label = reachedTarget
-            ? `AI验证达标·${symbolEntry.code}·第1年+${bestByTest.year1Annualized.toFixed(1)}%·第2年+${bestByTest.year2Annualized.toFixed(1)}%·${dateSlug}`
-            : `AI搜索中·${symbolEntry.code}·当前最差年份+${bestByTest.worstTestAnnualized.toFixed(1)}%年化·${dateSlug}`;
-          // This candidate never touches strategy_presets — it only ever lives in
-          // optimization_scan_results (see that file's header comment). presetId is just an
-          // internal candidate-pool key, not a real strategy_presets.id; a human promotes it
-          // into a real model via the admin panel's "另存为" button when it's worth keeping.
-          const presetId = name;
-          const trainAnnualizedReturn = bestByTest.trainAnnualized;
-          await saveOptimizationResult(pool, {
-            symbol: symbolEntry.code,
-            market: dbMarket,
-            symbolName: symbolEntry.name,
-            presetId,
-            presetLabel: label,
-            strategyType: bestByTest.model.strategyType,
-            rowsTested: trainRows.length,
-            baselineReturnRate: 0,
-            baselineMaxDrawdown: 0,
-            bestReturnRate: bestByTest.best.last.returnRate,
-            bestMaxDrawdown: bestByTest.best.last.maxDrawdown,
-            bestScore: bestByTest.best.score,
-            bestTrades: bestByTest.best.last.trades.length,
-            testedCandidates: bestByTest.best.testedCandidates,
-            bestConfig: bestByTest.best.config,
-            buyHoldReturnRate: buyHold.returnRate,
-            buyHoldMaxDrawdown: buyHold.maxDrawdown,
-            trainAnnualizedReturn,
-            testYear1ReturnRate: bestByTest.scoredYear1.returnRate,
-            testYear1MaxDrawdown: bestByTest.scoredYear1.maxDrawdown,
-            testYear1AnnualizedReturn: bestByTest.year1Annualized,
-            testYear1Trades: bestByTest.scoredYear1.trades.length,
-            testYear1RowsTested: bestByTest.scoredYear1.rowsScored,
-            testYear1StartDate: testWindows[0].startDate,
-            testYear1EndDate: testWindows[0].endDate,
-            testYear2ReturnRate: bestByTest.scoredYear2.returnRate,
-            testYear2MaxDrawdown: bestByTest.scoredYear2.maxDrawdown,
-            testYear2AnnualizedReturn: bestByTest.year2Annualized,
-            testYear2Trades: bestByTest.scoredYear2.trades.length,
-            testYear2RowsTested: bestByTest.scoredYear2.rowsScored,
-            testYear2StartDate: testWindows[1].startDate,
-            testYear2EndDate: testWindows[1].endDate,
-            annualizedDiffYear1: Math.abs(bestByTest.year1Annualized - trainAnnualizedReturn),
-            annualizedDiffYear2: Math.abs(bestByTest.year2Annualized - trainAnnualizedReturn),
-            trainStartDate,
-            trainEndDate,
-            reachedTarget,
-            source: "validated-search",
-            modelReason: bestByTest.model.reason || "",
-          });
-          saved += 1;
-          console.log(`[saved] ${symbolEntry.code}: ${presetId} ${reachedTarget ? "(TARGET MET)" : "(best-so-far, below target)"}`);
-          writeProgress({ saved, currentReason: `已保存：${label}` });
+          for (let i = 0; i < toSave.length; i += 1) {
+            const entry = toSave[i];
+            const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+            const name = `ai_validated_${symbolEntry.code}_${dateSlug}_${i + 1}`;
+            const label = entry.reachedTarget
+              ? `AI验证达标·${symbolEntry.code}·第1年+${entry.year1Annualized.toFixed(1)}%·第2年+${entry.year2Annualized.toFixed(1)}%·${dateSlug}`
+              : `AI搜索中·${symbolEntry.code}·当前最差年份+${entry.worstTestAnnualized.toFixed(1)}%年化·${dateSlug}`;
+            // This candidate never touches strategy_presets — it only ever lives in
+            // optimization_scan_results (see that file's header comment). presetId is just an
+            // internal candidate-pool key, not a real strategy_presets.id; a human promotes it
+            // into a real model via the admin panel's "另存为" button when it's worth keeping.
+            const presetId = name;
+            await saveOptimizationResult(pool, {
+              symbol: symbolEntry.code,
+              market: dbMarket,
+              symbolName: symbolEntry.name,
+              presetId,
+              presetLabel: label,
+              strategyType: entry.model.strategyType,
+              rowsTested: trainRows.length,
+              baselineReturnRate: 0,
+              baselineMaxDrawdown: 0,
+              bestReturnRate: entry.best.last.returnRate,
+              bestMaxDrawdown: entry.best.last.maxDrawdown,
+              bestScore: entry.best.score,
+              bestTrades: entry.best.last.trades.length,
+              testedCandidates: entry.best.testedCandidates,
+              bestConfig: entry.best.config,
+              buyHoldReturnRate: buyHold.returnRate,
+              buyHoldMaxDrawdown: buyHold.maxDrawdown,
+              trainAnnualizedReturn: entry.trainAnnualized,
+              testYear1ReturnRate: entry.scoredYear1.returnRate,
+              testYear1MaxDrawdown: entry.scoredYear1.maxDrawdown,
+              testYear1AnnualizedReturn: entry.year1Annualized,
+              testYear1Trades: entry.scoredYear1.trades.length,
+              testYear1RowsTested: entry.scoredYear1.rowsScored,
+              testYear1StartDate: testWindows[0].startDate,
+              testYear1EndDate: testWindows[0].endDate,
+              testYear2ReturnRate: entry.scoredYear2.returnRate,
+              testYear2MaxDrawdown: entry.scoredYear2.maxDrawdown,
+              testYear2AnnualizedReturn: entry.year2Annualized,
+              testYear2Trades: entry.scoredYear2.trades.length,
+              testYear2RowsTested: entry.scoredYear2.rowsScored,
+              testYear2StartDate: testWindows[1].startDate,
+              testYear2EndDate: testWindows[1].endDate,
+              annualizedDiffYear1: Math.abs(entry.year1Annualized - entry.trainAnnualized),
+              annualizedDiffYear2: Math.abs(entry.year2Annualized - entry.trainAnnualized),
+              trainStartDate,
+              trainEndDate,
+              reachedTarget: entry.reachedTarget,
+              source: "validated-search",
+              modelReason: entry.model.reason || "",
+            });
+            saved += 1;
+            console.log(`[saved] ${symbolEntry.code}: ${presetId} ${entry.reachedTarget ? "(TARGET MET)" : "(best-so-far, below target)"}`);
+          }
+          writeProgress({ saved, currentReason: `${symbolEntry.code}：已保存 ${toSave.length} 个模型（其中 ${passing.length} 个达标）` });
         }
       } else {
         console.log(`[no-qualifying] ${symbolEntry.code}: no attempt beat buy-hold on both return and drawdown`);
