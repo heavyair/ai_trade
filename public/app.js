@@ -4203,6 +4203,11 @@ function renderWatchAlertEntry(watch, options = {}) {
     : "";
   const ownerPart = options.showOwner ? `${escapeHtml(watch.ownerEmail || "")} · ` : "";
   const statusPart = !watch.enabled ? ' · <span class="down">已停用</span>' : "";
+  // 模型冻结在创建盯盘那一刻，不会被后台的重新优化悄悄改变；这里的"已失效"是指冻结的这套
+  // 参数在最近一年的新数据上已经跑不赢买入持有了（见 run-watch-alerts.js 的 evaluateModelValidity）。
+  const invalidPart = watch.isInvalid
+    ? ` · <span class="down" title="${escapeHtml(watch.invalidReason || "")}">⚠ 模型已失效${watch.enabled ? "（仍有持仓，继续跟踪）" : ""}</span>`
+    : "";
   const modelLink = formatModelNameLink({
     id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
     config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
@@ -4211,7 +4216,7 @@ function renderWatchAlertEntry(watch, options = {}) {
   const targetLabel = isIndexWatch
     ? `${escapeHtml(watch.indexName || watch.indexCode)}（全指数）`
     : `${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）`;
-  const summary = `${ownerPart}${modelLink} · ${targetLabel} · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
+  const summary = `${ownerPart}${modelLink} · ${targetLabel} · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${invalidPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
   const actionsPart = options.showOwner ? "" : `
     <div class="admin-scan-actions">
       <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>

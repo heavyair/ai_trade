@@ -17,6 +17,15 @@
 // A signal already emailed for the same trade_date is not re-emailed (last_signal_date dedup,
 // applies to both modes).
 //
+// The TRADING STRATEGY itself (frozen_strategy_type/frozen_config/frozen_label) is a snapshot
+// taken once at watch creation and never re-read from strategy_presets afterward, for both
+// modes — editing/re-optimizing the source preset later has zero effect on an already-running
+// watch. Instead, every check cycle re-validates the frozen strategy against a trailing year of
+// freshly-arrived data (evaluateModelValidity, symbol watches only): once it stops beating
+// buy-and-hold, a warning email goes out; if no position is open it auto-disables immediately,
+// if a position IS open it keeps running and re-warns once/day until that position closes on
+// the model's own exit rule, then auto-disables on the next cycle.
+//
 // This is a lightweight per-watch job (seconds per symbol-mode row, longer for index-mode rows
 // since those scan every constituent), not a full-universe batch scan, so it deliberately does
 // NOT go through server.js's isScanRunning()/activeScanProcess lock — it runs standalone via
@@ -83,10 +92,13 @@ async function loadRows(symbol, dbMarket) {
 }
 
 async function loadDueWatches() {
+  // No join against strategy_presets: every field this script needs to decide buy/sell
+  // (frozen_strategy_type/frozen_config/frozen_label) was snapshotted onto the watch_alerts
+  // row itself at creation time and never changes afterward — see server.js's ensureCoreTables
+  // comment on those columns for why (editing the source preset used to silently change what
+  // an already-running watch does, mid-position, with no notification).
   const result = await pool.query(`
-    SELECT wa.*, sp.label AS current_preset_label, sp.strategy_type, sp.config
-    FROM watch_alerts wa
-    JOIN strategy_presets sp ON sp.id = wa.preset_id
+    SELECT * FROM watch_alerts wa
     WHERE wa.enabled = TRUE
       AND (wa.last_checked_at IS NULL
            OR NOW() - wa.last_checked_at >= (wa.frequency_minutes || ' minutes')::interval)
@@ -223,6 +235,79 @@ async function sendAutoDisabledEmail(watch) {
   });
 }
 
+// ~1 trading year — matches the "one full year" validation-window convention used elsewhere
+// (search-validated-best.js's testYears windows) for judging whether a model still works.
+const VALIDITY_WINDOW_ROWS = 252;
+
+// Checks the watch's FROZEN strategy (see server.js's schema comment on frozen_config) against
+// the most recent ~1 year of freshly-fetched data: does it still beat buy-and-hold? rows is the
+// same SIMULATION_WINDOW_ROWS (~2yr) slice processSymbolWatch already loaded, used here purely
+// as indicator warmup so the trailing-year score isn't computed on cold indicators — same
+// reasoning as buildScoredBacktestStates' own doc comment. Returns { checked: false } when
+// there isn't yet a full trailing year of data (a young listing), rather than flagging invalid
+// on too little evidence.
+function evaluateModelValidity(rows, baseConfig) {
+  if (rows.length <= VALIDITY_WINDOW_ROWS) return { checked: false };
+  const validityRows = rows.slice(-VALIDITY_WINDOW_ROWS);
+  const validityStartDate = validityRows[0].date;
+  const validityEndDate = validityRows[validityRows.length - 1].date;
+  const scored = engine.buildScoredBacktestStates(rows, baseConfig, validityStartDate);
+  const buyHoldStates = engine.buildBuyHoldStates(validityRows, INITIAL_CASH, TRADE_FEE);
+  const buyHold = buyHoldStates[buyHoldStates.length - 1];
+  const beatsReturn = scored.returnRate > buyHold.returnRate;
+  const beatsDrawdown = scored.maxDrawdown < buyHold.maxDrawdown;
+  const isInvalid = !(beatsReturn && beatsDrawdown);
+  const reason = isInvalid
+    ? `最近一年（${validityStartDate} ~ ${validityEndDate}）模型实际年化收益 ${scored.returnRate.toFixed(1)}%、最大回撤 ${scored.maxDrawdown.toFixed(1)}%；同期买入持有为 ${buyHold.returnRate.toFixed(1)}% / ${buyHold.maxDrawdown.toFixed(1)}%。模型已不再跑赢买入持有。`
+    : "";
+  return { checked: true, isInvalid, reason };
+}
+
+function buildModelInvalidWarningEmail(watch, reason, scoredAccount) {
+  const symbolLabel = `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
+  const shares = Number(scoredAccount.shares) || 0;
+  const equity = Number(scoredAccount.equity) || 0;
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>模型已失效预警：${escapeHtml(symbolLabel)}（仍有持仓，盯盘继续）</h2>
+      <p>你设置的盯盘"${escapeHtml(watch.preset_label)} · ${escapeHtml(symbolLabel)}"所用的模型参数是创建盯盘时冻结的，不会被后台的重新优化自动修改。这次检查发现：</p>
+      <p>${escapeHtml(reason)}</p>
+      <p>当前模拟持仓：${shares.toFixed(0)} 股，账户权益 ${equity.toFixed(0)}。因为还有持仓，盯盘不会自动停止，会按原模型的规则继续跟踪到这笔仓位结束（每天最多提醒一次），届时若仍然失效会自动停用。是否要提前手动平仓，请自行判断。</p>
+      <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
+      <h2>Model no longer valid: ${escapeHtml(symbolLabel)} (position still open, watch continues)</h2>
+      <p>${escapeHtml(reason)} A position is still open under this watch's frozen model, so it stays active and will keep tracking the existing position (at most one warning email per day) until it closes on the model's own exit rule — auto-disabling only once flat. This is not investment advice; whether to close early is your call.</p>
+    </div>
+  `;
+  const text = `模型已失效预警：${symbolLabel}\n${reason}\n当前模拟持仓：${shares.toFixed(0)} 股，账户权益 ${equity.toFixed(0)}。仍有持仓，盯盘继续，直到仓位结束。`;
+  return { html, text, subject: `模型已失效预警：${symbolLabel}（仍有持仓）` };
+}
+
+async function sendModelInvalidWarningEmail(watch, reason, scoredAccount) {
+  const { html, text, subject } = buildModelInvalidWarningEmail(watch, reason, scoredAccount);
+  await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+}
+
+function buildModelInvalidStoppedEmail(watch, reason) {
+  const symbolLabel = `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>盯盘已自动停止：${escapeHtml(symbolLabel)}</h2>
+      <p>${escapeHtml(reason)}</p>
+      <p>当前没有模拟持仓，为避免继续用一个已经失效的模型开新仓，这个盯盘已自动停用。可以到"设置盯盘提醒"里用"重新验证"看看调整参数后是否还能用，或者换一个新模型重新建立盯盘。</p>
+      <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
+      <h2>Watch auto-disabled: ${escapeHtml(symbolLabel)}</h2>
+      <p>${escapeHtml(reason)} No position is currently open, so this watch has been auto-disabled rather than let a model that's stopped beating buy-and-hold open new positions. Re-validate with adjusted parameters, or set up a new watch with a different model.</p>
+    </div>
+  `;
+  const text = `盯盘已自动停止：${symbolLabel}\n${reason}\n当前没有持仓，已自动停用，避免用失效模型开新仓。`;
+  return { html, text, subject: `盯盘已自动停止：${symbolLabel}` };
+}
+
+async function sendModelInvalidStoppedEmail(watch, reason) {
+  const { html, text, subject } = buildModelInvalidStoppedEmail(watch, reason);
+  await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+}
+
 async function processWatch(watch) {
   if (watch.index_code) {
     return processIndexWatch(watch);
@@ -243,9 +328,9 @@ async function processIndexWatch(watch) {
 
     const preset = {
       id: watch.preset_id,
-      label: watch.current_preset_label,
-      strategyType: watch.strategy_type,
-      ...(watch.config && typeof watch.config === "object" ? watch.config : {}),
+      label: watch.frozen_label,
+      strategyType: watch.frozen_strategy_type,
+      ...(watch.frozen_config && typeof watch.frozen_config === "object" ? watch.frozen_config : {}),
     };
     const baseConfig = engine.buildConfigFromPresetObject(preset, { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: preset.strategyType });
 
@@ -353,9 +438,9 @@ async function processSymbolWatch(watch) {
 
     const preset = {
       id: watch.preset_id,
-      label: watch.current_preset_label,
-      strategyType: watch.strategy_type,
-      ...(watch.config && typeof watch.config === "object" ? watch.config : {}),
+      label: watch.frozen_label,
+      strategyType: watch.frozen_strategy_type,
+      ...(watch.frozen_config && typeof watch.frozen_config === "object" ? watch.frozen_config : {}),
     };
     const baseConfig = engine.buildConfigFromPresetObject(preset, { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: preset.strategyType });
     engine.setActiveLotSizeSymbol(watch.symbol);
@@ -378,6 +463,52 @@ async function processSymbolWatch(watch) {
       JSON.stringify(scoredAccount.trades),
     ];
 
+    // As new trading days arrive, re-check whether the FROZEN strategy (untouched since watch
+    // creation) still beats buy-and-hold on a trailing year — a model can go stale even though
+    // nobody edited anything, just because the market it's tuned for moved on. hasPosition uses
+    // scoredAccount (already reflects any trade executed today) as the single source of truth
+    // for "is there something to protect by staying on," matching this file's existing
+    // no-incremental-state philosophy instead of tracking a separate position flag.
+    const validity = evaluateModelValidity(rows, baseConfig);
+    const nowInvalid = Boolean(validity.checked && validity.isInvalid);
+    const hasPosition = Math.abs(Number(scoredAccount.shares) || 0) > 1e-6;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const previousWarningDateStr = watch.last_invalid_warning_date
+      ? watch.last_invalid_warning_date.toISOString().slice(0, 10)
+      : null;
+
+    let shouldDisableForInvalidity = false;
+    let shouldSendInvalidWarning = false;
+    let shouldSendInvalidStopped = false;
+    let nextInvalidWarningDate = previousWarningDateStr;
+    let nextInvalidSince = null;
+    if (nowInvalid) {
+      nextInvalidSince = watch.invalid_since || new Date();
+      nextInvalidWarningDate = todayStr;
+      if (hasPosition) {
+        shouldSendInvalidWarning = previousWarningDateStr !== todayStr;
+      } else {
+        shouldDisableForInvalidity = true;
+        shouldSendInvalidStopped = true;
+      }
+    }
+    if (shouldSendInvalidStopped) {
+      try {
+        await sendModelInvalidStoppedEmail(watch, validity.reason);
+        console.log(`[invalid-stopped] watch=${watch.id} ${watch.symbol} -> notified ${watch.owner_email}`);
+      } catch (emailError) {
+        console.error(`[error] failed to send invalid-stopped notice for watch=${watch.id}: ${emailError.message}`);
+      }
+    } else if (shouldSendInvalidWarning) {
+      try {
+        await sendModelInvalidWarningEmail(watch, validity.reason, scoredAccount);
+        console.log(`[invalid-warning] watch=${watch.id} ${watch.symbol} -> notified ${watch.owner_email}`);
+      } catch (emailError) {
+        console.error(`[error] failed to send invalid-warning notice for watch=${watch.id}: ${emailError.message}`);
+      }
+    }
+    const invalidParams = [nowInvalid, nowInvalid ? validity.reason : "", nextInvalidSince, nextInvalidWarningDate];
+
     if (todaysTrades.length > 0 && lastDate !== (watch.last_signal_date ? watch.last_signal_date.toISOString().slice(0, 10) : null)) {
       await sendAlertEmail(watch, todaysTrades);
       const lastTrade = todaysTrades[todaysTrades.length - 1];
@@ -388,9 +519,11 @@ async function processSymbolWatch(watch) {
           last_error = '', updated_at = NOW(),
           account_cash = $5, account_shares = $6, account_equity = $7, account_position_ratio = $8,
           account_return_rate = $9, account_annualized_return = $10, account_max_drawdown = $11,
-          account_rows_scored = $12, account_trades = $13::jsonb, account_updated_at = NOW()
+          account_rows_scored = $12, account_trades = $13::jsonb, account_updated_at = NOW(),
+          is_invalid = $14, invalid_reason = $15, invalid_since = $16, last_invalid_warning_date = $17,
+          enabled = CASE WHEN $18 THEN FALSE ELSE enabled END
         WHERE id = $1
-      `, [watch.id, lastDate, lastTrade.side, lastTrade.reason || lastTrade.label || "", ...accountParams]);
+      `, [watch.id, lastDate, lastTrade.side, lastTrade.reason || lastTrade.label || "", ...accountParams, ...invalidParams, shouldDisableForInvalidity]);
       console.log(`[alert] watch=${watch.id} ${watch.symbol} ${todaysTrades.map((t) => t.label).join(", ")} -> emailed ${watch.owner_email}`);
     } else {
       await pool.query(`
@@ -398,9 +531,11 @@ async function processSymbolWatch(watch) {
           last_checked_at = NOW(), consecutive_failures = 0, last_error = '', updated_at = NOW(),
           account_cash = $2, account_shares = $3, account_equity = $4, account_position_ratio = $5,
           account_return_rate = $6, account_annualized_return = $7, account_max_drawdown = $8,
-          account_rows_scored = $9, account_trades = $10::jsonb, account_updated_at = NOW()
+          account_rows_scored = $9, account_trades = $10::jsonb, account_updated_at = NOW(),
+          is_invalid = $11, invalid_reason = $12, invalid_since = $13, last_invalid_warning_date = $14,
+          enabled = CASE WHEN $15 THEN FALSE ELSE enabled END
         WHERE id = $1
-      `, [watch.id, ...accountParams]);
+      `, [watch.id, ...accountParams, ...invalidParams, shouldDisableForInvalidity]);
       console.log(`[no-signal] watch=${watch.id} ${watch.symbol}`);
     }
   } catch (error) {

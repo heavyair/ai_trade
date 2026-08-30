@@ -423,6 +423,33 @@ async function initializeDatabase() {
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS index_name TEXT NOT NULL DEFAULT '';
     CREATE UNIQUE INDEX IF NOT EXISTS watch_alerts_owner_preset_index_idx
       ON watch_alerts(owner_user_id, preset_id, index_code) WHERE index_code IS NOT NULL;
+
+    -- Frozen model snapshot: the strategy actually used to decide buy/sell for THIS watch,
+    -- captured once at creation (or re-creation, see the ON CONFLICT DO UPDATE clauses below)
+    -- and never touched again. Before this, run-watch-alerts.js live-joined strategy_presets
+    -- every check cycle, so editing/re-optimizing a preset's config would silently change what
+    -- an already-running watch (and its simulated position) does on the very next check, with
+    -- no notification — a position opened under one set of rules could get evaluated for exit
+    -- under a completely different set moments later. Freezing removes that hazard entirely;
+    -- see also is_invalid/invalid_reason below for what happens when new data outgrows the
+    -- frozen strategy instead.
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS frozen_strategy_type TEXT;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS frozen_config JSONB;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS frozen_label TEXT;
+    UPDATE watch_alerts wa SET
+      frozen_strategy_type = sp.strategy_type, frozen_config = sp.config, frozen_label = sp.label
+    FROM strategy_presets sp
+    WHERE sp.id = wa.preset_id AND wa.frozen_config IS NULL;
+
+    -- Ongoing validity: run-watch-alerts.js re-checks the frozen strategy against a trailing
+    -- window of freshly-arrived data every cycle. is_invalid flips on once it stops beating
+    -- buy-and-hold; last_invalid_warning_date dedups the recurring warning email to once/day
+    -- (frequency_minutes can be as low as 30, so without a dedup this would spam) for as long
+    -- as a position is still open. invalid_since is purely informational (first-detected time).
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS is_invalid BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_reason TEXT NOT NULL DEFAULT '';
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_since TIMESTAMPTZ;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS last_invalid_warning_date DATE;
   `);
 
   await ensureIndexCatalogTable(dbPool);
@@ -2892,6 +2919,12 @@ function mapWatchAlertRow(row) {
     accountRowsScored: row.account_rows_scored || 0,
     accountTrades: Array.isArray(row.account_trades) ? row.account_trades : [],
     accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
+    // Whether the FROZEN strategy (see the schema comment on frozen_config) still beats
+    // buy-and-hold on a trailing window of recent data — set by run-watch-alerts.js, not
+    // recomputed here. See that script's header comment for exactly what "invalid" means.
+    isInvalid: Boolean(row.is_invalid),
+    invalidReason: row.invalid_reason || "",
+    invalidSince: row.invalid_since ? new Date(row.invalid_since).toISOString() : "",
   };
 }
 
@@ -2956,7 +2989,7 @@ async function handleWatchAlertsApi(req, res) {
       }
 
       const presetResult = await dbQuery(`
-        SELECT id, label, owner_user_id FROM strategy_presets WHERE id = $1
+        SELECT id, label, owner_user_id, strategy_type, config FROM strategy_presets WHERE id = $1
       `, [presetId]);
       if (presetResult.rows.length === 0) {
         sendJson(res, 404, { error: "模型不存在。" });
@@ -2989,8 +3022,8 @@ async function handleWatchAlertsApi(req, res) {
 
         const id = randomId("watch");
         const result = await dbQuery(`
-          INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, index_code, index_name, market, frequency_minutes, enabled)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+          INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, index_code, index_name, market, frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12)
           ON CONFLICT (owner_user_id, preset_id, index_code) WHERE index_code IS NOT NULL DO UPDATE SET
             preset_label = EXCLUDED.preset_label,
             index_name = EXCLUDED.index_name,
@@ -2998,9 +3031,15 @@ async function handleWatchAlertsApi(req, res) {
             enabled = TRUE,
             consecutive_failures = 0,
             last_error = '',
+            -- Re-creating a previously-deleted/disabled watch is a fresh start, same as a brand
+            -- new one — re-freeze from whatever the preset looks like right now.
+            frozen_strategy_type = EXCLUDED.frozen_strategy_type,
+            frozen_config = EXCLUDED.frozen_config,
+            frozen_label = EXCLUDED.frozen_label,
+            is_invalid = FALSE, invalid_reason = '', invalid_since = NULL, last_invalid_warning_date = NULL,
             updated_at = NOW()
           RETURNING *
-        `, [id, ownerUserId, user.email, presetId, presetRow.label, indexMappingId, indexEntry.officialName, indexEntry.market, frequencyMinutes]);
+        `, [id, ownerUserId, user.email, presetId, presetRow.label, indexMappingId, indexEntry.officialName, indexEntry.market, frequencyMinutes, presetRow.strategy_type, JSON.stringify(presetRow.config || {}), presetRow.label]);
         sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
         return;
       }
@@ -3037,8 +3076,8 @@ async function handleWatchAlertsApi(req, res) {
 
       const id = randomId("watch");
       const result = await dbQuery(`
-        INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market, frequency_minutes, enabled)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market, frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12)
         ON CONFLICT (owner_user_id, preset_id, symbol, market) DO UPDATE SET
           preset_label = EXCLUDED.preset_label,
           symbol_name = EXCLUDED.symbol_name,
@@ -3046,9 +3085,13 @@ async function handleWatchAlertsApi(req, res) {
           enabled = TRUE,
           consecutive_failures = 0,
           last_error = '',
+          frozen_strategy_type = EXCLUDED.frozen_strategy_type,
+          frozen_config = EXCLUDED.frozen_config,
+          frozen_label = EXCLUDED.frozen_label,
+          is_invalid = FALSE, invalid_reason = '', invalid_since = NULL, last_invalid_warning_date = NULL,
           updated_at = NOW()
         RETURNING *
-      `, [id, ownerUserId, user.email, presetId, presetRow.label, symbol, symbolName, market, frequencyMinutes]);
+      `, [id, ownerUserId, user.email, presetId, presetRow.label, symbol, symbolName, market, frequencyMinutes, presetRow.strategy_type, JSON.stringify(presetRow.config || {}), presetRow.label]);
       sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
       return;
     }
