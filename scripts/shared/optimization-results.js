@@ -84,7 +84,41 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year1 DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year2 DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_end_date DATE;
+
+    -- search-validated-best.js A/B-tests whether showing the AI generator a sample of OTHER
+    -- symbols' already-target-reached models (see fetchPriorSuccessfulModels below) improves
+    -- the train-phase qualify rate over blind generation from just the data profile — each
+    -- attempt independently coin-flips which arm it's in. Recorded on saved rows so the two
+    -- arms' reached_target rates can be compared later instead of relying on scrollback logs.
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS used_prior_examples BOOLEAN NOT NULL DEFAULT FALSE;
   `);
+}
+
+// Small sample of OTHER symbols' already-validated (reached_target=TRUE) models, for
+// search-validated-best.js to optionally show the AI generator as few-shot "what has worked
+// elsewhere" context. Always excludes the symbol currently being searched (excludeSymbol/
+// excludeMarket) — showing a symbol its OWN historical results would leak information about
+// that symbol's own test-period performance into the generation of its next candidate, which
+// is a real leakage channel, not a hypothetical one. ORDER BY RANDOM() so repeated calls across
+// a run sample different corners of the (currently small, ~dozens of rows) table instead of
+// always the same top-N; fine at this scale, revisit if the table grows to the point RANDOM()
+// itself becomes the bottleneck.
+async function fetchPriorSuccessfulModels(pool, { excludeSymbol, excludeMarket, limit = 8 } = {}) {
+  const result = await pool.query(`
+    SELECT symbol, strategy_type, model_reason, test_year1_annualized_return, test_year2_annualized_return
+    FROM optimization_scan_results
+    WHERE reached_target = TRUE
+      AND NOT (symbol = $1 AND market = $2)
+    ORDER BY RANDOM()
+    LIMIT $3
+  `, [excludeSymbol || "", excludeMarket || "", limit]);
+  return result.rows.map((row) => ({
+    symbol: row.symbol,
+    strategyType: row.strategy_type,
+    reason: row.model_reason || "",
+    year1Annualized: Number(row.test_year1_annualized_return) || 0,
+    year2Annualized: Number(row.test_year2_annualized_return) || 0,
+  }));
 }
 
 async function saveOptimizationResult(pool, row) {
@@ -105,7 +139,7 @@ async function saveOptimizationResult(pool, row) {
       test_year2_return_rate, test_year2_max_drawdown, test_year2_annualized_return,
       test_year2_trades, test_year2_rows_tested, test_year2_start_date, test_year2_end_date,
       annualized_diff_year1, annualized_diff_year2,
-      reached_target, source, model_reason, scanned_at
+      reached_target, source, model_reason, used_prior_examples, scanned_at
     )
     VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
@@ -113,7 +147,7 @@ async function saveOptimizationResult(pool, row) {
       $22,$23,$24,$25,$26,$27,$28,
       $29,$30,$31,$32,$33,$34,$35,
       $36,$37,
-      $38,$39,$40,NOW()
+      $38,$39,$40,$41,NOW()
     )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
@@ -152,6 +186,7 @@ async function saveOptimizationResult(pool, row) {
       reached_target = EXCLUDED.reached_target,
       source = EXCLUDED.source,
       model_reason = EXCLUDED.model_reason,
+      used_prior_examples = EXCLUDED.used_prior_examples,
       scanned_at = NOW()
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
@@ -164,7 +199,7 @@ async function saveOptimizationResult(pool, row) {
     row.testYear2ReturnRate, row.testYear2MaxDrawdown, row.testYear2AnnualizedReturn,
     row.testYear2Trades, row.testYear2RowsTested, row.testYear2StartDate, row.testYear2EndDate,
     row.annualizedDiffYear1, row.annualizedDiffYear2,
-    Boolean(row.reachedTarget), row.source || "", row.modelReason || "",
+    Boolean(row.reachedTarget), row.source || "", row.modelReason || "", Boolean(row.usedPriorExamples),
   ]);
 }
 
@@ -194,4 +229,4 @@ async function needsScan(pool, symbol, market, presetId, { rescan, sessionSince 
   return result.rowCount === 0;
 }
 
-module.exports = { ensureResultsTable, saveOptimizationResult, needsScan };
+module.exports = { ensureResultsTable, saveOptimizationResult, needsScan, fetchPriorSuccessfulModels };

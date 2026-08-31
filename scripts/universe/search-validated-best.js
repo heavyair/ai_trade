@@ -30,7 +30,7 @@ const ModelGenerator = require("../shared/model-generator.js");
 const { inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { splitTrainTestWindows } = require("../shared/train-test-window.js");
-const { ensureResultsTable, saveOptimizationResult } = require("../shared/optimization-results.js");
+const { ensureResultsTable, saveOptimizationResult, fetchPriorSuccessfulModels } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -194,11 +194,24 @@ async function main() {
           break;
         }
 
-        writeProgress({ attempt: attempt + 1, currentReason: "AI 正在分析数据、设计模型…" });
+        // A/B test: does showing the AI a few other symbols' already-validated models (as
+        // idea-level few-shot context, never raw thresholds — see model-generator.js's doc
+        // comment) actually lift the train-phase qualify rate over blind generation from just
+        // this symbol's own data profile? Each attempt independently coin-flips which arm it's
+        // in, and usedPriorExamples travels with the attempt all the way to the saved row
+        // (used_prior_examples column) so the two arms' reached_target rates can be compared
+        // later instead of guessing. excludeSymbol/excludeMarket keeps this symbol's own
+        // history out of its own few-shot examples (that would leak its own test-period result).
+        const usedPriorExamples = Math.random() < 0.5;
+        const priorSuccessfulModels = usedPriorExamples
+          ? await fetchPriorSuccessfulModels(pool, { excludeSymbol: symbolEntry.code, excludeMarket: dbMarket, limit: 8 })
+          : [];
+
+        writeProgress({ attempt: attempt + 1, currentReason: `AI 正在分析数据、设计模型…${usedPriorExamples ? "（参考了其他股票的历史达标模型）" : ""}` });
         aiCalls += 1;
         let model;
         try {
-          model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code, previousAttempts);
+          model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code, previousAttempts, priorSuccessfulModels);
         } catch (aiError) {
           console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
           errored += 1;
@@ -218,13 +231,13 @@ async function main() {
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
         if (!beatsReturn || !beatsDrawdown) {
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
           continue;
         }
 
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        qualifyingAttempts.push({ model, best, trainAnnualized });
-        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
+        qualifyingAttempts.push({ model, best, trainAnnualized, usedPriorExamples });
+        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
           aiCalls,
           currentReason: `训练阶段第${attempt + 1}/${ATTEMPTS_PER_SYMBOL}次：${model.strategyType} 跑赢买入持有，已收集${qualifyingAttempts.length}个候选（训练阶段跑完后统一验证）`,
@@ -235,16 +248,16 @@ async function main() {
       // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
       // gets checked, not just whichever happened to be found first or scored best on train.
       console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
-      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized }, i) => {
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, usedPriorExamples }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
         const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
         const worstTestAnnualized = Math.min(year1Annualized, year2Annualized);
         const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}): train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
-        return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget };
+        return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
       });
 
       const passing = validated.filter((v) => v.reachedTarget);
@@ -321,6 +334,7 @@ async function main() {
               reachedTarget: entry.reachedTarget,
               source: "validated-search",
               modelReason: entry.model.reason || "",
+              usedPriorExamples: entry.usedPriorExamples,
             });
             saved += 1;
             console.log(`[saved] ${symbolEntry.code}: ${presetId} ${entry.reachedTarget ? "(TARGET MET)" : "(best-so-far, below target)"}`);

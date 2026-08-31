@@ -531,7 +531,20 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
 // and/or different indicators/formula) instead of regenerating variations of the same first
 // idea. The caller decides how many attempts to make and which one(s) to keep; this function
 // only handles making one attempt genuinely aware of what came before it.
-async function generateModelFromDataProfile(profile, symbol, previousAttempts = []) {
+//
+// priorSuccessfulModels (optional): [{ symbol, strategyType, reason, year1Annualized,
+// year2Annualized }, ...] — OTHER symbols' models that already passed two-separate-years
+// validation (see scripts/shared/optimization-results.js's fetchPriorSuccessfulModels), shown
+// as few-shot "what has worked elsewhere" context. Deliberately carries only strategyType +
+// the AI's own natural-language reason + performance, never the raw config/thresholds — the
+// goal is nudging the AI toward IDEAS that have generalized across symbols, not letting it
+// parrot exact numeric thresholds tuned for a different stock's price range and volatility.
+// The caller is responsible for excluding the symbol currently being generated for (showing a
+// symbol its own historical results would leak that symbol's own test-period performance into
+// its next candidate) and for deciding how often to pass this at all — search-validated-best.js
+// currently does it for a random ~50% of attempts, to compare against blind generation rather
+// than assume few-shot examples are strictly better.
+async function generateModelFromDataProfile(profile, symbol, previousAttempts = [], priorSuccessfulModels = []) {
   if (!profile) {
     const error = new Error("历史数据不足，无法生成数据画像。");
     error.statusCode = 400;
@@ -541,6 +554,9 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
   const diversityLine = previousAttempts.length > 0
     ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，分别是：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 60)}）` : ""}`).join("；")}。这次请换一个明显不同的思路——尽量选不同的 strategyType，或者哪怕 strategyType 相同也要换一套不同的指标/公式组合，不要重复前面已经试过的想法。`
     : null;
+  const priorSuccessLine = priorSuccessfulModels.length > 0
+    ? `参考信息：以下是在其他股票上经过两年独立验证期确认有效的模型思路——${priorSuccessfulModels.map((m, i) => `第${i + 1}个[${m.symbol}/${m.strategyType}]验证年化${m.year1Annualized.toFixed(1)}%/${m.year2Annualized.toFixed(1)}%${m.reason ? `，思路：${String(m.reason).slice(0, 80)}` : ""}`).join("；")}。这些只是思路参考，不是这只股票的答案——具体用哪个 strategyType、哪些指标、什么阈值，必须结合上面这只股票自己的统计特征重新设计，不要照搬其他股票的具体参数（不同股票的价格区间、波动率、趋势特征都不一样）。`
+    : null;
   const prompt = [
     "下面是一只股票的历史行情特征摘要（是统计特征，不是原始逐日行情）。请分析这些特征，设计一个尽量跑赢“买入并一直持有”、且最大回撤比买入持有更小的择时模型，转换成 AI Trade 支持的安全模型 JSON。",
     ...buildPromptGuideLines(schema),
@@ -548,6 +564,7 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     "历史行情特征字段说明：totalReturnPercent=区间总收益率，annualizedVolatilityPercent=年化波动率，maxDrawdownPercent=买入持有的最大回撤，priceVsMa5Percent/priceVsMa20Percent/priceVsMa60Percent=当前价相对5/20/60日均线的偏离%，recentUpDayRatioPercent=最近20日上涨天数占比，rsi14=当前RSI(14)，atrPercentAverage14=最近14日平均ATR%，daysSince60DayHigh/daysSince60DayLow=距60日内最高/最低点的天数。",
     `历史行情特征（JSON）：${JSON.stringify(profile)}`,
     diversityLine,
+    priorSuccessLine,
   ].filter(Boolean).join("\n");
 
   const text = await requestAiJsonModel({
