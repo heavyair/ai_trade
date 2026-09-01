@@ -642,6 +642,12 @@ button:disabled {
   background: #227a4f;
 }
 
+/* Matches .low-reference-line's stroke color (the dashed N日最低价 reference line drawn by
+   drawModelOrderPriceChartInto when options.lowReferenceSeries is supplied). */
+.model-trades-low-reference-dot {
+  background: #d4841f;
+}
+
 .confirm-dot {
   background: #f0a202;
 }
@@ -2902,6 +2908,13 @@ textarea:focus {
   fill: #227a4f;
   stroke: #ffffff;
   stroke-width: 1;
+}
+
+.low-reference-line {
+  fill: none;
+  stroke: #d4841f;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
 }
 
 .point-label {

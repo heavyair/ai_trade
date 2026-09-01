@@ -106,6 +106,13 @@ const modelTradesWaveThresholdInput = document.querySelector("#modelTradesWaveTh
 const modelTradesWaveConditionRow = document.querySelector("#modelTradesWaveConditionRow");
 const modelTradesWaveConditionSelect = document.querySelector("#modelTradesWaveConditionSelect");
 const modelTradesWaveLegend = document.querySelector("#modelTradesWaveLegend");
+const modelTradesStreakControls = document.querySelector("#modelTradesStreakControls");
+const modelTradesDownDayRow = document.querySelector("#modelTradesDownDayRow");
+const modelTradesDownDayLookbackInput = document.querySelector("#modelTradesDownDayLookbackInput");
+const modelTradesLowRow = document.querySelector("#modelTradesLowRow");
+const modelTradesLowLookbackInput = document.querySelector("#modelTradesLowLookbackInput");
+const modelTradesLowReferenceLegend = document.querySelector("#modelTradesLowReferenceLegend");
+const modelTradesStreakStats = document.querySelector("#modelTradesStreakStats");
 const presetParamDialog = document.querySelector("#presetParamDialog");
 const closePresetParamButton = document.querySelector("#closePresetParamButton");
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
@@ -4761,6 +4768,40 @@ function collectWaveConditions(source) {
   return results;
 }
 
+// Every downDayCount/daysSinceNewLow condition across buyBlockRules/sellBlockRules/scoreRules,
+// same scanning shape as collectWaveConditions — returns direct condition references so the
+// caller can read each one's own lookbackDays as the default for the preview controls.
+function collectStreakConditions(source) {
+  const results = [];
+  const isStreakIndicator = (indicator) => indicator === "downDayCount" || indicator === "daysSinceNewLow";
+  const indicatorLabel = (indicator) => (indicator === "downDayCount" ? "下跌天数" : "未创新低天数");
+  const scanBlocks = (blocks, labelPrefix) => {
+    (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
+      (block && block.conditions || []).forEach((condition, conditionIndex) => {
+        if (!isStreakIndicator(condition.indicator)) return;
+        results.push({
+          indicator: condition.indicator,
+          label: `${labelPrefix}${blockIndex + 1}·条件${conditionIndex + 1}（${indicatorLabel(condition.indicator)}）`,
+          condition,
+        });
+      });
+    });
+  };
+  scanBlocks(source.buyBlockRules, "买入规则块");
+  scanBlocks(source.sellBlockRules, "卖出规则块");
+  (Array.isArray(source.scoreRules) ? source.scoreRules : []).forEach((rule, ruleIndex) => {
+    (rule && rule.conditions || []).forEach((condition, conditionIndex) => {
+      if (!isStreakIndicator(condition.indicator)) return;
+      results.push({
+        indicator: condition.indicator,
+        label: `打分规则${ruleIndex + 1}·条件${conditionIndex + 1}（${indicatorLabel(condition.indicator)}）`,
+        condition,
+      });
+    });
+  });
+  return results;
+}
+
 function setWaveVisualizerThreshold(value) {
   if (waveVisualizerThresholdInput) waveVisualizerThresholdInput.value = value;
   if (waveVisualizerThresholdSlider) waveVisualizerThresholdSlider.value = value;
@@ -6862,6 +6903,15 @@ function getDaysSinceNewLowSeries(rows, lookbackDays) {
   return values;
 }
 
+// The actual reference low price daysSinceNewLow compares each day against — reuses the exact
+// same rolling-window lookup (excludeCurrent=true, so "today" never counts as its own reference)
+// so this always agrees with getDaysSinceNewLowSeries about which low is "the N日最低价". Only
+// used for display (交易记录弹窗's streak preview chart/stats), not by the backtest engine.
+function getRollingLowPriceSeries(rows, lookbackDays) {
+  const previousLowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, true);
+  return rows.map((row, index) => (previousLowIndices[index] === null ? null : rows[previousLowIndices[index]].low));
+}
+
 function getUpDayCountSeries(rows, lookbackDays) {
   const values = new Array(rows.length).fill(null);
   const isUp = rows.map((row, index) => (index > 0 && row.close > rows[index - 1].close ? 1 : 0));
@@ -8231,33 +8281,41 @@ function buildPeVolumeBacktestStates(rows, config) {
 // drawdownFromWaveHigh has no lookbackDays/slopeWindowDays of its own, so without something
 // distinguishing them in the key, every drawdownFromWaveHigh condition in a model collides on
 // the same cache entry — conditions with an explicit per-condition waveThreshold get their own
-// key (and therefore their own independently-cached wave series); conditions without one all
-// share the "shared" key, same as before, since they're meant to fall back to the same
-// model-level config.waveThreshold. Deliberately doesn't need the fallback's numeric value
-// here (unlike resolveConditionWaveThreshold) — only has to tell conditions apart, so lookup
-// call sites without the fallback in scope (getBlockConditionValue/getBlockConditionSeries)
-// still work unchanged.
+// key (and therefore their own independently-cached wave series). Conditions without one now
+// resolve to value-scaled defaults (2/3 of the condition's own drawdown target, see
+// resolveConditionWaveThreshold) rather than one shared flat default, so they must also be keyed
+// by their own value — two no-override conditions with different value targets are NOT
+// interchangeable and must not share a cache slot. Only conditions with neither an explicit
+// waveThreshold nor a usable value (falling back to the model-level config.waveThreshold) still
+// share the old "shared" key.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
   if (condition.indicator === "drawdownFromWaveHigh") {
     const explicit = Number(condition && condition.waveThreshold);
-    return Number.isFinite(explicit) && explicit > 0 ? `drawdownFromWaveHigh:${explicit}` : "drawdownFromWaveHigh:shared";
+    if (Number.isFinite(explicit) && explicit > 0) return `drawdownFromWaveHigh:${explicit}`;
+    const targetValue = Number(condition && condition.value);
+    return Number.isFinite(targetValue) && targetValue > 0
+      ? `drawdownFromWaveHigh:default:${targetValue}`
+      : "drawdownFromWaveHigh:shared";
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
 
 // condition.waveThreshold (per-condition override) beats the shared config-level
 // fallbackWaveThreshold when it's a real positive number; existing saved models never have
-// this field set, so they fall through to the old shared-threshold behavior unchanged. Ceiling
-// is the condition's own drawdown target (value) — a confirmation threshold at or above the
-// drawdown being screened for defeats the point — falling back to 30 only when value isn't a
-// usable positive number.
+// this field set, so they fall through to the value-scaled default below. When no explicit
+// override is set, the default is 2/3 of the condition's own drawdown target (value) rather
+// than a flat number — the confirmation sensitivity should scale with how big a drawdown is
+// being screened for. Ceiling is the condition's own drawdown target (value) — a confirmation
+// threshold at or above the drawdown being screened for defeats the point — falling back to 30
+// only when value isn't a usable positive number.
 function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
-  const explicit = Number(condition && condition.waveThreshold);
-  if (!Number.isFinite(explicit) || explicit <= 0) return Number(fallbackWaveThreshold) || 5;
   const targetValue = Number(condition && condition.value);
   const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
-  return Math.min(ceiling, Math.max(1, explicit));
+  const explicit = Number(condition && condition.waveThreshold);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.min(ceiling, Math.max(1, explicit));
+  if (Number.isFinite(targetValue) && targetValue > 0) return Math.min(ceiling, Math.max(1, (targetValue * 2) / 3));
+  return Number(fallbackWaveThreshold) || 5;
 }
 
 function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
@@ -9377,7 +9435,7 @@ function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex)
       <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="数值" step="any">
       <input type="number" data-role="slopeWindowDays" value="${numOrEmpty(condition.slopeWindowDays)}" placeholder="斜率窗口(仅均线斜率)" min="1" step="1" ${showSlopeWindow ? "" : "disabled"}>
       <input type="number" data-role="sustainedDays" value="${numOrEmpty(condition.sustainedDays)}" placeholder="连续天数(可选)" min="1" step="1">
-      <input type="number" data-role="waveThreshold" value="${numOrEmpty(condition.waveThreshold)}" placeholder="波浪确认阈值%(留空=回撤目标的1/3)" min="1" step="any" ${showWaveThreshold ? "" : "disabled"}>
+      <input type="number" data-role="waveThreshold" value="${numOrEmpty(condition.waveThreshold)}" placeholder="波浪确认阈值%(留空=回撤目标的2/3)" min="1" step="any" ${showWaveThreshold ? "" : "disabled"}>
       <button type="button" class="ghost-button block-rule-remove-condition" data-side="${sideKey}" data-block-index="${blockIndex}" data-condition-index="${conditionIndex}">删除条件</button>
     </div>
   `;
@@ -11744,6 +11802,7 @@ function renderModelResultCharts(result) {
   renderTradeDetail(null);
   drawReturnComparison(result.states);
   updateModelTradesWaveControls(result);
+  updateModelTradesStreakControls(result);
   drawModelOrderPriceChart(result);
   drawTradePriceChart([]);
   if (modelTradesTitle) modelTradesTitle.textContent = `${result.label} 交易记录`;
@@ -12167,6 +12226,74 @@ function updateModelTradesWaveControls(result) {
   }
 }
 
+// 同样按当前正在看的result.config派生，不用全局状态——道理跟上面波浪那套完全一样。
+// downDayCount和daysSinceNewLow各自独立判断是否出现在模型里，两个indicator可以同时/单独出现。
+let modelTradesHasDownDayCount = false;
+let modelTradesHasDaysSinceNewLow = false;
+
+function updateModelTradesStreakControls(result) {
+  modelTradesHasDownDayCount = false;
+  modelTradesHasDaysSinceNewLow = false;
+  if (!modelTradesStreakControls) return;
+  const config = result && result.config;
+  const streakConditions = config
+    ? collectStreakConditions({
+        buyBlockRules: config.buyBlockRules,
+        sellBlockRules: config.sellBlockRules,
+        scoreRules: config.scoreRules,
+      })
+    : [];
+  const downDayEntry = streakConditions.find((entry) => entry.indicator === "downDayCount");
+  const lowEntry = streakConditions.find((entry) => entry.indicator === "daysSinceNewLow");
+  modelTradesHasDownDayCount = Boolean(downDayEntry);
+  modelTradesHasDaysSinceNewLow = Boolean(lowEntry);
+  if (!modelTradesHasDownDayCount && !modelTradesHasDaysSinceNewLow) {
+    modelTradesStreakControls.classList.add("hidden");
+    if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.add("hidden");
+    if (modelTradesStreakStats) modelTradesStreakStats.textContent = "";
+    return;
+  }
+  modelTradesStreakControls.classList.remove("hidden");
+  if (modelTradesDownDayRow) modelTradesDownDayRow.classList.toggle("hidden", !modelTradesHasDownDayCount);
+  if (modelTradesLowRow) modelTradesLowRow.classList.toggle("hidden", !modelTradesHasDaysSinceNewLow);
+  if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !modelTradesHasDaysSinceNewLow);
+  if (modelTradesHasDownDayCount && modelTradesDownDayLookbackInput) {
+    const lookback = Number(downDayEntry.condition.lookbackDays);
+    modelTradesDownDayLookbackInput.value = lookback > 0 ? lookback : 7;
+  }
+  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
+    const lookback = Number(lowEntry.condition.lookbackDays);
+    modelTradesLowLookbackInput.value = lookback > 0 ? lookback : 15;
+  }
+}
+
+// 只更新"当前天"(最新一个交易日)的文字统计——用户要看的是"今天下跌累计了几天、今天看的
+// N日最低价是多少、今天已经连续几天站上这个最低价了"，不是要一整条历史曲线的每日数值。
+function updateModelTradesStreakStats(rows) {
+  if (!modelTradesStreakStats) return;
+  if (!modelTradesHasDownDayCount && !modelTradesHasDaysSinceNewLow) {
+    modelTradesStreakStats.textContent = "";
+    return;
+  }
+  const parts = [];
+  if (modelTradesHasDownDayCount && modelTradesDownDayLookbackInput) {
+    const lookback = Math.max(1, Math.round(Number(modelTradesDownDayLookbackInput.value) || 7));
+    const series = getDownDayCountSeries(rows, lookback);
+    const latest = series[series.length - 1];
+    parts.push(`最近${lookback}日内下跌天数：${latest === null || latest === undefined ? "--" : `${latest}天`}`);
+  }
+  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
+    const lookback = Math.max(1, Math.round(Number(modelTradesLowLookbackInput.value) || 15));
+    const latestLow = getRollingLowPriceSeries(rows, lookback).slice(-1)[0];
+    const latestStreak = getDaysSinceNewLowSeries(rows, lookback).slice(-1)[0];
+    parts.push(
+      `${lookback}日内最低价：${latestLow === null || latestLow === undefined ? "--" : formatPrice(latestLow)} · ` +
+      `已连续${latestStreak === null || latestStreak === undefined ? "--" : `${latestStreak}天`}未创新低`
+    );
+  }
+  modelTradesStreakStats.textContent = parts.join(" ｜ ");
+}
+
 function drawModelOrderPriceChart(result) {
   if (!modelOrderPriceChart) return;
   const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
@@ -12179,7 +12306,13 @@ function drawModelOrderPriceChart(result) {
     const threshold = Math.max(0.1, Number(modelTradesWaveThresholdInput.value) || 5);
     wavePoints = getWaveTurningPoints(rows, threshold);
   }
-  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints });
+  let lowReferenceSeries = [];
+  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
+    const lookback = Math.max(1, Math.round(Number(modelTradesLowLookbackInput.value) || 15));
+    lowReferenceSeries = getRollingLowPriceSeries(rows, lookback);
+  }
+  updateModelTradesStreakStats(rows);
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries });
 }
 
 if (modelTradesWaveThresholdInput) {
@@ -12195,6 +12328,16 @@ if (modelTradesWaveConditionSelect) {
     if (modelTradesWaveThresholdInput) {
       modelTradesWaveThresholdInput.value = resolveConditionWaveThreshold(entry.condition, currentModelTradesResult.config && currentModelTradesResult.config.waveThreshold);
     }
+    drawModelOrderPriceChart(currentModelTradesResult);
+  });
+}
+if (modelTradesDownDayLookbackInput) {
+  modelTradesDownDayLookbackInput.addEventListener("input", () => {
+    drawModelOrderPriceChart(currentModelTradesResult);
+  });
+}
+if (modelTradesLowLookbackInput) {
+  modelTradesLowLookbackInput.addEventListener("input", () => {
     drawModelOrderPriceChart(currentModelTradesResult);
   });
 }
@@ -12232,9 +12375,13 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   const visibleTrades = trades.filter((trade) => Number.isInteger(trade.rowIndex) && trade.rowIndex <= upToIndex);
   const wavePoints = Array.isArray(options.wavePoints) ? options.wavePoints : [];
   const visibleWavePoints = wavePoints.filter((point) => Number.isInteger(point.rowIndex) && point.rowIndex <= upToIndex);
+  const lowReferenceSeries = Array.isArray(options.lowReferenceSeries) ? options.lowReferenceSeries : [];
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
   trades.forEach((trade) => priceValues.push(trade.price));
   wavePoints.forEach((point) => priceValues.push(point.price));
+  lowReferenceSeries.forEach((value) => {
+    if (Number.isFinite(value)) priceValues.push(value);
+  });
   const max = Math.max(...priceValues);
   const min = Math.min(...priceValues);
   const spread = max - min || max * 0.02 || 1;
@@ -12292,6 +12439,23 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     })
     .join("");
 
+  // options.lowReferenceSeries (from getRollingLowPriceSeries, parallel to rows) draws the
+  // rolling N日最低价 line daysSinceNewLow actually compares against. Early rows before the
+  // lookback window fills are null, so the path is built in segments (a fresh "M" after every
+  // gap) rather than one continuous "L" chain — a straight line across a null would visually
+  // connect two unrelated reference values.
+  let lowReferencePath = "";
+  let lowReferenceDrawing = false;
+  for (let index = 0; index <= upToIndex; index += 1) {
+    const value = lowReferenceSeries[index];
+    if (!Number.isFinite(value)) {
+      lowReferenceDrawing = false;
+      continue;
+    }
+    lowReferencePath += `${lowReferenceDrawing ? "L" : "M"}${xForIndex(index).toFixed(2)},${scaleY(value).toFixed(2)} `;
+    lowReferenceDrawing = true;
+  }
+
   target.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
     ${ticks
@@ -12307,6 +12471,7 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${pricePath}"></path>
     ${waveLinePath ? `<path class="wave-line" d="${waveLinePath}"></path>` : ""}
+    ${lowReferencePath ? `<path class="low-reference-line" d="${lowReferencePath.trim()}"></path>` : ""}
     ${waveMarkerNodes}
     ${tradeNodes}
     ${dateTickIndexes

@@ -1747,34 +1747,43 @@ function buildPeVolumeBacktestStates(rows, config, accountStartIndex = 0) {
 // drawdownFromWaveHigh condition in a whole model collides on the same cache entry — meaning
 // today, no matter how many such conditions a model has, they're all forced to share one wave
 // definition. Conditions with an explicit per-condition waveThreshold get their own key (and
-// therefore their own independently-cached wave series); conditions without one all share the
-// "shared" key — same as today, since they're all meant to fall back to the same model-level
-// config.waveThreshold. Deliberately does NOT need the fallback threshold's actual numeric
-// value here (unlike resolveConditionWaveThreshold, which does) — this only has to tell two
-// conditions apart, not reproduce the resolved number, so lookup call sites that don't have
-// the fallback in scope (getBlockConditionValue/getBlockConditionSeries) still work unchanged.
+// therefore their own independently-cached wave series). Conditions without one now resolve to
+// value-scaled defaults (2/3 of the condition's own drawdown target, see
+// resolveConditionWaveThreshold) rather than one shared flat default, so they must also be keyed
+// by their own value — two no-override conditions with different value targets are NOT
+// interchangeable anymore and must not share a cache slot. Only conditions with neither an
+// explicit waveThreshold nor a usable value (falling all the way back to the model-level
+// config.waveThreshold) still share the old "shared" key.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
   if (condition.indicator === "drawdownFromWaveHigh") {
     const explicit = Number(condition && condition.waveThreshold);
-    return Number.isFinite(explicit) && explicit > 0 ? `drawdownFromWaveHigh:${explicit}` : "drawdownFromWaveHigh:shared";
+    if (Number.isFinite(explicit) && explicit > 0) return `drawdownFromWaveHigh:${explicit}`;
+    const targetValue = Number(condition && condition.value);
+    return Number.isFinite(targetValue) && targetValue > 0
+      ? `drawdownFromWaveHigh:default:${targetValue}`
+      : "drawdownFromWaveHigh:shared";
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
 
 // condition.waveThreshold (per-condition override) beats the shared config-level
 // fallbackWaveThreshold when it's a real positive number; existing saved models never have
-// this field set (it didn't exist before), so they fall through to the old shared-threshold
-// behavior unchanged. The ceiling is the condition's own drawdown target (value) — a wave
-// confirmation threshold at or above the drawdown you're screening for defeats the point (the
-// "peak" wouldn't even get confirmed until price already fell that far) — falling back to a
-// flat 30 only when value itself isn't a usable positive number.
+// this field set (it didn't exist before), so they fall through to the value-scaled default
+// below. When no explicit override is set, the default is 2/3 of the condition's own drawdown
+// target (value) rather than a flat number — a wave confirmation threshold should scale with
+// how big a drawdown you're screening for (a 3% target and a 30% target shouldn't share the
+// same confirmation sensitivity). The ceiling is the condition's own drawdown target (value) —
+// a wave confirmation threshold at or above the drawdown you're screening for defeats the point
+// (the "peak" wouldn't even get confirmed until price already fell that far) — falling back to
+// a flat 30 only when value itself isn't a usable positive number.
 function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
-  const explicit = Number(condition && condition.waveThreshold);
-  if (!Number.isFinite(explicit) || explicit <= 0) return Number(fallbackWaveThreshold) || 5;
   const targetValue = Number(condition && condition.value);
   const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
-  return Math.min(ceiling, Math.max(1, explicit));
+  const explicit = Number(condition && condition.waveThreshold);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.min(ceiling, Math.max(1, explicit));
+  if (Number.isFinite(targetValue) && targetValue > 0) return Math.min(ceiling, Math.max(1, (targetValue * 2) / 3));
+  return Number(fallbackWaveThreshold) || 5;
 }
 
 

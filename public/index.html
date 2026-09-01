@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-wave-in-trade-records">
+    <link rel="stylesheet" href="/styles.css?v=20260901-streak-indicators">
   </head>
   <body>
     <main class="shell">
@@ -1318,6 +1318,9 @@
                 <i class="dot model-trades-wave-high-dot"></i>波浪高点
                 <i class="dot model-trades-wave-low-dot"></i>波浪低点
               </span>
+              <span id="modelTradesLowReferenceLegend" class="hidden">
+                <i class="dot model-trades-low-reference-dot"></i>N日最低价参考线
+              </span>
             </div>
           </div>
           <div id="modelTradesWaveControls" class="indicator-controls hidden">
@@ -1330,6 +1333,17 @@
               <select id="modelTradesWaveConditionSelect"></select>
             </label>
           </div>
+          <div id="modelTradesStreakControls" class="indicator-controls hidden">
+            <label id="modelTradesDownDayRow" class="wave-param hidden">
+              下跌天数窗口（日，仅预览，不影响已保存的模型）
+              <input id="modelTradesDownDayLookbackInput" type="number" min="1" max="60" step="1" value="7">
+            </label>
+            <label id="modelTradesLowRow" class="wave-param hidden">
+              创新低回看窗口（日，仅预览，不影响已保存的模型）
+              <input id="modelTradesLowLookbackInput" type="number" min="1" max="120" step="1" value="15">
+            </label>
+          </div>
+          <span id="modelTradesStreakStats" class="field-hint"></span>
           <div class="trade-price-wrap">
             <svg id="modelOrderPriceChart" role="img" aria-label="模型下单价格曲线"></svg>
           </div>
@@ -1449,7 +1463,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-wave-in-trade-records"></script>
-    <script src="/app.js?v=20260901-wave-in-trade-records"></script>
+    <script src="/formula-engine.js?v=20260901-streak-indicators"></script>
+    <script src="/app.js?v=20260901-streak-indicators"></script>
   </body>
 </html>
