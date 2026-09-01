@@ -5809,7 +5809,7 @@ function updateIndicatorUi() {
   const isMaRsiBand = strategyType === "ma-rsi-band";
   const isOrderGrid = strategyType === "order-grid";
   const isPeVolume = strategyType === "pe-volume";
-  document.querySelectorAll(".wave-param").forEach((item) => item.classList.add("hidden"));
+  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", !isWave));
   localLadderPanel.classList.add("hidden");
   maRsiBandPanel.classList.add("hidden");
   orderGridPanel.classList.add("hidden");
