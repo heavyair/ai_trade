@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-restore-missing-buttons">
+    <link rel="stylesheet" href="/styles.css?v=20260901-hide-indicator-select">
   </head>
   <body>
     <main class="shell">
@@ -843,7 +843,15 @@
             <p id="chartSubtitle">最近一年日线</p>
           </div>
           <div class="indicator-controls">
-            <label>
+            <!-- 这个弹窗只在"选择模拟模型"已经选定一个具体模型之后才能打开（见
+            openMarketDataDialog），到这一步模型类型已经确定了，不该再让用户手动
+            切换类型——那样等于在预览一个跟你实际选中的模型无关的指标。
+            indicatorModelSelect 这个 select 元素本身还留着（很多函数把它的
+            value 当成"当前模型类型"的内部状态在读，比如 drawChart/
+            readBacktestConfig/updateWaveConditionControls），只是不再作为可见、
+            可交互的下拉框展示——它的值由 applyStrategyPreset 在加载模型时自动
+            设置好，用户不用管。 -->
+            <label class="hidden">
               指标模型
               <select id="indicatorModelSelect">
                 <option value="wave">波浪模型</option>
@@ -1430,7 +1438,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-restore-missing-buttons"></script>
-    <script src="/app.js?v=20260901-restore-missing-buttons"></script>
+    <script src="/formula-engine.js?v=20260901-hide-indicator-select"></script>
+    <script src="/app.js?v=20260901-hide-indicator-select"></script>
   </body>
 </html>
