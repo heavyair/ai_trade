@@ -289,7 +289,22 @@ function normalizeGeneratedModel(value) {
     uncoveredRequirements: Array.isArray(model.uncoveredRequirements)
       ? model.uncoveredRequirements.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim().slice(0, 200)).slice(0, 10)
       : [],
-    waveThreshold: asNumber(model.waveThreshold, null),
+    // Global/model-level wave-confirmation threshold — used directly by the "wave" strategy
+    // type's own buy/sell logic, and as the shared fallback for any block-rules/score-rules
+    // drawdownFromWaveHigh condition that doesn't set its own per-condition waveThreshold (see
+    // cleanCondition above). Unlike the per-condition field, there's no sibling "value" here to
+    // derive a sane ceiling from, so this just clamps into a fixed [1, 30] range and — this is
+    // the actual fix — defaults to 5 (this app's own long-standing convention, see every
+    // `waveThreshold || 5` fallback throughout engine.js/app.js and every built-in preset)
+    // whenever the AI didn't give a usable positive number, INSTEAD OF floor-clamping a
+    // near-zero value like the 0.1 seen from real generation up to 1 and calling it done — a
+    // value that close to zero making it past validation defeats "wave confirmation" just as
+    // much whether it lands on 0.1 or 1, so anything below a sane floor should reset to the
+    // real default (5), not the bare minimum.
+    waveThreshold: (() => {
+      const raw = asNumber(model.waveThreshold, null);
+      return raw === null || raw < 1 || raw > 30 ? 5 : raw;
+    })(),
     buyRules: Array.isArray(model.buyRules) ? model.buyRules.map((rule) => cleanRule(rule, "buy")).filter(Boolean).slice(0, 8) : [],
     sellRules: Array.isArray(model.sellRules) ? model.sellRules.map((rule) => cleanRule(rule, "sell")).filter(Boolean).slice(0, 8) : [],
     noNewHighExitRule: model.noNewHighExitRule && typeof model.noNewHighExitRule === "object" ? {
@@ -452,6 +467,7 @@ function buildPromptGuideLines(schema) {
     "- ma-rsi-band：均线、RSI、ATR 目标仓位。",
     "- pe-volume：PE 和成交量指标。",
     "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
+    "顶层字段 model.waveThreshold（strategyType 为 wave 时才真正生效，用来算“阶段高点/低点”）取值范围是1~30，没有特别要求时用这个app的标准默认值5——绝对不要生成0.1、0.5这种接近0的数值，那会让“阶段高点”被任何一天的正常波动刷新，起不到过滤噪音的作用。strategyType 不是 wave 时，这个字段填5（或用户提到的具体数字）即可，实际不会被用到。",
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
     "- score-rules：用户的描述是“打分制”——多条独立条件各自命中就加若干分（不要求互斥，同一天可以同时命中多条、分数累加），再按当天总分落在哪个区间决定目标仓位百分比（例如“A得10分，B得10分…总分满20分半仓，满30分全仓”）。出现“得X分”“加X分”“总分”“打分”这类字眼、或者列举一串各自独立打分的条件时，必须选这个类型，不要硬套 block-rules 的且/或结构（block-rules 的 action 是触发一次性动作，没法表达“多个条件独立累加分数”）。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
