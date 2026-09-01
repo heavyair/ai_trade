@@ -1073,6 +1073,15 @@ button:disabled {
   flex: 1;
 }
 
+.simulation-state-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.simulation-state-card-actions button {
+  flex: 1;
+}
+
 .selected-model-summary strong {
   font-size: 15px;
 }
@@ -2681,7 +2690,10 @@ textarea:focus {
 
 .block-rule-condition-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.8fr) auto;
+  /* 9 explicit tracks: indicator, formula, lookbackDays, comparator, value, slopeWindowDays,
+     sustainedDays, waveThreshold, delete-button(auto) — one track per direct child of
+     renderBlockConditionRow's output, in that exact order. */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.9fr) auto;
   gap: 6px;
   align-items: center;
 }

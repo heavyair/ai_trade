@@ -6069,7 +6069,6 @@ function renderSelectedDataSummary() {
       <strong>尚未加载历史数据</strong>
       <span>点击“选择股票区间”，加载用于模拟的历史价格。</span>
     `;
-    if (openMarketDataButton) openMarketDataButton.disabled = true;
     return;
   }
 
@@ -6079,9 +6078,14 @@ function renderSelectedDataSummary() {
     <strong>${escapeHtml(label)}</strong>
     <span>${escapeHtml(lastSummary.startDate)} 至 ${escapeHtml(lastSummary.endDate)} · ${lastSummary.count} 个交易日</span>
   `;
-  if (openMarketDataButton) openMarketDataButton.disabled = false;
 }
 
+// openMarketDataButton lives next to openResultsDialogButton now, both gated on "a backtest
+// result actually exists" — not just "history data is loaded" — so that by the time you can
+// click 查看价格曲线, a specific model has definitely been selected and run. This also matters
+// for correctness, not just discoverability: the wave-threshold display it opens into
+// (updateWaveConditionControls, see openMarketDataDialog) reads whatever model is CURRENTLY
+// active, and that's only meaningful once a real backtest has established which model that is.
 function renderSelectedResultSummary() {
   if (!selectedResultSummary) return;
   if (!comparisonResults || comparisonResults.length === 0) {
@@ -6090,6 +6094,7 @@ function renderSelectedResultSummary() {
       <span>选择模型并加载历史数据后会自动开始模拟。</span>
     `;
     if (openResultsDialogButton) openResultsDialogButton.disabled = true;
+    if (openMarketDataButton) openMarketDataButton.disabled = true;
     return;
   }
 
@@ -6100,6 +6105,7 @@ function renderSelectedResultSummary() {
     <span>收益 ${formatPercent(leading.finalState.returnRate)} · 年化 ${formatPercent(leadingAnnualized)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
   `;
   if (openResultsDialogButton) openResultsDialogButton.disabled = false;
+  if (openMarketDataButton) openMarketDataButton.disabled = false;
 }
 
 function renderSimulationOverview() {
@@ -6215,6 +6221,14 @@ function openMarketDataDialog() {
     openDataSelectorDialog();
     return;
   }
+  // Force a fresh re-sync of "does the currently active model use drawdownFromWaveHigh, and
+  // what's its resolved threshold" right at the moment this dialog opens, rather than trusting
+  // whatever updateWaveConditionControls() last left waveThresholdInput showing. That value can
+  // otherwise go stale — updateIndicatorUi() only runs reactively (preset load, indicator type
+  // change), not whenever this dialog happens to be opened — so without this call the chart
+  // could show a leftover threshold from a previously-viewed model instead of the one that's
+  // actually active now.
+  updateIndicatorUi();
   showDialog(marketDataDialog);
   window.requestAnimationFrame(() => {
     drawChart(lastRows, lastSummary);
