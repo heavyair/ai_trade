@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-wave-threshold-ui-fixes">
+    <link rel="stylesheet" href="/styles.css?v=20260901-wave-in-trade-records">
   </head>
   <body>
     <main class="shell">
@@ -663,10 +663,7 @@
               <strong data-i18n="simulationNotReady">尚未生成模拟表现</strong>
               <span data-i18n="simulationNotReadyHint">选择模型并加载历史数据后会自动开始模拟。</span>
             </article>
-            <div class="simulation-state-card-actions">
-              <button id="openResultsDialogButton" class="ghost-button" type="button" disabled>查看模拟结果</button>
-              <button id="openMarketDataButton" class="ghost-button" type="button" disabled>查看价格曲线</button>
-            </div>
+            <button id="openResultsDialogButton" class="ghost-button" type="button" disabled>查看模拟结果</button>
           </div>
         </div>
         <dialog id="modelSelectorDialog" class="param-dialog model-selector-dialog">
@@ -1317,7 +1314,21 @@
               <span><i class="line"></i>收盘价</span>
               <span><i class="dot buy-dot"></i>买入</span>
               <span><i class="dot sell-dot"></i>卖出</span>
+              <span id="modelTradesWaveLegend" class="hidden">
+                <i class="dot model-trades-wave-high-dot"></i>波浪高点
+                <i class="dot model-trades-wave-low-dot"></i>波浪低点
+              </span>
             </div>
+          </div>
+          <div id="modelTradesWaveControls" class="indicator-controls hidden">
+            <label class="wave-param">
+              波浪确认波动 %（仅预览，不影响已保存的模型）
+              <input id="modelTradesWaveThresholdInput" type="number" min="0.1" max="30" step="0.1" value="5">
+            </label>
+            <label id="modelTradesWaveConditionRow" class="hidden">
+              选择波浪条件
+              <select id="modelTradesWaveConditionSelect"></select>
+            </label>
           </div>
           <div class="trade-price-wrap">
             <svg id="modelOrderPriceChart" role="img" aria-label="模型下单价格曲线"></svg>
@@ -1438,7 +1449,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-wave-threshold-ui-fixes"></script>
-    <script src="/app.js?v=20260901-wave-threshold-ui-fixes"></script>
+    <script src="/formula-engine.js?v=20260901-wave-in-trade-records"></script>
+    <script src="/app.js?v=20260901-wave-in-trade-records"></script>
   </body>
 </html>

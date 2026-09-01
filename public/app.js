@@ -75,7 +75,6 @@ const strategyPresetSelect = document.querySelector("#strategyPresetSelect");
 const applyPresetButton = document.querySelector("#applyPresetButton");
 const compareCurrentConfigInput = document.querySelector("#compareCurrentConfigInput");
 const modelCompareOptions = document.querySelector("#modelCompareOptions");
-const openMarketDataButton = document.querySelector("#openMarketDataButton");
 const openResultsDialogButton = document.querySelector("#openResultsDialogButton");
 const closeModelSelectorButton = document.querySelector("#closeModelSelectorButton");
 const doneModelSelectorButton = document.querySelector("#doneModelSelectorButton");
@@ -102,6 +101,11 @@ const rankingPresetList = document.querySelector("#rankingPresetList");
 const modelTradesTitle = document.querySelector("#modelTradesTitle");
 const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
 const modelTradesDetail = document.querySelector("#modelTradesDetail");
+const modelTradesWaveControls = document.querySelector("#modelTradesWaveControls");
+const modelTradesWaveThresholdInput = document.querySelector("#modelTradesWaveThresholdInput");
+const modelTradesWaveConditionRow = document.querySelector("#modelTradesWaveConditionRow");
+const modelTradesWaveConditionSelect = document.querySelector("#modelTradesWaveConditionSelect");
+const modelTradesWaveLegend = document.querySelector("#modelTradesWaveLegend");
 const presetParamDialog = document.querySelector("#presetParamDialog");
 const closePresetParamButton = document.querySelector("#closePresetParamButton");
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
@@ -6080,12 +6084,6 @@ function renderSelectedDataSummary() {
   `;
 }
 
-// openMarketDataButton lives next to openResultsDialogButton now, both gated on "a backtest
-// result actually exists" — not just "history data is loaded" — so that by the time you can
-// click 查看价格曲线, a specific model has definitely been selected and run. This also matters
-// for correctness, not just discoverability: the wave-threshold display it opens into
-// (updateWaveConditionControls, see openMarketDataDialog) reads whatever model is CURRENTLY
-// active, and that's only meaningful once a real backtest has established which model that is.
 function renderSelectedResultSummary() {
   if (!selectedResultSummary) return;
   if (!comparisonResults || comparisonResults.length === 0) {
@@ -6094,7 +6092,6 @@ function renderSelectedResultSummary() {
       <span>选择模型并加载历史数据后会自动开始模拟。</span>
     `;
     if (openResultsDialogButton) openResultsDialogButton.disabled = true;
-    if (openMarketDataButton) openMarketDataButton.disabled = true;
     return;
   }
 
@@ -6105,7 +6102,6 @@ function renderSelectedResultSummary() {
     <span>收益 ${formatPercent(leading.finalState.returnRate)} · 年化 ${formatPercent(leadingAnnualized)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
   `;
   if (openResultsDialogButton) openResultsDialogButton.disabled = false;
-  if (openMarketDataButton) openMarketDataButton.disabled = false;
 }
 
 function renderSimulationOverview() {
@@ -11747,6 +11743,7 @@ function renderModelResultCharts(result) {
   renderTradeLog(withTradeModelLabel(result.finalState.trades || [], result.label), result.label);
   renderTradeDetail(null);
   drawReturnComparison(result.states);
+  updateModelTradesWaveControls(result);
   drawModelOrderPriceChart(result);
   drawTradePriceChart([]);
   if (modelTradesTitle) modelTradesTitle.textContent = `${result.label} 交易记录`;
@@ -12123,12 +12120,83 @@ function drawTradePriceChartInto(target, zoom, states, options = {}) {
   `;
 }
 
+// 交易记录弹窗自己的一套波浪状态——刻意跟历史模拟主向导那套(currentWaveConditions/
+// currentWaveConditionRef)分开，不共用同一个全局变量。这里读的是result.config（这条具体
+// 交易记录背后那个模型自己的完整config，buildModelComparisonResults里createConfigFromPreset
+// 生成的），不是"当前活跃模型"这种容易跟别的操作互相干扰的全局状态——避免重蹈"6.67显示成
+// 15"那个bug：那次的根因就是全局状态在多模型对比场景下可能跟你正在看的这一个对不上。
+let currentModelTradesResult = null;
+let currentModelTradesWaveConditions = [];
+let currentModelTradesWaveConditionRef = null;
+
+function updateModelTradesWaveControls(result) {
+  currentModelTradesResult = result;
+  currentModelTradesWaveConditions = [];
+  currentModelTradesWaveConditionRef = null;
+  if (!modelTradesWaveControls) return;
+  const config = result && result.config;
+  if (!config) {
+    modelTradesWaveControls.classList.add("hidden");
+    if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
+    return;
+  }
+  currentModelTradesWaveConditions = collectWaveConditions({
+    buyBlockRules: config.buyBlockRules,
+    sellBlockRules: config.sellBlockRules,
+    scoreRules: config.scoreRules,
+  });
+  if (currentModelTradesWaveConditions.length === 0) {
+    modelTradesWaveControls.classList.add("hidden");
+    if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
+    return;
+  }
+  modelTradesWaveControls.classList.remove("hidden");
+  if (modelTradesWaveLegend) modelTradesWaveLegend.classList.remove("hidden");
+  if (currentModelTradesWaveConditions.length === 1) {
+    if (modelTradesWaveConditionRow) modelTradesWaveConditionRow.classList.add("hidden");
+  } else if (modelTradesWaveConditionRow && modelTradesWaveConditionSelect) {
+    modelTradesWaveConditionRow.classList.remove("hidden");
+    modelTradesWaveConditionSelect.innerHTML = currentModelTradesWaveConditions
+      .map((entry, index) => `<option value="${index}">${escapeHtml(entry.label)}</option>`)
+      .join("");
+    modelTradesWaveConditionSelect.value = "0";
+  }
+  currentModelTradesWaveConditionRef = currentModelTradesWaveConditions[0].condition;
+  if (modelTradesWaveThresholdInput) {
+    modelTradesWaveThresholdInput.value = resolveConditionWaveThreshold(currentModelTradesWaveConditionRef, config.waveThreshold);
+  }
+}
+
 function drawModelOrderPriceChart(result) {
   if (!modelOrderPriceChart) return;
   const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
   const rows = usableStates.map((state) => state.row);
   const trades = result && result.finalState ? withTradeModelLabel(result.finalState.trades || [], result.label) : [];
-  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades);
+  // 只是预览用的重算，不写回result.config——这个弹窗本身是"查看已经跑出来的结果"，不是编辑
+  // 模型的地方，改这个输入框只影响图上画的波浪点，不会让下次回测跟着变。
+  let wavePoints = [];
+  if (currentModelTradesWaveConditionRef && modelTradesWaveThresholdInput) {
+    const threshold = Math.max(0.1, Number(modelTradesWaveThresholdInput.value) || 5);
+    wavePoints = getWaveTurningPoints(rows, threshold);
+  }
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints });
+}
+
+if (modelTradesWaveThresholdInput) {
+  modelTradesWaveThresholdInput.addEventListener("input", () => {
+    drawModelOrderPriceChart(currentModelTradesResult);
+  });
+}
+if (modelTradesWaveConditionSelect) {
+  modelTradesWaveConditionSelect.addEventListener("change", () => {
+    const entry = currentModelTradesWaveConditions[Number(modelTradesWaveConditionSelect.value)];
+    if (!entry || !currentModelTradesResult) return;
+    currentModelTradesWaveConditionRef = entry.condition;
+    if (modelTradesWaveThresholdInput) {
+      modelTradesWaveThresholdInput.value = resolveConditionWaveThreshold(entry.condition, currentModelTradesResult.config && currentModelTradesResult.config.waveThreshold);
+    }
+    drawModelOrderPriceChart(currentModelTradesResult);
+  });
 }
 
 // Shared by the main "模型对比" order chart and the admin scan re-run replay: draws a
@@ -12886,12 +12954,6 @@ modelCompareOptions.addEventListener("click", (event) => {
   if (!option) return;
   applyStrategyPreset(option.dataset.presetName);
 });
-
-if (openMarketDataButton) {
-  openMarketDataButton.addEventListener("click", () => {
-    openMarketDataDialog();
-  });
-}
 
 if (openResultsDialogButton) {
   openResultsDialogButton.addEventListener("click", () => {

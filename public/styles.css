@@ -630,6 +630,18 @@ button:disabled {
   background: #344054;
 }
 
+/* Matches .wave-high-marker/.wave-low-marker's fill colors (drawModelOrderPriceChartInto's
+   actual wave point markers) — kept as separate classes from the older .wave-high-dot/
+   .wave-low-dot pair above (different color scheme, used by a different, older chart) rather
+   than reusing them, so this legend's colors always match what the chart it labels actually draws. */
+.model-trades-wave-high-dot {
+  background: #c2413b;
+}
+
+.model-trades-wave-low-dot {
+  background: #227a4f;
+}
+
 .confirm-dot {
   background: #f0a202;
 }
