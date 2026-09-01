@@ -9746,6 +9746,20 @@ function createPresetFromConfig(label, config, meta = {}) {
   };
 }
 
+// aiPatch.uncoveredRequirements lists parts of the user's own description the AI could not
+// confidently turn into a rule (see model-generator.js's prompt instruction on this field) —
+// appended right after "AI 理解" instead of only being visible by diffing the raw JSON, since
+// a silently-dropped requirement is easy to miss otherwise.
+function buildAiModelText(text, aiPatch) {
+  if (!aiPatch) return text;
+  const parts = [text];
+  if (aiPatch.reason) parts.push(`AI 理解：${aiPatch.reason}`);
+  if (Array.isArray(aiPatch.uncoveredRequirements) && aiPatch.uncoveredRequirements.length > 0) {
+    parts.push(`⚠ AI 未能表达的部分：${aiPatch.uncoveredRequirements.join("；")}`);
+  }
+  return parts.join("\n\n");
+}
+
 function createSafePresetDraft(description, aiPatch = null) {
   const text = String(description || "").trim();
   const strategyType = aiPatch && supportedStrategyTypes.includes(aiPatch.strategyType)
@@ -9900,7 +9914,7 @@ function createSafePresetDraft(description, aiPatch = null) {
     createdAt: now,
     updatedAt: now,
     originalText: text,
-    modelText: aiPatch && aiPatch.reason ? `${text}\n\nAI 理解：${aiPatch.reason}` : text,
+    modelText: buildAiModelText(text, aiPatch),
     originalModelId: "0",
   };
   const preset = createPresetFromConfig(label, config, meta);
@@ -12931,7 +12945,12 @@ if (generateModelCodeButton) {
     generatedPresetDraft = createSafePresetDraft(description, aiPatch);
     if (generatedModelCode) generatedModelCode.textContent = generatedPresetDraft.code;
     if (viewGeneratedModelParamsButton) viewGeneratedModelParamsButton.disabled = false;
-    setStatus(aiPatch ? "AI 已理解模型描述，并生成安全模型预设。" : fallbackMessage);
+    const uncovered = aiPatch && Array.isArray(aiPatch.uncoveredRequirements) ? aiPatch.uncoveredRequirements : [];
+    if (uncovered.length > 0) {
+      setStatus(`⚠ AI 有 ${uncovered.length} 处描述没能表达成规则，请检查生成结果：${uncovered.join("；")}`, true);
+    } else {
+      setStatus(aiPatch ? "AI 已理解模型描述，并生成安全模型预设。" : fallbackMessage);
+    }
     syncModelAuthoringControls();
   });
 }
