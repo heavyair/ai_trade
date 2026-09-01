@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-restore-wave-indicator-ui">
+    <link rel="stylesheet" href="/styles.css?v=20260901-wave-condition-picker">
   </head>
   <body>
     <main class="shell">
@@ -854,6 +854,10 @@
               波浪确认波动 %
               <input id="waveThresholdInput" type="number" min="1" max="30" step="0.5" value="5">
             </label>
+            <label id="waveConditionRow" class="hidden">
+              选择波浪条件
+              <select id="waveConditionSelect"></select>
+            </label>
           </div>
           <div class="chart-tools" aria-label="历史价格图缩放">
             <button id="priceZoomOutButton" type="button">缩小</button>
@@ -1420,7 +1424,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-restore-wave-indicator-ui"></script>
-    <script src="/app.js?v=20260901-restore-wave-indicator-ui"></script>
+    <script src="/formula-engine.js?v=20260901-wave-condition-picker"></script>
+    <script src="/app.js?v=20260901-wave-condition-picker"></script>
   </body>
 </html>

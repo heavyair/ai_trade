@@ -65,6 +65,8 @@ const sellRulesContainer = document.querySelector("#sellRules");
 const initialCashInput = document.querySelector("#initialCashInput");
 const indicatorModelSelect = document.querySelector("#indicatorModelSelect");
 const waveThresholdInput = document.querySelector("#waveThresholdInput");
+const waveConditionRow = document.querySelector("#waveConditionRow");
+const waveConditionSelect = document.querySelector("#waveConditionSelect");
 const playSpeedInput = document.querySelector("#playSpeedInput");
 const tradeFeeInput = document.querySelector("#tradeFeeInput");
 const backtestWindowModeSelect = document.querySelector("#backtestWindowModeSelect");
@@ -4719,11 +4721,16 @@ function renderWaveVisualizerPresetOptions() {
   }
 }
 
-// Every drawdownFromWaveHigh condition across buyBlockRules/sellBlockRules/scoreRules, each
-// resolved through the SAME resolveConditionWaveThreshold the backtest engine itself uses —
-// what's shown here is guaranteed to match what the model actually does at runtime, not a
-// separately-reasoned guess.
-function collectWaveConditionsFromPreset(preset) {
+// Every drawdownFromWaveHigh condition across buyBlockRules/sellBlockRules/scoreRules —
+// returns DIRECT REFERENCES to the condition objects (not value snapshots), so callers can
+// both read them (admin 波浪可视化 tool: resolveConditionWaveThreshold(entry.condition,
+// preset.waveThreshold) for a display-only value) and write them (历史模拟's live indicator
+// controls: entry.condition.waveThreshold = x actually mutates the same object living inside
+// currentBlockRules/currentScoreRules, since JS objects are reference types — no separate
+// "save" step needed, the next backtest run picks it up automatically).
+// source: anything shaped like {buyBlockRules, sellBlockRules, scoreRules} — a strategyPresets
+// entry, or {buyBlockRules: currentBlockRules.buyBlockRules, ...} both qualify.
+function collectWaveConditions(source) {
   const results = [];
   const scanBlocks = (blocks, labelPrefix) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
@@ -4731,19 +4738,19 @@ function collectWaveConditionsFromPreset(preset) {
         if (condition.indicator !== "drawdownFromWaveHigh") return;
         results.push({
           label: `${labelPrefix}${blockIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
-          threshold: resolveConditionWaveThreshold(condition, preset.waveThreshold),
+          condition,
         });
       });
     });
   };
-  scanBlocks(preset.buyBlockRules, "买入规则块");
-  scanBlocks(preset.sellBlockRules, "卖出规则块");
-  (Array.isArray(preset.scoreRules) ? preset.scoreRules : []).forEach((rule, ruleIndex) => {
+  scanBlocks(source.buyBlockRules, "买入规则块");
+  scanBlocks(source.sellBlockRules, "卖出规则块");
+  (Array.isArray(source.scoreRules) ? source.scoreRules : []).forEach((rule, ruleIndex) => {
     (rule && rule.conditions || []).forEach((condition, conditionIndex) => {
       if (condition.indicator !== "drawdownFromWaveHigh") return;
       results.push({
         label: `打分规则${ruleIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
-        threshold: resolveConditionWaveThreshold(condition, preset.waveThreshold),
+        condition,
       });
     });
   });
@@ -4819,7 +4826,10 @@ if (waveVisualizerLoadPresetButton) {
       redrawWaveVisualizer();
       return;
     }
-    const conditions = collectWaveConditionsFromPreset(preset);
+    const conditions = collectWaveConditions(preset).map((entry) => ({
+      label: entry.label,
+      threshold: resolveConditionWaveThreshold(entry.condition, preset.waveThreshold),
+    }));
     if (conditions.length === 0) {
       setStatus(`模型「${preset.label}」没有用到波浪确认阈值（没有 drawdownFromWaveHigh 条件）。`, true);
       return;
@@ -5802,6 +5812,47 @@ function getCurrentStagnationReversalRule() {
   return readStagnationReversalRule(preset && preset.stagnationReversalRule || defaultStagnationReversalRule);
 }
 
+// Decides whether the 波浪确认波动% control is relevant at all — not just for strategyType
+// "wave", but for ANY loaded model (block-rules/score-rules included) that has one or more
+// drawdownFromWaveHigh conditions somewhere in its rules, since that indicator has its own
+// wave-confirmation threshold regardless of which strategy type wraps it. When there's more
+// than one such condition, shows a picker so waveThresholdInput can target a specific one;
+// editing it then writes DIRECTLY into that condition object (see the input listener below),
+// live-mutating currentBlockRules/currentScoreRules rather than just refreshing a preview.
+function updateWaveConditionControls() {
+  const isWave = indicatorModelSelect.value === "wave";
+  if (isWave) {
+    currentWaveConditions = [];
+    currentWaveConditionRef = null;
+    if (waveConditionRow) waveConditionRow.classList.add("hidden");
+    document.querySelectorAll(".wave-param").forEach((item) => item.classList.remove("hidden"));
+    return;
+  }
+  currentWaveConditions = collectWaveConditions({
+    buyBlockRules: currentBlockRules.buyBlockRules,
+    sellBlockRules: currentBlockRules.sellBlockRules,
+    scoreRules: currentScoreRules.scoreRules,
+  });
+  if (currentWaveConditions.length === 0) {
+    currentWaveConditionRef = null;
+    document.querySelectorAll(".wave-param").forEach((item) => item.classList.add("hidden"));
+    if (waveConditionRow) waveConditionRow.classList.add("hidden");
+    return;
+  }
+  document.querySelectorAll(".wave-param").forEach((item) => item.classList.remove("hidden"));
+  if (currentWaveConditions.length === 1) {
+    if (waveConditionRow) waveConditionRow.classList.add("hidden");
+  } else if (waveConditionRow && waveConditionSelect) {
+    waveConditionRow.classList.remove("hidden");
+    waveConditionSelect.innerHTML = currentWaveConditions
+      .map((entry, index) => `<option value="${index}">${escapeHtml(entry.label)}</option>`)
+      .join("");
+    waveConditionSelect.value = "0";
+  }
+  currentWaveConditionRef = currentWaveConditions[0].condition;
+  waveThresholdInput.value = resolveConditionWaveThreshold(currentWaveConditionRef, currentModelTopLevelWaveThreshold);
+}
+
 function updateIndicatorUi() {
   const strategyType = indicatorModelSelect.value;
   const isWave = strategyType === "wave";
@@ -5809,7 +5860,7 @@ function updateIndicatorUi() {
   const isMaRsiBand = strategyType === "ma-rsi-band";
   const isOrderGrid = strategyType === "order-grid";
   const isPeVolume = strategyType === "pe-volume";
-  document.querySelectorAll(".wave-param").forEach((item) => item.classList.toggle("hidden", !isWave));
+  updateWaveConditionControls();
   localLadderPanel.classList.add("hidden");
   maRsiBandPanel.classList.add("hidden");
   orderGridPanel.classList.add("hidden");
@@ -6218,6 +6269,13 @@ function renderStrategyPresetOptions(strategyType, selectedPresetName) {
 
 let currentBlockRules = { buyBlockRules: [], sellBlockRules: [] };
 let currentScoreRules = { scoreRules: [], positionBands: [] };
+// 历史模拟's live "which wave condition is the 波浪确认波动% input currently editing" state.
+let currentWaveConditions = []; // [{label, condition}] recomputed by updateWaveConditionControls()
+let currentWaveConditionRef = null; // direct reference into currentBlockRules/currentScoreRules,
+// or null when strategyType is "wave" (that case uses the old top-level-only path).
+let currentModelTopLevelWaveThreshold = 5; // the loaded model's own top-level waveThreshold, kept
+// separate from what waveThresholdInput displays so previewing one condition's threshold never
+// leaks into the shared fallback other un-overridden conditions in the same model rely on.
 
 function fillStrategyPresetControls(presetName) {
   const preset = strategyPresets[presetName] || strategyPresets.optimized;
@@ -6225,6 +6283,7 @@ function fillStrategyPresetControls(presetName) {
   if (indicatorModelSelect) indicatorModelSelect.value = strategyType;
   if (strategyPresetSelect) renderStrategyPresetOptions(strategyType, presetName);
   waveThresholdInput.value = preset.waveThreshold;
+  currentModelTopLevelWaveThreshold = Number(preset.waveThreshold) || 5;
   renderRuleInputs(presetName);
   applyLocalLadderRule(preset.localLadderRule || defaultLocalLadderRule);
   applyMaRsiBandRule(preset.maRsiBandRule || defaultMaRsiBandRule);
@@ -6296,7 +6355,13 @@ function readBacktestConfig() {
   return {
     strategyType: indicatorModelSelect ? indicatorModelSelect.value : "wave",
     initialCash: Math.max(0, Number(initialCashInput.value)),
-    waveThreshold: Math.max(0.1, Number(waveThresholdInput.value)),
+    // While previewing/editing one specific drawdownFromWaveHigh condition's own threshold
+    // (currentWaveConditionRef set), the top-level field must stay at the model's own original
+    // default — NOT whatever that one condition's input currently shows — otherwise it'd leak
+    // into the shared fallback any OTHER un-overridden wave condition in the same model relies on.
+    waveThreshold: currentWaveConditionRef
+      ? Math.max(0.1, Number(currentModelTopLevelWaveThreshold) || 5)
+      : Math.max(0.1, Number(waveThresholdInput.value)),
     localLadderRule: readLocalLadderRule(),
     maRsiBandRule: readMaRsiBandRule(),
     orderGridRule: readOrderGridRule(),
@@ -13307,17 +13372,36 @@ indicatorModelSelect.addEventListener("change", () => {
   }
 });
 
-waveThresholdInput.addEventListener("input", () => {
-  if (indicatorModelSelect.value !== "wave") return;
-  if (lastRows && lastSummary) {
-    drawChart(lastRows, lastSummary);
-    if (hasBacktestRun) {
-      recomputeBacktestWithLatestConfig();
-    } else {
-      setStatus(`已按 ${formatPercent(getWaveThreshold())} 波动阈值重新计算历史波浪高低点。`);
-    }
+function triggerWaveThresholdRedraw() {
+  if (!lastRows || !lastSummary) return;
+  drawChart(lastRows, lastSummary);
+  if (hasBacktestRun) {
+    recomputeBacktestWithLatestConfig();
+  } else {
+    setStatus(`已按 ${formatPercent(getWaveThreshold())} 波动阈值重新计算历史波浪高低点。`);
   }
+}
+
+waveThresholdInput.addEventListener("input", () => {
+  if (indicatorModelSelect.value !== "wave" && !currentWaveConditionRef) return;
+  if (currentWaveConditionRef) {
+    // Directly mutates the condition object living inside currentBlockRules/currentScoreRules
+    // (collectWaveConditions returned a reference, not a copy) — the next readBacktestConfig()/
+    // backtest run picks this up automatically, no separate save step.
+    currentWaveConditionRef.waveThreshold = Math.max(0.1, Number(waveThresholdInput.value) || 5);
+  }
+  triggerWaveThresholdRedraw();
 });
+
+if (waveConditionSelect) {
+  waveConditionSelect.addEventListener("change", () => {
+    const entry = currentWaveConditions[Number(waveConditionSelect.value)];
+    if (!entry) return;
+    currentWaveConditionRef = entry.condition;
+    waveThresholdInput.value = resolveConditionWaveThreshold(currentWaveConditionRef, currentModelTopLevelWaveThreshold);
+    triggerWaveThresholdRedraw();
+  });
+}
 
 [
   ladderLookbackInput,
