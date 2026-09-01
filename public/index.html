@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-streak-indicators">
+    <link rel="stylesheet" href="/styles.css?v=20260901-live-rule-editor">
   </head>
   <body>
     <main class="shell">
@@ -1323,27 +1323,11 @@
               </span>
             </div>
           </div>
-          <div id="modelTradesWaveControls" class="indicator-controls hidden">
-            <label class="wave-param">
-              波浪确认波动 %（仅预览，不影响已保存的模型）
-              <input id="modelTradesWaveThresholdInput" type="number" min="0.1" max="30" step="0.1" value="5">
-            </label>
-            <label id="modelTradesWaveConditionRow" class="hidden">
-              选择波浪条件
-              <select id="modelTradesWaveConditionSelect"></select>
-            </label>
+          <div id="modelTradesRuleEditorSection" class="hidden">
+            <p class="field-hint">调整下面的规则参数，价格曲线上的买卖点会按新参数实时重新计算（仅预览，不会修改已保存的模型）。</p>
+            <div id="modelTradesRuleEditor" class="block-rule-form-editor"></div>
           </div>
-          <div id="modelTradesStreakControls" class="indicator-controls hidden">
-            <label id="modelTradesDownDayRow" class="wave-param hidden">
-              下跌天数窗口（日，仅预览，不影响已保存的模型）
-              <input id="modelTradesDownDayLookbackInput" type="number" min="1" max="60" step="1" value="7">
-            </label>
-            <label id="modelTradesLowRow" class="wave-param hidden">
-              创新低回看窗口（日，仅预览，不影响已保存的模型）
-              <input id="modelTradesLowLookbackInput" type="number" min="1" max="120" step="1" value="15">
-            </label>
-          </div>
-          <span id="modelTradesStreakStats" class="field-hint"></span>
+          <span id="modelTradesRuleStats" class="field-hint"></span>
           <div class="trade-price-wrap">
             <svg id="modelOrderPriceChart" role="img" aria-label="模型下单价格曲线"></svg>
           </div>
@@ -1463,7 +1447,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-streak-indicators"></script>
-    <script src="/app.js?v=20260901-streak-indicators"></script>
+    <script src="/formula-engine.js?v=20260901-live-rule-editor"></script>
+    <script src="/app.js?v=20260901-live-rule-editor"></script>
   </body>
 </html>

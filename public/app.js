@@ -101,18 +101,11 @@ const rankingPresetList = document.querySelector("#rankingPresetList");
 const modelTradesTitle = document.querySelector("#modelTradesTitle");
 const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
 const modelTradesDetail = document.querySelector("#modelTradesDetail");
-const modelTradesWaveControls = document.querySelector("#modelTradesWaveControls");
-const modelTradesWaveThresholdInput = document.querySelector("#modelTradesWaveThresholdInput");
-const modelTradesWaveConditionRow = document.querySelector("#modelTradesWaveConditionRow");
-const modelTradesWaveConditionSelect = document.querySelector("#modelTradesWaveConditionSelect");
 const modelTradesWaveLegend = document.querySelector("#modelTradesWaveLegend");
-const modelTradesStreakControls = document.querySelector("#modelTradesStreakControls");
-const modelTradesDownDayRow = document.querySelector("#modelTradesDownDayRow");
-const modelTradesDownDayLookbackInput = document.querySelector("#modelTradesDownDayLookbackInput");
-const modelTradesLowRow = document.querySelector("#modelTradesLowRow");
-const modelTradesLowLookbackInput = document.querySelector("#modelTradesLowLookbackInput");
 const modelTradesLowReferenceLegend = document.querySelector("#modelTradesLowReferenceLegend");
-const modelTradesStreakStats = document.querySelector("#modelTradesStreakStats");
+const modelTradesRuleEditorSection = document.querySelector("#modelTradesRuleEditorSection");
+const modelTradesRuleEditor = document.querySelector("#modelTradesRuleEditor");
+const modelTradesRuleStats = document.querySelector("#modelTradesRuleStats");
 const presetParamDialog = document.querySelector("#presetParamDialog");
 const closePresetParamButton = document.querySelector("#closePresetParamButton");
 const savePresetParamButton = document.querySelector("#savePresetParamButton");
@@ -11801,9 +11794,7 @@ function renderModelResultCharts(result) {
   renderTradeLog(withTradeModelLabel(result.finalState.trades || [], result.label), result.label);
   renderTradeDetail(null);
   drawReturnComparison(result.states);
-  updateModelTradesWaveControls(result);
-  updateModelTradesStreakControls(result);
-  drawModelOrderPriceChart(result);
+  initModelTradesCharts(result);
   drawTradePriceChart([]);
   if (modelTradesTitle) modelTradesTitle.textContent = `${result.label} 交易记录`;
   if (modelTradesSubtitle) modelTradesSubtitle.textContent = `${activeBacktestRangeLabel || "已完成模拟"}；点击一条交易查看详情和对应价格曲线。`;
@@ -11811,7 +11802,7 @@ function renderModelResultCharts(result) {
   showDialog(modelTradesDialog);
   window.requestAnimationFrame(() => {
     drawReturnComparison(result.states);
-    drawModelOrderPriceChart(result);
+    redrawModelTradesChart();
   });
   setStatus(`已切换到 ${result.label}：交易记录已弹出。请选择一条交易查看对应价格、参考高低点和趋势。`);
 }
@@ -12179,166 +12170,282 @@ function drawTradePriceChartInto(target, zoom, states, options = {}) {
   `;
 }
 
-// 交易记录弹窗自己的一套波浪状态——刻意跟历史模拟主向导那套(currentWaveConditions/
-// currentWaveConditionRef)分开，不共用同一个全局变量。这里读的是result.config（这条具体
-// 交易记录背后那个模型自己的完整config，buildModelComparisonResults里createConfigFromPreset
-// 生成的），不是"当前活跃模型"这种容易跟别的操作互相干扰的全局状态——避免重蹈"6.67显示成
-// 15"那个bug：那次的根因就是全局状态在多模型对比场景下可能跟你正在看的这一个对不上。
+// 交易记录弹窗自己的一套状态——刻意跟历史模拟主向导那套(currentBlockRules等)分开，不共用
+// 同一个全局变量。这里读/改的都是currentModelTradesResult.config的克隆，不是"当前活跃模型"
+// 这种容易跟别的操作互相干扰的全局状态——避免重蹈"6.67显示成15"那个bug：那次的根因就是
+// 全局状态在多模型对比场景下可能跟你正在看的这一个对不上。
 let currentModelTradesResult = null;
-let currentModelTradesWaveConditions = [];
-let currentModelTradesWaveConditionRef = null;
+// 仅当被查看的模型是block-rules类型时才有值——这个弹窗里的规则编辑器复用的行级渲染函数
+// (renderBlockRuleBlock/renderBlockConditionRow/renderBlockActionRow)是block-rules专属的
+// 结构（conditions+一次性action），跟"查看参数"编辑器对block-rules的支持范围一致，其它
+// strategyType（wave/score-rules等）在这里不提供参数编辑，只显示原始已保存结果的曲线。
+let modelTradesRuleFormState = null;
 
-function updateModelTradesWaveControls(result) {
-  currentModelTradesResult = result;
-  currentModelTradesWaveConditions = [];
-  currentModelTradesWaveConditionRef = null;
-  if (!modelTradesWaveControls) return;
-  const config = result && result.config;
-  if (!config) {
-    modelTradesWaveControls.classList.add("hidden");
-    if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
-    return;
-  }
-  currentModelTradesWaveConditions = collectWaveConditions({
-    buyBlockRules: config.buyBlockRules,
-    sellBlockRules: config.sellBlockRules,
-    scoreRules: config.scoreRules,
-  });
-  if (currentModelTradesWaveConditions.length === 0) {
-    modelTradesWaveControls.classList.add("hidden");
-    if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
-    return;
-  }
-  modelTradesWaveControls.classList.remove("hidden");
-  if (modelTradesWaveLegend) modelTradesWaveLegend.classList.remove("hidden");
-  if (currentModelTradesWaveConditions.length === 1) {
-    if (modelTradesWaveConditionRow) modelTradesWaveConditionRow.classList.add("hidden");
-  } else if (modelTradesWaveConditionRow && modelTradesWaveConditionSelect) {
-    modelTradesWaveConditionRow.classList.remove("hidden");
-    modelTradesWaveConditionSelect.innerHTML = currentModelTradesWaveConditions
-      .map((entry, index) => `<option value="${index}">${escapeHtml(entry.label)}</option>`)
-      .join("");
-    modelTradesWaveConditionSelect.value = "0";
-  }
-  currentModelTradesWaveConditionRef = currentModelTradesWaveConditions[0].condition;
-  if (modelTradesWaveThresholdInput) {
-    modelTradesWaveThresholdInput.value = resolveConditionWaveThreshold(currentModelTradesWaveConditionRef, config.waveThreshold);
-  }
+function getModelTradesRows(result) {
+  const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
+  return usableStates.map((state) => state.row);
 }
 
-// 同样按当前正在看的result.config派生，不用全局状态——道理跟上面波浪那套完全一样。
-// downDayCount和daysSinceNewLow各自独立判断是否出现在模型里，两个indicator可以同时/单独出现。
-let modelTradesHasDownDayCount = false;
-let modelTradesHasDaysSinceNewLow = false;
+// 波浪/streak覆盖层和统计文字，两条路径（编辑后的实时预览 / 未编辑的原始已保存结果）共用同一份
+// 计算逻辑，只是传进来的config/rows/trades/finalState不一样——避免两边分别维护一套一样的判断。
+// finalState给了才会显示收益率；options.comparisonReturnRate给了才会额外显示"已保存原始收益率"
+// 用来对比。多个drawdownFromWaveHigh/daysSinceNewLow条件时固定取第一条，跟之前几轮的约定一致
+// ——现在规则编辑器本身已经能直接编辑每一条条件，不再需要单独的"选择第几条"下拉框。
+function drawModelTradesChartWithOverlays(config, rows, trades, finalState, options = {}) {
+  if (!modelOrderPriceChart) return;
+  const waveConditions = config
+    ? collectWaveConditions({ buyBlockRules: config.buyBlockRules, sellBlockRules: config.sellBlockRules, scoreRules: config.scoreRules })
+    : [];
+  let wavePoints = [];
+  if (waveConditions.length > 0) {
+    const threshold = resolveConditionWaveThreshold(waveConditions[0].condition, config.waveThreshold);
+    wavePoints = getWaveTurningPoints(rows, threshold);
+  }
+  if (modelTradesWaveLegend) modelTradesWaveLegend.classList.toggle("hidden", waveConditions.length === 0);
 
-function updateModelTradesStreakControls(result) {
-  modelTradesHasDownDayCount = false;
-  modelTradesHasDaysSinceNewLow = false;
-  if (!modelTradesStreakControls) return;
-  const config = result && result.config;
   const streakConditions = config
-    ? collectStreakConditions({
-        buyBlockRules: config.buyBlockRules,
-        sellBlockRules: config.sellBlockRules,
-        scoreRules: config.scoreRules,
-      })
+    ? collectStreakConditions({ buyBlockRules: config.buyBlockRules, sellBlockRules: config.sellBlockRules, scoreRules: config.scoreRules })
     : [];
   const downDayEntry = streakConditions.find((entry) => entry.indicator === "downDayCount");
   const lowEntry = streakConditions.find((entry) => entry.indicator === "daysSinceNewLow");
-  modelTradesHasDownDayCount = Boolean(downDayEntry);
-  modelTradesHasDaysSinceNewLow = Boolean(lowEntry);
-  if (!modelTradesHasDownDayCount && !modelTradesHasDaysSinceNewLow) {
-    modelTradesStreakControls.classList.add("hidden");
-    if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.add("hidden");
-    if (modelTradesStreakStats) modelTradesStreakStats.textContent = "";
-    return;
-  }
-  modelTradesStreakControls.classList.remove("hidden");
-  if (modelTradesDownDayRow) modelTradesDownDayRow.classList.toggle("hidden", !modelTradesHasDownDayCount);
-  if (modelTradesLowRow) modelTradesLowRow.classList.toggle("hidden", !modelTradesHasDaysSinceNewLow);
-  if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !modelTradesHasDaysSinceNewLow);
-  if (modelTradesHasDownDayCount && modelTradesDownDayLookbackInput) {
-    const lookback = Number(downDayEntry.condition.lookbackDays);
-    modelTradesDownDayLookbackInput.value = lookback > 0 ? lookback : 7;
-  }
-  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
-    const lookback = Number(lowEntry.condition.lookbackDays);
-    modelTradesLowLookbackInput.value = lookback > 0 ? lookback : 15;
-  }
-}
-
-// 只更新"当前天"(最新一个交易日)的文字统计——用户要看的是"今天下跌累计了几天、今天看的
-// N日最低价是多少、今天已经连续几天站上这个最低价了"，不是要一整条历史曲线的每日数值。
-function updateModelTradesStreakStats(rows) {
-  if (!modelTradesStreakStats) return;
-  if (!modelTradesHasDownDayCount && !modelTradesHasDaysSinceNewLow) {
-    modelTradesStreakStats.textContent = "";
-    return;
-  }
-  const parts = [];
-  if (modelTradesHasDownDayCount && modelTradesDownDayLookbackInput) {
-    const lookback = Math.max(1, Math.round(Number(modelTradesDownDayLookbackInput.value) || 7));
-    const series = getDownDayCountSeries(rows, lookback);
-    const latest = series[series.length - 1];
-    parts.push(`最近${lookback}日内下跌天数：${latest === null || latest === undefined ? "--" : `${latest}天`}`);
-  }
-  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
-    const lookback = Math.max(1, Math.round(Number(modelTradesLowLookbackInput.value) || 15));
-    const latestLow = getRollingLowPriceSeries(rows, lookback).slice(-1)[0];
-    const latestStreak = getDaysSinceNewLowSeries(rows, lookback).slice(-1)[0];
-    parts.push(
-      `${lookback}日内最低价：${latestLow === null || latestLow === undefined ? "--" : formatPrice(latestLow)} · ` +
-      `已连续${latestStreak === null || latestStreak === undefined ? "--" : `${latestStreak}天`}未创新低`
-    );
-  }
-  modelTradesStreakStats.textContent = parts.join(" ｜ ");
-}
-
-function drawModelOrderPriceChart(result) {
-  if (!modelOrderPriceChart) return;
-  const usableStates = result && result.states ? result.states.filter((state) => state && state.row) : [];
-  const rows = usableStates.map((state) => state.row);
-  const trades = result && result.finalState ? withTradeModelLabel(result.finalState.trades || [], result.label) : [];
-  // 只是预览用的重算，不写回result.config——这个弹窗本身是"查看已经跑出来的结果"，不是编辑
-  // 模型的地方，改这个输入框只影响图上画的波浪点，不会让下次回测跟着变。
-  let wavePoints = [];
-  if (currentModelTradesWaveConditionRef && modelTradesWaveThresholdInput) {
-    const threshold = Math.max(0.1, Number(modelTradesWaveThresholdInput.value) || 5);
-    wavePoints = getWaveTurningPoints(rows, threshold);
-  }
   let lowReferenceSeries = [];
-  if (modelTradesHasDaysSinceNewLow && modelTradesLowLookbackInput) {
-    const lookback = Math.max(1, Math.round(Number(modelTradesLowLookbackInput.value) || 15));
+  if (lowEntry) {
+    const lookback = Number(lowEntry.condition.lookbackDays) > 0 ? Number(lowEntry.condition.lookbackDays) : 15;
     lowReferenceSeries = getRollingLowPriceSeries(rows, lookback);
   }
-  updateModelTradesStreakStats(rows);
+  if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !lowEntry);
+
   drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries });
+
+  if (modelTradesRuleStats) {
+    const parts = [];
+    if (downDayEntry) {
+      const lookback = Number(downDayEntry.condition.lookbackDays) > 0 ? Number(downDayEntry.condition.lookbackDays) : 7;
+      const latest = getDownDayCountSeries(rows, lookback).slice(-1)[0];
+      parts.push(`最近${lookback}日内下跌天数：${latest === null || latest === undefined ? "--" : `${latest}天`}`);
+    }
+    if (lowEntry) {
+      const lookback = Number(lowEntry.condition.lookbackDays) > 0 ? Number(lowEntry.condition.lookbackDays) : 15;
+      const latestLow = getRollingLowPriceSeries(rows, lookback).slice(-1)[0];
+      const latestStreak = getDaysSinceNewLowSeries(rows, lookback).slice(-1)[0];
+      parts.push(
+        `${lookback}日内最低价：${latestLow === null || latestLow === undefined ? "--" : formatPrice(latestLow)} · ` +
+        `已连续${latestStreak === null || latestStreak === undefined ? "--" : `${latestStreak}天`}未创新低`
+      );
+    }
+    const buyCount = trades.filter((trade) => trade.side === "buy").length;
+    const sellCount = trades.filter((trade) => trade.side === "sell").length;
+    let tradeSummary = `买入${buyCount}次 · 卖出${sellCount}次`;
+    if (finalState) tradeSummary += ` · 收益率${finalState.returnRate.toFixed(2)}%`;
+    if (finalState && options.comparisonReturnRate !== undefined) {
+      tradeSummary += `（已保存模型原始收益率${options.comparisonReturnRate.toFixed(2)}%）`;
+    }
+    parts.push(tradeSummary);
+    modelTradesRuleStats.textContent = parts.join(" ｜ ");
+  }
 }
 
-if (modelTradesWaveThresholdInput) {
-  modelTradesWaveThresholdInput.addEventListener("input", () => {
-    drawModelOrderPriceChart(currentModelTradesResult);
+// 打开/切换一条交易记录时调用一次：block-rules模型才提供参数编辑器（跟"查看参数"编辑器对
+// block-rules的支持范围一致），其它strategyType（wave/score-rules等）只显示原始已保存结果，
+// 没有编辑入口——那些类型的条件结构跟renderBlockRuleBlock期望的{conditions, action}形状不同。
+function initModelTradesCharts(result) {
+  currentModelTradesResult = result;
+  const rows = getModelTradesRows(result);
+  const trades = result.finalState ? withTradeModelLabel(result.finalState.trades || [], result.label) : [];
+  if (result.strategyType === "block-rules" && result.config) {
+    modelTradesRuleFormState = {
+      buyBlockRules: cloneRuleBlocks(result.config.buyBlockRules, defaultBuyBlockRules),
+      sellBlockRules: cloneRuleBlocks(result.config.sellBlockRules, defaultSellBlockRules),
+    };
+    if (modelTradesRuleEditorSection) modelTradesRuleEditorSection.classList.remove("hidden");
+    renderModelTradesRuleEditor();
+    recomputeModelTradesLivePreview();
+  } else {
+    modelTradesRuleFormState = null;
+    if (modelTradesRuleEditorSection) modelTradesRuleEditorSection.classList.add("hidden");
+    if (modelTradesRuleEditor) modelTradesRuleEditor.innerHTML = "";
+    drawModelTradesChartWithOverlays(result.config, rows, trades, result.finalState);
+  }
+}
+
+// 仅用于对话框刚显示出来、SVG容器真实尺寸才第一次可测量时的二次重绘（跟其它图表的
+// requestAnimationFrame重绘是同一个原因），不应该重置规则编辑器的状态。
+function redrawModelTradesChart() {
+  if (!currentModelTradesResult) return;
+  if (modelTradesRuleFormState) {
+    recomputeModelTradesLivePreview();
+    return;
+  }
+  const rows = getModelTradesRows(currentModelTradesResult);
+  const trades = currentModelTradesResult.finalState
+    ? withTradeModelLabel(currentModelTradesResult.finalState.trades || [], currentModelTradesResult.label)
+    : [];
+  drawModelTradesChartWithOverlays(currentModelTradesResult.config, rows, trades, currentModelTradesResult.finalState);
+}
+
+// 每次改动规则参数触发：用同一段历史行情（result.states里的row，跟已保存结果完全一致的
+// 数据）加上编辑后的buyBlockRules/sellBlockRules重新跑一次纯前端回测，只影响这个弹窗的
+// 显示，不写回currentModelTradesResult.config、不联网保存——buildParallelBacktestStates是
+// 纯函数（只读rows+config，不改全局状态），可以放心地在每次输入变化时重复调用。
+function recomputeModelTradesLivePreview() {
+  if (!currentModelTradesResult || !modelTradesRuleFormState) return;
+  const baseConfig = currentModelTradesResult.config;
+  if (!baseConfig) return;
+  const rows = getModelTradesRows(currentModelTradesResult);
+  if (rows.length === 0) return;
+  const editedConfig = {
+    ...baseConfig,
+    buyBlockRules: modelTradesRuleFormState.buyBlockRules,
+    sellBlockRules: modelTradesRuleFormState.sellBlockRules,
+  };
+  const liveStates = buildParallelBacktestStates(rows, editedConfig);
+  const liveFinalState = liveStates[liveStates.length - 1];
+  const liveTrades = liveFinalState ? withTradeModelLabel(liveFinalState.trades || [], currentModelTradesResult.label) : [];
+  drawModelTradesChartWithOverlays(editedConfig, rows, liveTrades, liveFinalState, {
+    comparisonReturnRate: currentModelTradesResult.finalState ? currentModelTradesResult.finalState.returnRate : undefined,
   });
 }
-if (modelTradesWaveConditionSelect) {
-  modelTradesWaveConditionSelect.addEventListener("change", () => {
-    const entry = currentModelTradesWaveConditions[Number(modelTradesWaveConditionSelect.value)];
-    if (!entry || !currentModelTradesResult) return;
-    currentModelTradesWaveConditionRef = entry.condition;
-    if (modelTradesWaveThresholdInput) {
-      modelTradesWaveThresholdInput.value = resolveConditionWaveThreshold(entry.condition, currentModelTradesResult.config && currentModelTradesResult.config.waveThreshold);
+
+// 跟"查看参数"编辑器(blockRuleFormState/blockRuleFormEditor)故意分开一套独立的收集/渲染/
+// 事件绑定，不共用：那一套的语义是"编辑后手动点保存，写回服务器上的preset"；这里是"每次改动
+// 都立刻重新回测、刷新预览"，两者对"改动之后要做什么"的反应完全不同，硬凑共用容易把两边的
+// 意图搅在一起。复用的是不依赖任何全局状态、纯粹按参数返回HTML字符串的行级渲染函数
+// （renderBlockRuleBlock/renderBlockConditionRow/renderBlockActionRow），没有重新发明这部分。
+function collectModelTradesRuleFormState() {
+  if (!modelTradesRuleEditor) return modelTradesRuleFormState;
+  const collectSide = (sideKey) => {
+    const blockEls = modelTradesRuleEditor.querySelectorAll(`.block-rule-block[data-side="${sideKey}"]`);
+    return Array.from(blockEls).map((blockEl) => {
+      const enabled = blockEl.querySelector('[data-role="enabled"]').checked;
+      const rowEls = blockEl.querySelectorAll(".block-rule-condition-row");
+      const conditions = Array.from(rowEls).map((rowEl) => {
+        const indicator = rowEl.querySelector('[data-role="indicator"]').value;
+        const comparator = rowEl.querySelector('[data-role="comparator"]').value;
+        const value = Number(rowEl.querySelector('[data-role="value"]').value);
+        const formulaRaw = rowEl.querySelector('[data-role="formula"]').value;
+        const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
+        const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
+        const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
+        const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
+        return {
+          indicator,
+          comparator,
+          value: Number.isFinite(value) ? value : 0,
+          formula: indicator === "formula" ? formulaRaw.trim() : null,
+          lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
+          slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
+          sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
+          waveThreshold: indicator !== "drawdownFromWaveHigh" || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+        };
+      });
+      const actionType = blockEl.querySelector('[data-role="action-type"]').value;
+      const actionValueRaw = blockEl.querySelector('[data-role="action-value"]').value;
+      const action = actionType === "exitAll"
+        ? { type: "exitAll", value: null }
+        : { type: actionType, value: actionValueRaw === "" ? 0 : Number(actionValueRaw) };
+      return { enabled, conditions, action };
+    });
+  };
+  return {
+    buyBlockRules: collectSide("buyBlockRules"),
+    sellBlockRules: collectSide("sellBlockRules"),
+  };
+}
+
+function renderModelTradesRuleEditor() {
+  if (!modelTradesRuleEditor || !modelTradesRuleFormState) return;
+  const buyBlocks = Array.isArray(modelTradesRuleFormState.buyBlockRules) ? modelTradesRuleFormState.buyBlockRules : [];
+  const sellBlocks = Array.isArray(modelTradesRuleFormState.sellBlockRules) ? modelTradesRuleFormState.sellBlockRules : [];
+  const buyHtml = buyBlocks.map((b, i) => renderBlockRuleBlock(b, "buyBlockRules", i)).join("") || `<div class="ranking-empty">这个模型没有买入规则块。</div>`;
+  const sellHtml = sellBlocks.map((b, i) => renderBlockRuleBlock(b, "sellBlockRules", i)).join("") || `<div class="ranking-empty">这个模型没有卖出规则块。</div>`;
+  modelTradesRuleEditor.innerHTML = `
+    <div class="block-rule-side">
+      <h4>买入规则块（块内条件“且”，块间“或”）</h4>
+      <div class="block-rule-list">${buyHtml}</div>
+      <button type="button" class="ghost-button model-trades-add-buy-block">+ 添加买入规则块</button>
+    </div>
+    <div class="block-rule-side">
+      <h4>卖出规则块</h4>
+      <div class="block-rule-list">${sellHtml}</div>
+      <button type="button" class="ghost-button model-trades-add-sell-block">+ 添加卖出规则块</button>
+    </div>
+  `;
+}
+
+if (modelTradesRuleEditor) {
+  modelTradesRuleEditor.addEventListener("input", () => {
+    modelTradesRuleFormState = collectModelTradesRuleFormState();
+    recomputeModelTradesLivePreview();
+  });
+  modelTradesRuleEditor.addEventListener("change", (event) => {
+    const target = event.target;
+    if (target && target.dataset && target.dataset.role === "indicator") {
+      const row = target.closest(".block-rule-condition-row");
+      const slopeInput = row && row.querySelector('[data-role="slopeWindowDays"]');
+      if (slopeInput) slopeInput.disabled = target.value !== "maSlope";
+      const isFormula = target.value === "formula";
+      const formulaInput = row && row.querySelector('[data-role="formula"]');
+      if (formulaInput) formulaInput.disabled = !isFormula;
+      const lookbackInput = row && row.querySelector('[data-role="lookbackDays"]');
+      if (lookbackInput) lookbackInput.disabled = isFormula;
+      const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
+      if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh";
     }
-    drawModelOrderPriceChart(currentModelTradesResult);
+    if (target && target.dataset && target.dataset.role === "action-type") {
+      const actionRow = target.closest(".block-rule-action-row");
+      const valueInput = actionRow && actionRow.querySelector('[data-role="action-value"]');
+      if (valueInput) valueInput.disabled = target.value === "exitAll";
+    }
+    modelTradesRuleFormState = collectModelTradesRuleFormState();
+    recomputeModelTradesLivePreview();
   });
-}
-if (modelTradesDownDayLookbackInput) {
-  modelTradesDownDayLookbackInput.addEventListener("input", () => {
-    drawModelOrderPriceChart(currentModelTradesResult);
-  });
-}
-if (modelTradesLowLookbackInput) {
-  modelTradesLowLookbackInput.addEventListener("input", () => {
-    drawModelOrderPriceChart(currentModelTradesResult);
+  modelTradesRuleEditor.addEventListener("click", (event) => {
+    const target = event.target;
+    const addCondition = target.closest(".block-rule-add-condition");
+    if (addCondition) {
+      const side = addCondition.dataset.side;
+      const blockIndex = Number(addCondition.dataset.blockIndex);
+      modelTradesRuleFormState = collectModelTradesRuleFormState();
+      modelTradesRuleFormState[side][blockIndex].conditions.push(createEmptyBlockCondition());
+      renderModelTradesRuleEditor();
+      recomputeModelTradesLivePreview();
+      return;
+    }
+    const removeCondition = target.closest(".block-rule-remove-condition");
+    if (removeCondition) {
+      const side = removeCondition.dataset.side;
+      const blockIndex = Number(removeCondition.dataset.blockIndex);
+      const conditionIndex = Number(removeCondition.dataset.conditionIndex);
+      modelTradesRuleFormState = collectModelTradesRuleFormState();
+      modelTradesRuleFormState[side][blockIndex].conditions.splice(conditionIndex, 1);
+      renderModelTradesRuleEditor();
+      recomputeModelTradesLivePreview();
+      return;
+    }
+    const removeBlock = target.closest(".block-rule-remove-block");
+    if (removeBlock) {
+      const side = removeBlock.dataset.side;
+      const blockIndex = Number(removeBlock.dataset.blockIndex);
+      modelTradesRuleFormState = collectModelTradesRuleFormState();
+      modelTradesRuleFormState[side].splice(blockIndex, 1);
+      renderModelTradesRuleEditor();
+      recomputeModelTradesLivePreview();
+      return;
+    }
+    if (target.closest(".model-trades-add-buy-block")) {
+      modelTradesRuleFormState = collectModelTradesRuleFormState();
+      modelTradesRuleFormState.buyBlockRules.push(createEmptyBlockRule());
+      renderModelTradesRuleEditor();
+      recomputeModelTradesLivePreview();
+      return;
+    }
+    if (target.closest(".model-trades-add-sell-block")) {
+      modelTradesRuleFormState = collectModelTradesRuleFormState();
+      modelTradesRuleFormState.sellBlockRules.push(createEmptyBlockRule());
+      renderModelTradesRuleEditor();
+      recomputeModelTradesLivePreview();
+      return;
+    }
   });
 }
 
