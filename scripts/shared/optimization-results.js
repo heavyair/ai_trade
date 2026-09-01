@@ -96,10 +96,13 @@ async function ensureResultsTable(pool) {
     -- source='validated-search') row's frozen best_config against the two MOST RECENT 1-year
     -- validation windows (splitTrainTestWindows is always anchored on "today" at call time, so
     -- simply calling it again naturally slides both windows forward to use freshly-arrived data
-    -- — no need to remember the original run's dates). Does not touch reached_target/test_year*
-    -- (those stay as the ORIGINAL qualification record) — this is a separate, repeatable check
-    -- layered on top, so "did it qualify originally" and "does it still hold up now" are both
-    -- visible at once instead of one overwriting the other.
+    -- — no need to remember the original run's dates). test_year1/test_year2 are left alone
+    -- either way — that's the historical record of what it achieved when it first qualified;
+    -- the fresh numbers land in recheck_year1/year2 instead, so "did it qualify originally" and
+    -- "what does it score now" are both visible side by side. reached_target is the one
+    -- exception: saveRecheckResult demotes it to FALSE the moment a recheck comes back
+    -- stillQualifies=FALSE (see that function's comment for why a stale "达标" flag actively
+    -- misleads other parts of the app) — a passing or inconclusive recheck never touches it.
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS last_rechecked_at TIMESTAMPTZ;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_still_qualifies BOOLEAN;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_year1_annualized_return DOUBLE PRECISION;
@@ -268,9 +271,19 @@ async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
   }));
 }
 
-// Records one recheck outcome against the row it re-tested — never touches reached_target or
-// any of the original test_year*/train_* columns (those stay as the historical qualification
-// record; see the recheck_* column comments in ensureResultsTable for why they're kept separate).
+// Records one recheck outcome against the row it re-tested. When the recheck comes back
+// stillQualifies===false, this ALSO demotes the row's own reached_target to FALSE — a model
+// that's been shown to no longer hold up shouldn't keep counting as "达标" elsewhere in the
+// app (it would otherwise keep being sorted/badged as a validated success in the 验证搜索
+// list, and keep being fed to fetchPriorSuccessfulModels as a "here's what worked" few-shot
+// example for OTHER symbols' AI generation — actively misleading once it's known to be stale).
+// A passing recheck (stillQualifies===true) or an inconclusive one (null — error/insufficient
+// data) never touches reached_target: once demoted a row stays demoted until a human
+// re-promotes it (or a future search re-discovers and re-saves it), it doesn't get silently
+// re-promoted by a later recheck run — an occasional lucky recheck shouldn't undo a real
+// finding. The original test_year1/test_year2 numbers are left alone either way (that's the
+// historical record of what it achieved when it first qualified); recheck_year1/year2 above
+// carry the fresh numbers instead of overwriting them.
 async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, year2Annualized, targetPercent, error }) {
   await pool.query(
     `UPDATE optimization_scan_results
@@ -279,7 +292,8 @@ async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, ye
          recheck_year1_annualized_return = $3,
          recheck_year2_annualized_return = $4,
          recheck_target_percent = $5,
-         recheck_error = $6
+         recheck_error = $6,
+         reached_target = CASE WHEN $2 = FALSE THEN FALSE ELSE reached_target END
      WHERE id = $1`,
     [id, stillQualifies === undefined || stillQualifies === null ? null : Boolean(stillQualifies),
       year1Annualized === undefined || year1Annualized === null ? null : Number(year1Annualized),

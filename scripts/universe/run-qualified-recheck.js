@@ -7,14 +7,17 @@
 // always anchored on "today" at call time, so simply calling it again naturally slides both
 // windows forward — no need to remember or reconstruct the original run's dates.
 //
-// This does NOT touch reached_target or any test_year*/train_* column — those stay exactly as
-// the historical qualification record. The outcome is written to a separate set of recheck_*
-// columns (see optimization-results.js's ensureResultsTable comment), so "did it qualify
-// originally" and "does it still hold up now" are both visible side by side, not one
-// overwriting the other. A model that no longer qualifies is NOT deleted or auto-disabled —
-// nothing is "running" for a not-yet-promoted candidate sitting in this table, unlike a 盯盘提醒
-// watch (see run-watch-alerts.js) which has a live position to protect; this is purely a signal
-// for a human to decide whether to keep trusting/promoting it.
+// The outcome is written to a separate set of recheck_* columns (see optimization-results.js's
+// ensureResultsTable comment) — test_year1/test_year2 are left untouched either way, so "did it
+// qualify originally" and "does it score now" are both visible side by side. reached_target
+// itself IS updated, but only in one direction: the moment a recheck comes back
+// stillQualifies=FALSE, saveRecheckResult demotes reached_target to FALSE on that row (a model
+// shown to no longer hold up shouldn't keep counting as "达标" elsewhere in the app — see that
+// function's comment). A model is never deleted or auto-disabled by this — nothing is "running"
+// for a not-yet-promoted candidate sitting in this table, unlike a 盯盘提醒 watch (see
+// run-watch-alerts.js) which has a live position to protect; demoting reached_target is purely a
+// signal so a human (and fetchPriorSuccessfulModels' few-shot sampling) stops treating it as a
+// proven success.
 //
 // Usage: node scripts/universe/run-qualified-recheck.js [--symbols=NET,GOOGL] [--targetPercent=50] [--testYears=2]
 //   (no --symbols = recheck every qualified row)
