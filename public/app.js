@@ -192,6 +192,13 @@ const adminValidatedSearchPauseResumeButton = document.querySelector("#adminVali
 const adminValidatedSearchRunStatus = document.querySelector("#adminValidatedSearchRunStatus");
 const adminValidatedSearchProgressBanner = document.querySelector("#adminValidatedSearchProgressBanner");
 const adminValidatedSearchList = document.querySelector("#adminValidatedSearchList");
+const adminQualifiedRecheckTargetPercentInput = document.querySelector("#adminQualifiedRecheckTargetPercent");
+const adminQualifiedRecheckRunButton = document.querySelector("#adminQualifiedRecheckRunButton");
+const adminQualifiedRecheckRunStatus = document.querySelector("#adminQualifiedRecheckRunStatus");
+const adminQualifiedRecheckProgressBanner = document.querySelector("#adminQualifiedRecheckProgressBanner");
+const adminScheduledJobsTabButton = document.querySelector("#adminScheduledJobsTabButton");
+const adminScheduledJobsPanel = document.querySelector("#adminScheduledJobsPanel");
+const adminScheduledJobsList = document.querySelector("#adminScheduledJobsList");
 const adminWaveVisualizerTabButton = document.querySelector("#adminWaveVisualizerTabButton");
 const adminWaveVisualizerPanel = document.querySelector("#adminWaveVisualizerPanel");
 const waveVisualizerSymbolInput = document.querySelector("#waveVisualizerSymbolInput");
@@ -3243,7 +3250,23 @@ function getAdminAutoGenerateSortValue(record, key) {
   if (key === "strategyType") return getStrategyTypeLabel(record.strategyType);
   if (key === "reason") return record.reason || "";
   if (key === "updatedAt") return record.updatedAt || "";
+  if (key === "lastRecheckedAt") return record.lastRecheckedAt || "";
   return Number(record[key]) || 0;
+}
+
+// 达标复查(recheck_*字段)只在"showStatus"的表(即验证搜索面板)里显示——达标这个概念本来就
+// 只对validated-search来源的行有意义，见optimization-results.js的注释。
+function formatRecheckCell(p) {
+  if (p.recheckError) {
+    return `<span class="down" title="${escapeHtml(p.recheckError)}">复查出错/数据不足</span>（${escapeHtml(formatAdminDate(p.lastRecheckedAt))}）`;
+  }
+  if (p.recheckStillQualifies === true) {
+    return `<span class="up">仍达标</span>（第1年${formatPercent(p.recheckYear1AnnualizedReturn)}·第2年${formatPercent(p.recheckYear2AnnualizedReturn)}，目标${p.recheckTargetPercent || "?"}%，${escapeHtml(formatAdminDate(p.lastRecheckedAt))}）`;
+  }
+  if (p.recheckStillQualifies === false) {
+    return `<span class="down">不再达标</span>（第1年${formatPercent(p.recheckYear1AnnualizedReturn)}·第2年${formatPercent(p.recheckYear2AnnualizedReturn)}，目标${p.recheckTargetPercent || "?"}%，${escapeHtml(formatAdminDate(p.lastRecheckedAt))}）`;
+  }
+  return '<span class="field-hint">尚未复查</span>';
 }
 
 // Shared by AI自动生成 and 验证搜索 — both list the exact same kind of record (see
@@ -3279,6 +3302,7 @@ function renderAiGeneratedPresetRow(p, options = {}) {
   const statusCell = options.showStatus
     ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最差年份${formatPercent(worstTestAnnualized)}</span>`}</td>`
     : "";
+  const recheckCell = options.showStatus ? `<td>${formatRecheckCell(p)}</td>` : "";
   return `
     <tr>
       ${statusCell}
@@ -3298,6 +3322,7 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${p.testedCandidates || 0}</td>
       <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
       <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
+      ${recheckCell}
     </tr>
   `;
 }
@@ -3308,7 +3333,9 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
   }
   const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection);
   const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus })).join("");
-  const columns = showStatus ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS] : ADMIN_AUTO_GENERATE_COLUMNS;
+  const columns = showStatus
+    ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
+    : ADMIN_AUTO_GENERATE_COLUMNS;
   const headerCells = columns.map((column) => {
     const active = sortKey === column.key;
     const arrow = active ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
@@ -3683,6 +3710,27 @@ async function triggerAdminValidatedSearchRun(options = {}) {
   }
 }
 
+// 达标复查：对下面列表里全部已达标(reached_target=TRUE)的行触发一次复查，不需要选股票——
+// 候选范围固定是"已经达标的那些"，跟"启动验证搜索"（找新模型）是两个不同的动作，共用同一把
+// 后台任务锁（isScanRunning()），所以按钮的启用/禁用要跟着同一个running状态走。
+async function triggerAdminQualifiedRecheckRun() {
+  const targetPercent = Number(adminQualifiedRecheckTargetPercentInput && adminQualifiedRecheckTargetPercentInput.value);
+  if (adminQualifiedRecheckRunStatus) adminQualifiedRecheckRunStatus.textContent = "正在启动达标复查...";
+  try {
+    const response = await fetch("/api/admin/qualified-recheck/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetPercent: Number.isFinite(targetPercent) ? targetPercent : 50 }),
+    });
+    await readJsonResponse(response, "启动达标复查失败。");
+    setStatus("已启动达标复查。");
+    await loadAdminValidatedSearch();
+  } catch (error) {
+    if (adminQualifiedRecheckRunStatus) adminQualifiedRecheckRunStatus.textContent = "";
+    setStatus(`启动达标复查失败：${error.message}`, true);
+  }
+}
+
 async function pauseAdminValidatedSearch() {
   if (adminValidatedSearchRunStatus) adminValidatedSearchRunStatus.textContent = "正在暂停验证搜索...";
   try {
@@ -3791,6 +3839,49 @@ function renderAdminValidatedSearchList(payload) {
     }
   }
 
+  // 达标复查跟"启动验证搜索"共用同一把锁（running来自同一个isScanRunning()），所以复查按钮
+  // 在任意批量任务运行时都要禁用，不只是复查自己在跑的时候。
+  const runningIsRecheck = Boolean(payload.qualifiedRecheckRunning);
+  if (adminQualifiedRecheckRunButton) adminQualifiedRecheckRunButton.disabled = running;
+  const recheckLast = lastResult && lastResult.jobType === "qualifiedRecheck" ? lastResult : null;
+  if (adminQualifiedRecheckRunStatus) {
+    if (runningIsRecheck) {
+      adminQualifiedRecheckRunStatus.textContent = `达标复查进行中（由 ${payload.scanInfo.triggeredBy || "?"} 于 ${escapeHtml(formatAdminDate(payload.scanInfo.startedAt))} 启动）...`;
+    } else if (running) {
+      adminQualifiedRecheckRunStatus.textContent = "已有其它后台任务在运行，请等它结束后再启动达标复查。";
+    } else if (recheckLast) {
+      adminQualifiedRecheckRunStatus.textContent = `上次达标复查${recheckLast.exitCode === 0 ? "已完成" : "异常退出"}（${escapeHtml(formatAdminDate(recheckLast.endedAt))}）。`;
+    } else {
+      adminQualifiedRecheckRunStatus.textContent = "还没有运行过达标复查。";
+    }
+  }
+  if (adminQualifiedRecheckProgressBanner) {
+    const recheckProgress = payload.qualifiedRecheckProgress;
+    if (recheckProgress && (runningIsRecheck || recheckLast)) {
+      const stopped = !runningIsRecheck;
+      const titleText = runningIsRecheck ? "达标复查进行中" : "达标复查已停止";
+      const symbolLabel = recheckProgress.currentSymbol
+        ? `第 ${recheckProgress.index || "?"}/${recheckProgress.total || "?"} 个（${escapeHtml(recheckProgress.currentSymbol)}）`
+        : `第 ${recheckProgress.index || 0}/${recheckProgress.total || "?"} 个`;
+      const reasonText = recheckProgress.currentReason ? escapeHtml(recheckProgress.currentReason) : "";
+      adminQualifiedRecheckProgressBanner.classList.remove("hidden");
+      adminQualifiedRecheckProgressBanner.classList.toggle("admin-progress-banner--stopped", stopped);
+      adminQualifiedRecheckProgressBanner.innerHTML = `
+        <div class="admin-progress-banner-title"><span class="admin-progress-banner-dot"></span>${titleText}</div>
+        <div class="admin-progress-banner-detail">${symbolLabel}${reasonText ? `<br>${reasonText}` : ""}</div>
+        <div class="admin-progress-banner-stats">
+          <span>已复查 <strong>${recheckProgress.checked || 0}</strong></span>
+          <span>仍达标 <strong>${recheckProgress.stillQualifies || 0}</strong></span>
+          <span>不再达标 <strong>${recheckProgress.noLongerQualifies || 0}</strong></span>
+          <span>跳过 <strong>${recheckProgress.skipped || 0}</strong></span>
+        </div>
+      `;
+    } else {
+      adminQualifiedRecheckProgressBanner.classList.add("hidden");
+      adminQualifiedRecheckProgressBanner.innerHTML = "";
+    }
+  }
+
   if (running) {
     scheduleAdminValidatedSearchPoll();
   } else {
@@ -3814,6 +3905,109 @@ function stopAdminValidatedSearchPoll() {
     window.clearInterval(adminValidatedSearchPollTimer);
     adminValidatedSearchPollTimer = null;
   }
+}
+
+// "定时任务"面板：只读列出server.js SCHEDULED_JOB_REGISTRY里已知的host-cron脚本 + 每个任务
+// 通过这个面板手动触发过的最近一次结果（不是cron自动触发的历史，见面板顶部提示文案和
+// server.js里对应注释）。每个任务各自独立轮询（不是batch共享锁），所以互相不冲突。
+let adminScheduledJobsPollTimer = null;
+
+async function loadAdminScheduledJobs() {
+  if (!adminScheduledJobsList) return;
+  if (!adminScheduledJobsList.innerHTML.trim()) {
+    adminScheduledJobsList.innerHTML = '<div class="ranking-empty">正在读取定时任务列表...</div>';
+  }
+  try {
+    const response = await fetch("/api/admin/scheduled-jobs", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取定时任务列表失败。");
+    renderAdminScheduledJobsList(payload);
+  } catch (error) {
+    adminScheduledJobsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function renderAdminScheduledJobsList(payload) {
+  const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+  const anyRunning = jobs.some((job) => job.running);
+  if (adminScheduledJobsList) {
+    if (jobs.length === 0) {
+      adminScheduledJobsList.innerHTML = '<div class="ranking-empty">没有已知的定时任务。</div>';
+    } else {
+      const rows = jobs.map((job) => {
+        const last = job.lastResult;
+        let statusText;
+        if (job.running) {
+          statusText = `<span class="up">正在执行…</span>（由 ${escapeHtml(last && last.triggeredBy || "?")} 触发）`;
+        } else if (last) {
+          statusText = last.exitCode === 0
+            ? `<span class="up">上次手动执行成功</span>（${escapeHtml(formatAdminDate(last.endedAt))}，由 ${escapeHtml(last.triggeredBy || "?")} 触发）`
+            : `<span class="down">上次手动执行失败</span>（退出码 ${last.exitCode}，${escapeHtml(formatAdminDate(last.endedAt))}）`;
+        } else {
+          statusText = '<span class="field-hint">还没有通过这个面板手动执行过</span>';
+        }
+        return `
+          <tr>
+            <td>${escapeHtml(job.label)}</td>
+            <td>${escapeHtml(job.scheduleText)}</td>
+            <td>${statusText}</td>
+            <td><button type="button" class="ghost-button admin-scheduled-job-run-button" data-job-name="${escapeHtml(job.jobName)}" ${job.running ? "disabled" : ""}>立即执行</button></td>
+          </tr>
+        `;
+      }).join("");
+      adminScheduledJobsList.innerHTML = `
+        <table class="admin-ranking-table">
+          <thead><tr><th>任务</th><th>已知调度</th><th>状态</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+  }
+  if (anyRunning) {
+    scheduleAdminScheduledJobsPoll();
+  } else {
+    stopAdminScheduledJobsPoll();
+  }
+}
+
+function scheduleAdminScheduledJobsPoll() {
+  if (adminScheduledJobsPollTimer) return;
+  adminScheduledJobsPollTimer = window.setInterval(() => {
+    if (!adminScheduledJobsPanel || adminScheduledJobsPanel.classList.contains("hidden")) {
+      stopAdminScheduledJobsPoll();
+      return;
+    }
+    loadAdminScheduledJobs();
+  }, 5000);
+}
+
+function stopAdminScheduledJobsPoll() {
+  if (adminScheduledJobsPollTimer) {
+    window.clearInterval(adminScheduledJobsPollTimer);
+    adminScheduledJobsPollTimer = null;
+  }
+}
+
+async function triggerAdminScheduledJobRun(jobName) {
+  try {
+    const response = await fetch("/api/admin/scheduled-jobs/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobName }),
+    });
+    await readJsonResponse(response, "启动任务失败。");
+    setStatus("已启动。");
+    await loadAdminScheduledJobs();
+  } catch (error) {
+    setStatus(`启动任务失败：${error.message}`, true);
+  }
+}
+
+if (adminScheduledJobsList) {
+  adminScheduledJobsList.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest(".admin-scheduled-job-run-button") : null;
+    if (!button || button.disabled) return;
+    triggerAdminScheduledJobRun(button.dataset.jobName);
+  });
 }
 
 if (adminValidatedSearchList) {
@@ -4624,7 +4818,8 @@ function setAdminTab(tab) {
   const showWatchAlerts = tab === "watchAlerts";
   const showValidatedSearch = tab === "validatedSearch";
   const showWaveVisualizer = tab === "waveVisualizer";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch && !showWaveVisualizer;
+  const showScheduledJobs = tab === "scheduledJobs";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch && !showWaveVisualizer && !showScheduledJobs;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -4635,6 +4830,7 @@ function setAdminTab(tab) {
   if (adminWatchAlertsTabButton) adminWatchAlertsTabButton.classList.toggle("active", showWatchAlerts);
   if (adminValidatedSearchTabButton) adminValidatedSearchTabButton.classList.toggle("active", showValidatedSearch);
   if (adminWaveVisualizerTabButton) adminWaveVisualizerTabButton.classList.toggle("active", showWaveVisualizer);
+  if (adminScheduledJobsTabButton) adminScheduledJobsTabButton.classList.toggle("active", showScheduledJobs);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
@@ -4645,6 +4841,7 @@ function setAdminTab(tab) {
   if (adminWatchAlertsPanel) adminWatchAlertsPanel.classList.toggle("hidden", !showWatchAlerts);
   if (adminValidatedSearchPanel) adminValidatedSearchPanel.classList.toggle("hidden", !showValidatedSearch);
   if (adminWaveVisualizerPanel) adminWaveVisualizerPanel.classList.toggle("hidden", !showWaveVisualizer);
+  if (adminScheduledJobsPanel) adminScheduledJobsPanel.classList.toggle("hidden", !showScheduledJobs);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
@@ -4657,6 +4854,7 @@ function setAdminTab(tab) {
   // explicitly clicking 加载历史/加载模型, not a background list to load on open. Just keep
   // the preset dropdown current since strategyPresets may have changed since last opened.
   if (showWaveVisualizer) renderWaveVisualizerPresetOptions();
+  if (showScheduledJobs) loadAdminScheduledJobs();
 }
 
 if (adminPresetsTabButton) {
@@ -4688,6 +4886,15 @@ if (adminValidatedSearchTabButton) {
 }
 if (adminWaveVisualizerTabButton) {
   adminWaveVisualizerTabButton.addEventListener("click", () => setAdminTab("waveVisualizer"));
+}
+if (adminScheduledJobsTabButton) {
+  adminScheduledJobsTabButton.addEventListener("click", () => setAdminTab("scheduledJobs"));
+}
+if (adminQualifiedRecheckRunButton) {
+  adminQualifiedRecheckRunButton.addEventListener("click", () => {
+    if (!window.confirm("确定要对下面全部已达标的模型做一次复查吗？会用最新数据重新跑一遍验证期回测，可能耗时较久，跟其它后台批量任务共用同一个队列。")) return;
+    triggerAdminQualifiedRecheckRun();
+  });
 }
 if (adminValidatedSearchRunButton) {
   adminValidatedSearchRunButton.addEventListener("click", () => {

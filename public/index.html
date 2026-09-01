@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-fix-reset-crash">
+    <link rel="stylesheet" href="/styles.css?v=20260901-qualified-recheck-and-scheduled-jobs">
   </head>
   <body>
     <main class="shell">
@@ -194,6 +194,7 @@
             <button id="adminWatchAlertsTabButton" type="button">盯盘提醒</button>
             <button id="adminValidatedSearchTabButton" type="button">验证搜索</button>
             <button id="adminWaveVisualizerTabButton" type="button">波浪可视化</button>
+            <button id="adminScheduledJobsTabButton" type="button">定时任务</button>
           </div>
           <div id="adminPresetsPanel">
             <div class="admin-scan-filter-row">
@@ -399,6 +400,14 @@
               <span id="adminValidatedSearchRunStatus" class="field-hint"></span>
             </div>
             <div id="adminValidatedSearchProgressBanner" class="admin-progress-banner hidden"></div>
+            <div id="adminQualifiedRecheckTriggerRow" class="admin-scan-filter-row">
+              <label>达标复查目标年化收益率(%)
+                <input id="adminQualifiedRecheckTargetPercent" type="number" step="1" min="1" max="500" value="50">
+              </label>
+              <button type="button" id="adminQualifiedRecheckRunButton" class="ghost-button">达标复查（用最新数据重新验证下面已达标的模型是否仍站得住）</button>
+              <span id="adminQualifiedRecheckRunStatus" class="field-hint"></span>
+            </div>
+            <div id="adminQualifiedRecheckProgressBanner" class="admin-progress-banner hidden"></div>
             <div id="adminValidatedSearchList" class="admin-ranking-list"></div>
           </div>
           <div id="adminWaveVisualizerPanel" class="hidden">
@@ -440,6 +449,10 @@
             <div class="trade-price-wrap">
               <svg id="waveVisualizerSvg" class="watch-alert-chart-svg" role="img" aria-label="历史价格与波浪高低点"></svg>
             </div>
+          </div>
+          <div id="adminScheduledJobsPanel" class="hidden">
+            <p class="field-hint">生产环境用 host crontab 定时跑的几个脚本（调度本身不在这个应用里，这里只是已知清单）。"立即执行"是重新手动跑一次，跟 cron 自动触发是两回事——下面显示的"最近一次结果"只覆盖通过这个按钮手动触发的运行，看不到 cron 自动触发的历史（除非以后把 crontab 的输出重定向到这个应用能读到的日志目录）。</p>
+            <div id="adminScheduledJobsList" class="admin-ranking-list"></div>
           </div>
         </form>
       </dialog>
@@ -1447,7 +1460,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-fix-reset-crash"></script>
-    <script src="/app.js?v=20260901-fix-reset-crash"></script>
+    <script src="/formula-engine.js?v=20260901-qualified-recheck-and-scheduled-jobs"></script>
+    <script src="/app.js?v=20260901-qualified-recheck-and-scheduled-jobs"></script>
   </body>
 </html>

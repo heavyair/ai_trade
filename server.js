@@ -31,6 +31,8 @@ const AUTO_GENERATE_PROGRESS_FILE = process.env.AUTO_GENERATE_PROGRESS_FILE || p
 const SCAN_PROGRESS_FILE = process.env.SCAN_PROGRESS_FILE || path.join(DATA_DIR, "scan-progress.json");
 // Same convention, written by search-validated-best.js itself — see its writeProgress helper.
 const VALIDATED_SEARCH_PROGRESS_FILE = process.env.VALIDATED_SEARCH_PROGRESS_FILE || path.join(DATA_DIR, "validated-search-progress.json");
+// Same convention, written by run-qualified-recheck.js itself — see its writeProgress helper.
+const QUALIFIED_RECHECK_PROGRESS_FILE = process.env.QUALIFIED_RECHECK_PROGRESS_FILE || path.join(DATA_DIR, "qualified-recheck-progress.json");
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
@@ -2109,36 +2111,75 @@ function isScanRunning() {
   return Boolean(activeScanProcess && activeScanInfo);
 }
 
-function launchBackgroundJob({ jobType, scriptPath, scriptArgs, sessionStartedAt, triggeredBy, extra = {} }) {
+// lightJobProcesses/lightJobLastResult track short, low-conflict-risk jobs (the three
+// host-cron-driven scripts, now also runnable on demand from the "定时任务" admin panel)
+// SEPARATELY from activeScanProcess/isScanRunning()'s single shared lock — these are meant to
+// stay safe to run anytime, including while a heavy batch job (scan/autoGenerate/
+// validatedSearch/stockScreen/validation/qualifiedRecheck) is in progress, same as
+// run-watch-alerts.js's own cron invocation already does today (see that file's header comment
+// on deliberately bypassing isScanRunning()). Keyed by jobType so two DIFFERENT light jobs can
+// run concurrently, but the SAME one can't be double-triggered by an impatient double-click.
+const lightJobProcesses = new Map(); // jobType -> child process
+const lightJobLastResult = new Map(); // jobType -> { exitCode, startedAt, endedAt, triggeredBy }
+
+function isLightJobRunning(jobType) {
+  return lightJobProcesses.has(jobType);
+}
+
+// sharedLock=true (default) preserves the exact original behavior for the 5 existing heavy
+// batch job types (activeScanProcess/activeScanInfo/lastScanResult/writeScanSessionState,
+// all unchanged). sharedLock=false routes tracking through lightJobProcesses/lightJobLastResult
+// instead — no cross-job-type locking, no session-state persistence (these are fast, safe to
+// just re-run on next cron tick or next manual click, unlike a multi-hour scan that's worth
+// resuming across a redeploy). execPath lets a non-Node script (the Python US-PE backfill) spawn
+// through this same primitive instead of needing its own bespoke spawn call.
+function launchBackgroundJob({ jobType, scriptPath, scriptArgs = [], sessionStartedAt, triggeredBy, extra = {}, execPath = process.execPath, sharedLock = true }) {
   const logPath = path.join(__dirname, "scripts", "universe", `${jobType}.log`);
   const logFd = fs.openSync(logPath, "a");
   const fullArgs = [scriptPath, ...scriptArgs];
 
-  fs.writeSync(logFd, `\n\n=== admin-triggered ${jobType} started, session=${sessionStartedAt} by ${triggeredBy} ===\n`);
+  fs.writeSync(logFd, `\n\n=== ${sharedLock ? "admin-triggered" : "manually-triggered"} ${jobType} started, session=${sessionStartedAt} by ${triggeredBy} ===\n`);
 
-  const child = spawn(process.execPath, fullArgs, {
+  const child = spawn(execPath, fullArgs, {
     cwd: __dirname,
     env: process.env,
     stdio: ["ignore", logFd, logFd],
   });
-  activeScanProcess = child;
-  activeScanInfo = { jobType, startedAt: sessionStartedAt, sessionStartedAt, triggeredBy, pid: child.pid, ...extra };
-  writeScanSessionState({ status: "running", result: { jobType, sessionStartedAt, triggeredBy, ...extra } });
+
+  if (sharedLock) {
+    activeScanProcess = child;
+    activeScanInfo = { jobType, startedAt: sessionStartedAt, sessionStartedAt, triggeredBy, pid: child.pid, ...extra };
+    writeScanSessionState({ status: "running", result: { jobType, sessionStartedAt, triggeredBy, ...extra } });
+  } else {
+    lightJobProcesses.set(jobType, child);
+  }
 
   child.on("exit", (code) => {
-    fs.writeSync(logFd, `\n=== admin-triggered ${jobType} exited with code ${code} ===\n`);
+    fs.writeSync(logFd, `\n=== ${sharedLock ? "admin-triggered" : "manually-triggered"} ${jobType} exited with code ${code} ===\n`);
     fs.closeSync(logFd);
-    lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: code, endedAt: new Date().toISOString(), ...extra };
-    writeScanSessionState({ status: code === 0 ? "completed" : "crashed", result: lastScanResult });
-    activeScanProcess = null;
-    activeScanInfo = null;
+    const result = { jobType, sessionStartedAt, triggeredBy, exitCode: code, endedAt: new Date().toISOString(), ...extra };
+    if (sharedLock) {
+      lastScanResult = result;
+      writeScanSessionState({ status: code === 0 ? "completed" : "crashed", result: lastScanResult });
+      activeScanProcess = null;
+      activeScanInfo = null;
+    } else {
+      lightJobLastResult.set(jobType, result);
+      lightJobProcesses.delete(jobType);
+    }
   });
   child.on("error", (error) => {
     console.error(`${jobType} child process error:`, error);
-    lastScanResult = { jobType, sessionStartedAt, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message, ...extra };
-    writeScanSessionState({ status: "crashed", result: lastScanResult });
-    activeScanProcess = null;
-    activeScanInfo = null;
+    const result = { jobType, sessionStartedAt, triggeredBy, exitCode: -1, endedAt: new Date().toISOString(), error: error.message, ...extra };
+    if (sharedLock) {
+      lastScanResult = result;
+      writeScanSessionState({ status: "crashed", result: lastScanResult });
+      activeScanProcess = null;
+      activeScanInfo = null;
+    } else {
+      lightJobLastResult.set(jobType, result);
+      lightJobProcesses.delete(jobType);
+    }
   });
 }
 
@@ -2236,6 +2277,82 @@ function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbo
     sessionStartedAt,
     triggeredBy,
     extra: { symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears },
+  });
+}
+
+function readQualifiedRecheckProgress() {
+  try {
+    return JSON.parse(fs.readFileSync(QUALIFIED_RECHECK_PROGRESS_FILE, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+// 达标复查: re-scores every already-qualified (source='validated-search', reached_target=TRUE)
+// row's frozen config against fresh data — shares the same heavy-batch-job lock as
+// validatedSearch/autoGenerate/scan/stockScreen/validation since it does real per-symbol
+// backtesting reads against the DB (see isScanRunning()'s comment on why these don't run
+// concurrently), unlike the lightweight cron-mirror jobs below.
+function launchQualifiedRecheckProcess({ symbols, targetPercent, testYears, sessionStartedAt, triggeredBy }) {
+  try {
+    fs.unlinkSync(QUALIFIED_RECHECK_PROGRESS_FILE);
+  } catch (error) {
+    // fine if it didn't exist yet
+  }
+  const scriptArgs = [`--targetPercent=${targetPercent}`, `--testYears=${testYears}`];
+  if (symbols && symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
+  launchBackgroundJob({
+    jobType: "qualifiedRecheck",
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-qualified-recheck.js"),
+    scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    extra: { symbols: symbols || [], targetPercent, testYears },
+  });
+}
+
+// The three scripts a production host-cron already runs on its own schedule (documented in
+// scripts/universe/STRATEGY_SEARCH_WORKFLOW.md-style comments, NOT in this repo — see
+// run-watch-alerts.js/refresh-index-catalog.js's header comments). This registry only lets an
+// admin trigger the SAME script on demand and see the outcome of THAT manual run — it has no
+// way to see the cron-triggered run history, since those invocations happen entirely outside
+// this app (their stdout is redirected to a host path this container doesn't mount). See the
+// "定时任务" panel's own UI copy for how this limitation is surfaced to the admin.
+const SCHEDULED_JOB_REGISTRY = {
+  backfillUsPe: {
+    label: "美股PE数据补全",
+    scheduleText: "生产环境 crontab：每天 05:00",
+    execPath: "/opt/akshare-venv/bin/python",
+    scriptPath: path.join(__dirname, "scripts", "backfill_us_pe_from_huggingface.py"),
+    scriptArgs: [],
+  },
+  watchAlerts: {
+    label: "盯盘提醒检查",
+    scheduleText: "生产环境 crontab：每 15 分钟",
+    execPath: process.execPath,
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-watch-alerts.js"),
+    scriptArgs: [],
+  },
+  refreshIndexCatalog: {
+    label: "指数成分股刷新",
+    scheduleText: "生产环境 crontab：每天 04:30",
+    execPath: process.execPath,
+    scriptPath: path.join(__dirname, "scripts", "universe", "refresh-index-catalog.js"),
+    scriptArgs: [],
+  },
+};
+
+function launchScheduledJob(jobName, { sessionStartedAt, triggeredBy }) {
+  const entry = SCHEDULED_JOB_REGISTRY[jobName];
+  if (!entry) throw Object.assign(new Error("未知的定时任务。"), { statusCode: 400 });
+  launchBackgroundJob({
+    jobType: jobName,
+    scriptPath: entry.scriptPath,
+    scriptArgs: entry.scriptArgs,
+    sessionStartedAt,
+    triggeredBy,
+    execPath: entry.execPath,
+    sharedLock: false,
   });
 }
 
@@ -2520,7 +2637,9 @@ async function queryAiGeneratedPresets({ source }) {
       test_year1_annualized_return, test_year1_start_date, test_year1_end_date, test_year1_trades,
       test_year2_annualized_return, test_year2_start_date, test_year2_end_date, test_year2_trades,
       annualized_diff_year1, annualized_diff_year2,
-      best_trades, tested_candidates, reached_target, scanned_at
+      best_trades, tested_candidates, reached_target, scanned_at,
+      last_rechecked_at, recheck_still_qualifies, recheck_year1_annualized_return,
+      recheck_year2_annualized_return, recheck_target_percent, recheck_error
     FROM optimization_scan_results
     WHERE source = $1
     ORDER BY (train_start_date IS NULL) ASC, reached_target DESC NULLS LAST,
@@ -2553,6 +2672,12 @@ async function queryAiGeneratedPresets({ source }) {
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
     reachedTarget: Boolean(row.reached_target),
+    lastRecheckedAt: row.last_rechecked_at ? new Date(row.last_rechecked_at).toISOString() : "",
+    recheckStillQualifies: row.recheck_still_qualifies === null || row.recheck_still_qualifies === undefined ? null : Boolean(row.recheck_still_qualifies),
+    recheckYear1AnnualizedReturn: row.recheck_year1_annualized_return === null || row.recheck_year1_annualized_return === undefined ? null : Number(row.recheck_year1_annualized_return),
+    recheckYear2AnnualizedReturn: row.recheck_year2_annualized_return === null || row.recheck_year2_annualized_return === undefined ? null : Number(row.recheck_year2_annualized_return),
+    recheckTargetPercent: row.recheck_target_percent === null || row.recheck_target_percent === undefined ? null : Number(row.recheck_target_percent),
+    recheckError: row.recheck_error || "",
   }));
 }
 
@@ -2593,6 +2718,7 @@ async function handleAdminValidatedSearchListApi(req, res) {
       return;
     }
     const presets = await queryAiGeneratedPresets({ source: "validated-search" });
+    const recheckRunning = isScanRunning() && activeScanInfo && activeScanInfo.jobType === "qualifiedRecheck";
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       presets,
@@ -2600,6 +2726,8 @@ async function handleAdminValidatedSearchListApi(req, res) {
       scanInfo: activeScanInfo,
       lastScanResult,
       progress: readValidatedSearchProgress(),
+      qualifiedRecheckRunning: recheckRunning,
+      qualifiedRecheckProgress: readQualifiedRecheckProgress(),
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
@@ -2714,6 +2842,85 @@ async function handleAdminValidatedSearchPauseApi(req, res) {
     sendJson(res, 200, { paused: true });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "暂停验证搜索失败。" });
+  }
+}
+
+// 达标复查触发入口——就是"AI验证搜索"面板里的一个按钮，复查结果直接体现在同一份
+// queryAiGeneratedPresets({source:"validated-search"})列表里新增的recheck_*字段上，不单独
+// 开一个列表页。跟其它5个重量级批量任务共用同一把锁（isScanRunning()）。
+async function handleAdminQualifiedRecheckRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (isScanRunning()) {
+      sendJson(res, 409, { error: "已有后台任务在运行中，请等它完成后再启动新的。", info: activeScanInfo });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const symbols = Array.isArray(payload.symbols)
+      ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)
+      : [];
+    const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+    const testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
+    const sessionStartedAt = new Date().toISOString();
+    launchQualifiedRecheckProcess({ symbols, targetPercent, testYears, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, symbols, targetPercent, testYears, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动达标复查失败。" });
+  }
+}
+
+// "定时任务"总览面板：只读列出SCHEDULED_JOB_REGISTRY里已知的host-cron脚本（这个repo本身不知道
+// crontab的真实调度和历史，见run-watch-alerts.js/refresh-index-catalog.js头部注释）+ 每个
+// job通过这个面板手动执行过的最近一次结果（lightJobLastResult，只覆盖手动触发，不含cron
+// 自动触发的历史——这一点在管理员面板文案里要说清楚，不能让人误以为看到的是cron的真实状态）。
+async function handleAdminScheduledJobsListApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const jobs = Object.entries(SCHEDULED_JOB_REGISTRY).map(([jobName, entry]) => ({
+      jobName,
+      label: entry.label,
+      scheduleText: entry.scheduleText,
+      running: isLightJobRunning(jobName),
+      lastResult: lightJobLastResult.get(jobName) || null,
+    }));
+    sendJson(res, 200, { jobs });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
+async function handleAdminScheduledJobsRunApi(req, res) {
+  try {
+    const admin = await requireAdminUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const jobName = String(payload.jobName || "").trim();
+    if (!SCHEDULED_JOB_REGISTRY[jobName]) {
+      sendJson(res, 400, { error: "未知的定时任务。" });
+      return;
+    }
+    if (isLightJobRunning(jobName)) {
+      sendJson(res, 409, { error: "这个任务正在执行中，请等它完成后再手动运行。" });
+      return;
+    }
+    const sessionStartedAt = new Date().toISOString();
+    launchScheduledJob(jobName, { sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, jobName, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动任务失败。" });
   }
 }
 
@@ -4660,6 +4867,21 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/validated-search/pause") {
     handleAdminValidatedSearchPauseApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/qualified-recheck/run") {
+    handleAdminQualifiedRecheckRunApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/scheduled-jobs") {
+    handleAdminScheduledJobsListApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/scheduled-jobs/run") {
+    handleAdminScheduledJobsRunApi(req, res);
     return;
   }
 

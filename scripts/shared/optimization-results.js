@@ -91,6 +91,21 @@ async function ensureResultsTable(pool) {
     -- attempt independently coin-flips which arm it's in. Recorded on saved rows so the two
     -- arms' reached_target rates can be compared later instead of relying on scrollback logs.
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS used_prior_examples BOOLEAN NOT NULL DEFAULT FALSE;
+
+    -- 达标复查 (run-qualified-recheck.js): re-scores an already-qualified (reached_target=TRUE,
+    -- source='validated-search') row's frozen best_config against the two MOST RECENT 1-year
+    -- validation windows (splitTrainTestWindows is always anchored on "today" at call time, so
+    -- simply calling it again naturally slides both windows forward to use freshly-arrived data
+    -- — no need to remember the original run's dates). Does not touch reached_target/test_year*
+    -- (those stay as the ORIGINAL qualification record) — this is a separate, repeatable check
+    -- layered on top, so "did it qualify originally" and "does it still hold up now" are both
+    -- visible at once instead of one overwriting the other.
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS last_rechecked_at TIMESTAMPTZ;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_still_qualifies BOOLEAN;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_year1_annualized_return DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_year2_annualized_return DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_target_percent DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_error TEXT NOT NULL DEFAULT '';
   `);
 }
 
@@ -229,4 +244,52 @@ async function needsScan(pool, symbol, market, presetId, { rescan, sessionSince 
   return result.rowCount === 0;
 }
 
-module.exports = { ensureResultsTable, saveOptimizationResult, needsScan, fetchPriorSuccessfulModels };
+// Candidate pool for run-qualified-recheck.js — only source='validated-search' rows ever have
+// a real reached_target signal (run-auto-generate.js's own save path never sets it, see this
+// file's header comment), so that's the only source worth re-checking. symbols, if given,
+// narrows to just those (case already normalized by the caller); omitted/empty means "every
+// qualified row".
+async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
+  const hasSymbolFilter = Array.isArray(symbols) && symbols.length > 0;
+  const result = await pool.query(
+    `SELECT id, symbol, market, preset_label, best_config
+     FROM optimization_scan_results
+     WHERE source = 'validated-search' AND reached_target = TRUE
+       ${hasSymbolFilter ? "AND symbol = ANY($1)" : ""}
+     ORDER BY scanned_at ASC`,
+    hasSymbolFilter ? [symbols] : []
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    symbol: row.symbol,
+    market: row.market,
+    label: row.preset_label,
+    bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+  }));
+}
+
+// Records one recheck outcome against the row it re-tested — never touches reached_target or
+// any of the original test_year*/train_* columns (those stay as the historical qualification
+// record; see the recheck_* column comments in ensureResultsTable for why they're kept separate).
+async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, year2Annualized, targetPercent, error }) {
+  await pool.query(
+    `UPDATE optimization_scan_results
+     SET last_rechecked_at = NOW(),
+         recheck_still_qualifies = $2,
+         recheck_year1_annualized_return = $3,
+         recheck_year2_annualized_return = $4,
+         recheck_target_percent = $5,
+         recheck_error = $6
+     WHERE id = $1`,
+    [id, stillQualifies === undefined || stillQualifies === null ? null : Boolean(stillQualifies),
+      year1Annualized === undefined || year1Annualized === null ? null : Number(year1Annualized),
+      year2Annualized === undefined || year2Annualized === null ? null : Number(year2Annualized),
+      targetPercent === undefined || targetPercent === null ? null : Number(targetPercent),
+      String(error || "")]
+  );
+}
+
+module.exports = {
+  ensureResultsTable, saveOptimizationResult, needsScan, fetchPriorSuccessfulModels,
+  fetchQualifiedForRecheck, saveRecheckResult,
+};
