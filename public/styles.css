@@ -1063,6 +1063,16 @@ button:disabled {
   background: #f4fafb;
 }
 
+.simulation-state-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.simulation-state-card .selected-model-summary {
+  flex: 1;
+}
+
 .selected-model-summary strong {
   font-size: 15px;
 }

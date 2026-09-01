@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-stop-silent-model-swap">
+    <link rel="stylesheet" href="/styles.css?v=20260901-restore-missing-buttons">
   </head>
   <body>
     <main class="shell">
@@ -654,14 +654,20 @@
         </form>
         <div class="simulation-state-grid">
           <article id="selectedModelSummary" class="selected-model-summary" data-i18n="noModelSelected">尚未选择模型。</article>
-          <article id="selectedDataSummary" class="selected-model-summary">
-            <strong data-i18n="historyNotLoaded">尚未加载历史数据</strong>
-            <span data-i18n="historyNotLoadedHint">点击“选择股票区间”，加载用于模拟的历史价格。</span>
-          </article>
-          <article id="selectedResultSummary" class="selected-model-summary">
-            <strong data-i18n="simulationNotReady">尚未生成模拟表现</strong>
-            <span data-i18n="simulationNotReadyHint">选择模型并加载历史数据后会自动开始模拟。</span>
-          </article>
+          <div class="simulation-state-card">
+            <article id="selectedDataSummary" class="selected-model-summary">
+              <strong data-i18n="historyNotLoaded">尚未加载历史数据</strong>
+              <span data-i18n="historyNotLoadedHint">点击“选择股票区间”，加载用于模拟的历史价格。</span>
+            </article>
+            <button id="openMarketDataButton" class="ghost-button" type="button" disabled>查看行情图（含波浪指标）</button>
+          </div>
+          <div class="simulation-state-card">
+            <article id="selectedResultSummary" class="selected-model-summary">
+              <strong data-i18n="simulationNotReady">尚未生成模拟表现</strong>
+              <span data-i18n="simulationNotReadyHint">选择模型并加载历史数据后会自动开始模拟。</span>
+            </article>
+            <button id="openResultsDialogButton" class="ghost-button" type="button" disabled>查看模拟结果</button>
+          </div>
         </div>
         <dialog id="modelSelectorDialog" class="param-dialog model-selector-dialog">
           <form method="dialog" class="param-dialog-body">
@@ -1424,7 +1430,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-stop-silent-model-swap"></script>
-    <script src="/app.js?v=20260901-stop-silent-model-swap"></script>
+    <script src="/formula-engine.js?v=20260901-restore-missing-buttons"></script>
+    <script src="/app.js?v=20260901-restore-missing-buttons"></script>
   </body>
 </html>
