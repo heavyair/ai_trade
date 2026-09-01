@@ -454,6 +454,24 @@ function getRiseFromLowSeries(rows, lookbackDays) {
 }
 
 
+// Mirror of getDrawdownFromWaveHighSeries on the low side — same wave tracker (createWaveTracker/
+// updateWaveTracker already maintains BOTH wave.high and wave.low internally; only the high side
+// had a condition indicator exposing it until now), just reading wave.low instead of wave.high.
+// Unlike riseFromLow's fixed N-day rolling window (recomputed fresh every day, so it "forgets" a
+// low once that candle slides out of the window), this only updates wave.low once price has
+// actually reversed back UP by waveThreshold% from a candidate low — the same threshold-confirmed
+// "real turning point, not daily noise" semantics drawdownFromWaveHigh already has, just upside.
+function getRiseFromWaveLowSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    const low = wave.low.price;
+    return low > 0 ? ((row.close - low) / low) * 100 : null;
+  });
+}
+
+
 function getMaValueDiffSeries(rows, maDays) {
   const ma = getMovingAverageSeries(rows, maDays);
   return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
@@ -1742,13 +1760,13 @@ function buildPeVolumeBacktestStates(rows, config, accountStartIndex = 0) {
 // never share a cache slot), everything else keeps the existing lookbackDays/slopeWindowDays
 // key — shared by buildBlockRuleSeriesCache/getBlockConditionValue/getBlockConditionSeries so
 // the three don't each reimplement (and risk drifting on) the same key format.
-// drawdownFromWaveHigh has no lookbackDays/slopeWindowDays of its own (both are always null
-// for this indicator), so without something distinguishing them in the key, EVERY
-// drawdownFromWaveHigh condition in a whole model collides on the same cache entry — meaning
-// today, no matter how many such conditions a model has, they're all forced to share one wave
-// definition. Conditions with an explicit per-condition waveThreshold get their own key (and
+// drawdownFromWaveHigh/riseFromWaveLow have no lookbackDays/slopeWindowDays of their own (both
+// always null for these two indicators), so without something distinguishing them in the key,
+// EVERY condition of the same indicator in a whole model collides on the same cache entry —
+// meaning today, no matter how many such conditions a model has, they're all forced to share one
+// wave definition. Conditions with an explicit per-condition waveThreshold get their own key (and
 // therefore their own independently-cached wave series). Conditions without one now resolve to
-// value-scaled defaults (2/3 of the condition's own drawdown target, see
+// value-scaled defaults (2/3 of the condition's own drawdown/rise target, see
 // resolveConditionWaveThreshold) rather than one shared flat default, so they must also be keyed
 // by their own value — two no-override conditions with different value targets are NOT
 // interchangeable anymore and must not share a cache slot. Only conditions with neither an
@@ -1756,13 +1774,19 @@ function buildPeVolumeBacktestStates(rows, config, accountStartIndex = 0) {
 // config.waveThreshold) still share the old "shared" key.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
-  if (condition.indicator === "drawdownFromWaveHigh") {
+  // riseFromWaveLow shares this exact same value-scaled-waveThreshold keying need as
+  // drawdownFromWaveHigh (same reasoning below) — kept as one branch, not two copies, since the
+  // logic is identical either way and each branch is already prefixed with its own indicator
+  // name, so a drawdownFromWaveHigh condition and a riseFromWaveLow condition with the same
+  // threshold/value still never collide (they compute different series off different sides of
+  // the wave tracker, even at the same threshold).
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
     const explicit = Number(condition && condition.waveThreshold);
-    if (Number.isFinite(explicit) && explicit > 0) return `drawdownFromWaveHigh:${explicit}`;
+    if (Number.isFinite(explicit) && explicit > 0) return `${condition.indicator}:${explicit}`;
     const targetValue = Number(condition && condition.value);
     return Number.isFinite(targetValue) && targetValue > 0
-      ? `drawdownFromWaveHigh:default:${targetValue}`
-      : "drawdownFromWaveHigh:shared";
+      ? `${condition.indicator}:default:${targetValue}`
+      : `${condition.indicator}:shared`;
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
@@ -1798,6 +1822,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "riseFromWaveLow") series = getRiseFromWaveLowSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -1905,6 +1930,7 @@ function getBlockIndicatorLabel(indicator) {
     drawdownFromWaveHigh: "距波浪确认高点回撤%",
     drawdownFromBreakoutHigh: "距最近一次突破高点回撤%",
     riseFromLow: "距低点反弹%",
+    riseFromWaveLow: "距波浪确认低点反弹%",
     maValue: "均线偏离%",
     maLevel: "均线数值",
     maSlope: "均线斜率%",
@@ -2305,7 +2331,7 @@ const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "su
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
 const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
-const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
+const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "riseFromWaveLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
 const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 
 // Shared by discoverBlockRuleParameters and discoverScoreRuleParameters — walking a

@@ -730,7 +730,7 @@ const defaultStagnationReversalRule = {
 };
 
 const blockRuleIndicators = [
-  "drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "maValue", "maLevel",
+  "drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "riseFromWaveLow", "maValue", "maLevel",
   "maSlope", "rsi", "atrPercent", "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
   "maCompare", "candleBody", "positionRatio", "holdingDays", "formula",
 ];
@@ -4932,8 +4932,10 @@ function renderWaveVisualizerPresetOptions() {
   }
 }
 
-// Every drawdownFromWaveHigh condition across buyBlockRules/sellBlockRules/scoreRules —
-// returns DIRECT REFERENCES to the condition objects (not value snapshots), so callers can
+// Every drawdownFromWaveHigh/riseFromWaveLow condition across buyBlockRules/sellBlockRules/
+// scoreRules — both indicators run the same underlying wave tracker (just reading wave.high vs
+// wave.low), so they share the same waveThreshold-editing semantics and belong in one combined
+// list. Returns DIRECT REFERENCES to the condition objects (not value snapshots), so callers can
 // both read them (admin 波浪可视化 tool: resolveConditionWaveThreshold(entry.condition,
 // preset.waveThreshold) for a display-only value) and write them (历史模拟's live indicator
 // controls: entry.condition.waveThreshold = x actually mutates the same object living inside
@@ -4943,12 +4945,14 @@ function renderWaveVisualizerPresetOptions() {
 // entry, or {buyBlockRules: currentBlockRules.buyBlockRules, ...} both qualify.
 function collectWaveConditions(source) {
   const results = [];
+  const isWaveIndicator = (indicator) => indicator === "drawdownFromWaveHigh" || indicator === "riseFromWaveLow";
+  const targetLabel = (condition) => (condition.indicator === "drawdownFromWaveHigh" ? `回撤目标${condition.value}%` : `反弹目标${condition.value}%`);
   const scanBlocks = (blocks, labelPrefix) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       (block && block.conditions || []).forEach((condition, conditionIndex) => {
-        if (condition.indicator !== "drawdownFromWaveHigh") return;
+        if (!isWaveIndicator(condition.indicator)) return;
         results.push({
-          label: `${labelPrefix}${blockIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
+          label: `${labelPrefix}${blockIndex + 1}·条件${conditionIndex + 1}（${targetLabel(condition)}）`,
           condition,
         });
       });
@@ -4958,9 +4962,9 @@ function collectWaveConditions(source) {
   scanBlocks(source.sellBlockRules, "卖出规则块");
   (Array.isArray(source.scoreRules) ? source.scoreRules : []).forEach((rule, ruleIndex) => {
     (rule && rule.conditions || []).forEach((condition, conditionIndex) => {
-      if (condition.indicator !== "drawdownFromWaveHigh") return;
+      if (!isWaveIndicator(condition.indicator)) return;
       results.push({
-        label: `打分规则${ruleIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
+        label: `打分规则${ruleIndex + 1}·条件${conditionIndex + 1}（${targetLabel(condition)}）`,
         condition,
       });
     });
@@ -7021,6 +7025,22 @@ function getRiseFromLowSeries(rows, lookbackDays) {
   });
 }
 
+// Mirror of getDrawdownFromWaveHighSeries on the low side — same wave tracker (it already
+// maintains both wave.high and wave.low internally; only the high side had a condition
+// indicator exposing it until now), just reading wave.low instead. Unlike riseFromLow's fixed
+// N-day rolling window, this only updates wave.low once price has reversed back UP by
+// waveThreshold% from a candidate low — the same threshold-confirmed "real turning point, not
+// daily noise" semantics drawdownFromWaveHigh already has, just upside.
+function getRiseFromWaveLowSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    const low = wave.low.price;
+    return low > 0 ? ((row.close - low) / low) * 100 : null;
+  });
+}
+
 function getMaValueDiffSeries(rows, maDays) {
   const ma = getMovingAverageSeries(rows, maDays);
   return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
@@ -8478,25 +8498,28 @@ function buildPeVolumeBacktestStates(rows, config) {
 // never share a cache slot), everything else keeps the existing lookbackDays/slopeWindowDays
 // key — shared by buildBlockRuleSeriesCache/getBlockConditionValue/getBlockConditionSeries so
 // the three don't each reimplement (and risk drifting on) the same key format.
-// drawdownFromWaveHigh has no lookbackDays/slopeWindowDays of its own, so without something
-// distinguishing them in the key, every drawdownFromWaveHigh condition in a model collides on
-// the same cache entry — conditions with an explicit per-condition waveThreshold get their own
-// key (and therefore their own independently-cached wave series). Conditions without one now
-// resolve to value-scaled defaults (2/3 of the condition's own drawdown target, see
-// resolveConditionWaveThreshold) rather than one shared flat default, so they must also be keyed
-// by their own value — two no-override conditions with different value targets are NOT
-// interchangeable and must not share a cache slot. Only conditions with neither an explicit
-// waveThreshold nor a usable value (falling back to the model-level config.waveThreshold) still
-// share the old "shared" key.
+// drawdownFromWaveHigh/riseFromWaveLow have no lookbackDays/slopeWindowDays of their own, so
+// without something distinguishing them in the key, every condition of the same indicator in a
+// model collides on the same cache entry — conditions with an explicit per-condition
+// waveThreshold get their own key (and therefore their own independently-cached wave series).
+// Conditions without one now resolve to value-scaled defaults (2/3 of the condition's own
+// drawdown/rise target, see resolveConditionWaveThreshold) rather than one shared flat default,
+// so they must also be keyed by their own value — two no-override conditions with different
+// value targets are NOT interchangeable and must not share a cache slot. Only conditions with
+// neither an explicit waveThreshold nor a usable value (falling back to the model-level
+// config.waveThreshold) still share the old "shared" key. Each branch is prefixed with its own
+// indicator name, so a drawdownFromWaveHigh condition and a riseFromWaveLow condition never
+// collide even at the same threshold/value — they compute different series off different sides
+// of the wave tracker.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
-  if (condition.indicator === "drawdownFromWaveHigh") {
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
     const explicit = Number(condition && condition.waveThreshold);
-    if (Number.isFinite(explicit) && explicit > 0) return `drawdownFromWaveHigh:${explicit}`;
+    if (Number.isFinite(explicit) && explicit > 0) return `${condition.indicator}:${explicit}`;
     const targetValue = Number(condition && condition.value);
     return Number.isFinite(targetValue) && targetValue > 0
-      ? `drawdownFromWaveHigh:default:${targetValue}`
-      : "drawdownFromWaveHigh:shared";
+      ? `${condition.indicator}:default:${targetValue}`
+      : `${condition.indicator}:shared`;
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
@@ -8529,6 +8552,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "riseFromWaveLow") series = getRiseFromWaveLowSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -8630,6 +8654,7 @@ function getBlockIndicatorLabel(indicator) {
     drawdownFromWaveHigh: "距波浪确认高点回撤%",
     drawdownFromBreakoutHigh: "距最近一次突破高点回撤%",
     riseFromLow: "距低点反弹%",
+    riseFromWaveLow: "距波浪确认低点反弹%",
     maValue: "均线偏离%",
     maLevel: "均线数值",
     maSlope: "均线斜率%",
@@ -9620,7 +9645,7 @@ const RULE_FIELD_LABELS = {
 function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex) {
   const showSlopeWindow = condition.indicator === "maSlope";
   const showFormula = condition.indicator === "formula";
-  const showWaveThreshold = condition.indicator === "drawdownFromWaveHigh";
+  const showWaveThreshold = condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow";
   const numOrEmpty = (value) => (value === null || value === undefined ? "" : value);
   return `
     <div class="block-rule-condition-row" data-condition-index="${conditionIndex}">
@@ -9720,7 +9745,7 @@ function collectBlockRuleFormState() {
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
-          waveThreshold: indicator !== "drawdownFromWaveHigh" || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
         };
       });
       const actionType = blockEl.querySelector('[data-role="action-type"]').value;
@@ -10560,7 +10585,7 @@ const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "su
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
 const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
-const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
+const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "riseFromWaveLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
 const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 
 // Shared by discoverBlockRuleParameters and discoverScoreRuleParameters — walking a
@@ -12555,7 +12580,7 @@ function collectModelTradesRuleFormState() {
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
-          waveThreshold: indicator !== "drawdownFromWaveHigh" || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
         };
       });
       const actionType = blockEl.querySelector('[data-role="action-type"]').value;
@@ -12609,7 +12634,7 @@ if (modelTradesRuleEditor) {
       const lookbackInput = row && row.querySelector('[data-role="lookbackDays"]');
       if (lookbackInput) lookbackInput.disabled = isFormula;
       const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
-      if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh";
+      if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh" && target.value !== "riseFromWaveLow";
     }
     if (target && target.dataset && target.dataset.role === "action-type") {
       const actionRow = target.closest(".block-rule-action-row");
