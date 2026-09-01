@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260831-per-condition-wave-threshold">
+    <link rel="stylesheet" href="/styles.css?v=20260901-wave-visualizer">
   </head>
   <body>
     <main class="shell">
@@ -193,6 +193,7 @@
             <button id="adminStockScreenTabButton" type="button">选股记录</button>
             <button id="adminWatchAlertsTabButton" type="button">盯盘提醒</button>
             <button id="adminValidatedSearchTabButton" type="button">验证搜索</button>
+            <button id="adminWaveVisualizerTabButton" type="button">波浪可视化</button>
           </div>
           <div id="adminPresetsPanel">
             <div class="admin-scan-filter-row">
@@ -399,6 +400,46 @@
             </div>
             <div id="adminValidatedSearchProgressBanner" class="admin-progress-banner hidden"></div>
             <div id="adminValidatedSearchList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminWaveVisualizerPanel" class="hidden">
+            <p class="field-hint">加载一段真实历史行情，再加载一个模型（或直接手动调阈值），拖动下面的滑块能立刻看到"波浪确认阈值"变化时，哪些价格转折会被认成波浪高点/波浪低点——不发请求，纯本地重算。</p>
+            <div class="admin-scan-filter-row">
+              <label>股票代码
+                <input id="waveVisualizerSymbolInput" type="text" placeholder="如 TSLA 或 513100" value="513100">
+              </label>
+              <label>市场
+                <select id="waveVisualizerMarketSelect">
+                  <option value="CN" selected>A股</option>
+                  <option value="US">美股</option>
+                </select>
+              </label>
+              <label>开始日期
+                <input id="waveVisualizerStartInput" type="date">
+              </label>
+              <label>结束日期
+                <input id="waveVisualizerEndInput" type="date">
+              </label>
+              <button type="button" id="waveVisualizerLoadHistoryButton" class="ghost-button">加载历史</button>
+            </div>
+            <div class="admin-scan-filter-row">
+              <label>加载模型（可选，用来带出一个参考阈值）
+                <select id="waveVisualizerPresetSelect"></select>
+              </label>
+              <button type="button" id="waveVisualizerLoadPresetButton" class="ghost-button">加载模型</button>
+              <label id="waveVisualizerConditionRow" class="hidden">选择条件
+                <select id="waveVisualizerConditionSelect"></select>
+              </label>
+            </div>
+            <div class="admin-scan-filter-row">
+              <label>波浪确认阈值%
+                <input id="waveVisualizerThresholdInput" type="number" min="0.1" max="50" step="0.1" value="5">
+              </label>
+              <input id="waveVisualizerThresholdSlider" type="range" min="0.1" max="50" step="0.1" value="5">
+              <span id="waveVisualizerStats" class="field-hint"></span>
+            </div>
+            <div class="trade-price-wrap">
+              <svg id="waveVisualizerSvg" class="watch-alert-chart-svg" role="img" aria-label="历史价格与波浪高低点"></svg>
+            </div>
           </div>
         </form>
       </dialog>
@@ -1379,7 +1420,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260831-per-condition-wave-threshold"></script>
-    <script src="/app.js?v=20260831-per-condition-wave-threshold"></script>
+    <script src="/formula-engine.js?v=20260901-wave-visualizer"></script>
+    <script src="/app.js?v=20260901-wave-visualizer"></script>
   </body>
 </html>

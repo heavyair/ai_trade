@@ -2851,6 +2851,25 @@ textarea:focus {
   stroke-width: 2.5;
 }
 
+.wave-line {
+  fill: none;
+  stroke: #9b59b6;
+  stroke-width: 1.75;
+  stroke-dasharray: 5 3;
+}
+
+.wave-high-marker {
+  fill: #c2413b;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
+.wave-low-marker {
+  fill: #227a4f;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
 .point-label {
   fill: var(--ink);
   font-size: 12px;

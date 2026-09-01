@@ -186,6 +186,21 @@ const adminValidatedSearchPauseResumeButton = document.querySelector("#adminVali
 const adminValidatedSearchRunStatus = document.querySelector("#adminValidatedSearchRunStatus");
 const adminValidatedSearchProgressBanner = document.querySelector("#adminValidatedSearchProgressBanner");
 const adminValidatedSearchList = document.querySelector("#adminValidatedSearchList");
+const adminWaveVisualizerTabButton = document.querySelector("#adminWaveVisualizerTabButton");
+const adminWaveVisualizerPanel = document.querySelector("#adminWaveVisualizerPanel");
+const waveVisualizerSymbolInput = document.querySelector("#waveVisualizerSymbolInput");
+const waveVisualizerMarketSelect = document.querySelector("#waveVisualizerMarketSelect");
+const waveVisualizerStartInput = document.querySelector("#waveVisualizerStartInput");
+const waveVisualizerEndInput = document.querySelector("#waveVisualizerEndInput");
+const waveVisualizerLoadHistoryButton = document.querySelector("#waveVisualizerLoadHistoryButton");
+const waveVisualizerPresetSelect = document.querySelector("#waveVisualizerPresetSelect");
+const waveVisualizerLoadPresetButton = document.querySelector("#waveVisualizerLoadPresetButton");
+const waveVisualizerConditionRow = document.querySelector("#waveVisualizerConditionRow");
+const waveVisualizerConditionSelect = document.querySelector("#waveVisualizerConditionSelect");
+const waveVisualizerThresholdInput = document.querySelector("#waveVisualizerThresholdInput");
+const waveVisualizerThresholdSlider = document.querySelector("#waveVisualizerThresholdSlider");
+const waveVisualizerStats = document.querySelector("#waveVisualizerStats");
+const waveVisualizerSvg = document.querySelector("#waveVisualizerSvg");
 const adminStockScreenPanel = document.querySelector("#adminStockScreenPanel");
 const adminStockScreenList = document.querySelector("#adminStockScreenList");
 const screenPresetSelect = document.querySelector("#screenPresetSelect");
@@ -4602,7 +4617,8 @@ function setAdminTab(tab) {
   const showStockScreen = tab === "stockScreen";
   const showWatchAlerts = tab === "watchAlerts";
   const showValidatedSearch = tab === "validatedSearch";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch;
+  const showWaveVisualizer = tab === "waveVisualizer";
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch && !showWaveVisualizer;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -4612,6 +4628,7 @@ function setAdminTab(tab) {
   if (adminStockScreenTabButton) adminStockScreenTabButton.classList.toggle("active", showStockScreen);
   if (adminWatchAlertsTabButton) adminWatchAlertsTabButton.classList.toggle("active", showWatchAlerts);
   if (adminValidatedSearchTabButton) adminValidatedSearchTabButton.classList.toggle("active", showValidatedSearch);
+  if (adminWaveVisualizerTabButton) adminWaveVisualizerTabButton.classList.toggle("active", showWaveVisualizer);
   if (adminPresetsPanel) adminPresetsPanel.classList.toggle("hidden", !showPresets);
   if (adminRankingsPanel) adminRankingsPanel.classList.toggle("hidden", !showRankings);
   if (adminScanPanel) adminScanPanel.classList.toggle("hidden", !showScan);
@@ -4621,6 +4638,7 @@ function setAdminTab(tab) {
   if (adminStockScreenPanel) adminStockScreenPanel.classList.toggle("hidden", !showStockScreen);
   if (adminWatchAlertsPanel) adminWatchAlertsPanel.classList.toggle("hidden", !showWatchAlerts);
   if (adminValidatedSearchPanel) adminValidatedSearchPanel.classList.toggle("hidden", !showValidatedSearch);
+  if (adminWaveVisualizerPanel) adminWaveVisualizerPanel.classList.toggle("hidden", !showWaveVisualizer);
   if (showRankings) loadAdminRankings();
   if (showScan) loadAdminScanResults();
   if (showScanStatus) loadAdminScanStatus();
@@ -4629,6 +4647,10 @@ function setAdminTab(tab) {
   if (showStockScreen) loadAdminStockScreen();
   if (showWatchAlerts) loadAdminWatchAlerts();
   if (showValidatedSearch) loadAdminValidatedSearch();
+  // No auto-fetch here, unlike the other tabs — this tool's data comes from the user
+  // explicitly clicking 加载历史/加载模型, not a background list to load on open. Just keep
+  // the preset dropdown current since strategyPresets may have changed since last opened.
+  if (showWaveVisualizer) renderWaveVisualizerPresetOptions();
 }
 
 if (adminPresetsTabButton) {
@@ -4658,6 +4680,9 @@ if (adminAutoGenerateRunButton) {
 if (adminValidatedSearchTabButton) {
   adminValidatedSearchTabButton.addEventListener("click", () => setAdminTab("validatedSearch"));
 }
+if (adminWaveVisualizerTabButton) {
+  adminWaveVisualizerTabButton.addEventListener("click", () => setAdminTab("waveVisualizer"));
+}
 if (adminValidatedSearchRunButton) {
   adminValidatedSearchRunButton.addEventListener("click", () => {
     if (!window.confirm("确定要启动验证搜索吗？这会消耗 AI API 调用额度（最多按“总 AI 调用次数上限”计费），并跑参数搜索，可能耗时较久。")) return;
@@ -4673,6 +4698,173 @@ if (adminValidatedSearchPauseResumeButton) {
     }
   });
 }
+// 波浪可视化: entirely client-side after the initial "加载历史" fetch — waveVisualizerRows is
+// kept around so every threshold-slider tick just re-runs getWaveTurningPoints locally and
+// redraws, no round-trip per adjustment.
+let waveVisualizerRows = [];
+
+function renderWaveVisualizerPresetOptions() {
+  if (!waveVisualizerPresetSelect) return;
+  const entries = Object.entries(strategyPresets).filter(([, preset]) => preset && preset.id);
+  if (entries.length === 0) {
+    waveVisualizerPresetSelect.innerHTML = '<option value="">暂无可用模型（请先保存一个模型）</option>';
+    return;
+  }
+  const previousValue = waveVisualizerPresetSelect.value;
+  waveVisualizerPresetSelect.innerHTML = entries
+    .map(([name, preset]) => `<option value="${escapeHtml(name)}">${formatModelIdPrefix(preset)}${escapeHtml(preset.label || name)}</option>`)
+    .join("");
+  if (previousValue && entries.some(([name]) => name === previousValue)) {
+    waveVisualizerPresetSelect.value = previousValue;
+  }
+}
+
+// Every drawdownFromWaveHigh condition across buyBlockRules/sellBlockRules/scoreRules, each
+// resolved through the SAME resolveConditionWaveThreshold the backtest engine itself uses —
+// what's shown here is guaranteed to match what the model actually does at runtime, not a
+// separately-reasoned guess.
+function collectWaveConditionsFromPreset(preset) {
+  const results = [];
+  const scanBlocks = (blocks, labelPrefix) => {
+    (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
+      (block && block.conditions || []).forEach((condition, conditionIndex) => {
+        if (condition.indicator !== "drawdownFromWaveHigh") return;
+        results.push({
+          label: `${labelPrefix}${blockIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
+          threshold: resolveConditionWaveThreshold(condition, preset.waveThreshold),
+        });
+      });
+    });
+  };
+  scanBlocks(preset.buyBlockRules, "买入规则块");
+  scanBlocks(preset.sellBlockRules, "卖出规则块");
+  (Array.isArray(preset.scoreRules) ? preset.scoreRules : []).forEach((rule, ruleIndex) => {
+    (rule && rule.conditions || []).forEach((condition, conditionIndex) => {
+      if (condition.indicator !== "drawdownFromWaveHigh") return;
+      results.push({
+        label: `打分规则${ruleIndex + 1}·条件${conditionIndex + 1}（回撤目标${condition.value}%）`,
+        threshold: resolveConditionWaveThreshold(condition, preset.waveThreshold),
+      });
+    });
+  });
+  return results;
+}
+
+function setWaveVisualizerThreshold(value) {
+  if (waveVisualizerThresholdInput) waveVisualizerThresholdInput.value = value;
+  if (waveVisualizerThresholdSlider) waveVisualizerThresholdSlider.value = value;
+}
+
+function redrawWaveVisualizer() {
+  if (!waveVisualizerSvg) return;
+  if (waveVisualizerRows.length === 0) {
+    drawModelOrderPriceChartInto(waveVisualizerSvg, [], [], { emptyMessage: "请先点击“加载历史”" });
+    if (waveVisualizerStats) waveVisualizerStats.textContent = "";
+    return;
+  }
+  const threshold = Math.max(0.1, Number(waveVisualizerThresholdInput.value) || 5);
+  const wavePoints = getWaveTurningPoints(waveVisualizerRows, threshold);
+  drawModelOrderPriceChartInto(waveVisualizerSvg, waveVisualizerRows, [], { wavePoints });
+  if (waveVisualizerStats) {
+    const highCount = wavePoints.filter((point) => point.type === "high").length;
+    const lowCount = wavePoints.filter((point) => point.type === "low").length;
+    waveVisualizerStats.textContent = `共 ${highCount} 个波浪高点、${lowCount} 个波浪低点（阈值 ${threshold}%）`;
+  }
+}
+
+if (waveVisualizerLoadHistoryButton) {
+  waveVisualizerLoadHistoryButton.addEventListener("click", async () => {
+    const symbol = normalizeSymbolInput(waveVisualizerSymbolInput.value);
+    if (!symbol) {
+      setStatus("请先输入股票代码。", true);
+      return;
+    }
+    const end = waveVisualizerEndInput.value || todayText();
+    const start = waveVisualizerStartInput.value || new Date(Date.now() - 2 * 365 * 86400000).toISOString().slice(0, 10);
+    waveVisualizerLoadHistoryButton.disabled = true;
+    try {
+      const params = new URLSearchParams({ code: symbol, start, end });
+      const response = await fetch(`/api/klines?${params.toString()}`);
+      const payload = await readJsonResponse(response, "行情读取失败。");
+      const rows = (payload.rows || []).filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close)
+        && row.close > 0 && Number.isFinite(row.high) && Number.isFinite(row.low));
+      if (rows.length === 0) {
+        setStatus("没有读到有效行情数据，请检查代码或日期范围。", true);
+        return;
+      }
+      waveVisualizerRows = rows;
+      setStatus(`已加载 ${symbol}（${payload.name || symbol}）${rows.length} 天历史行情。`);
+      redrawWaveVisualizer();
+    } catch (error) {
+      setStatus(error.message || "行情读取失败。", true);
+    } finally {
+      waveVisualizerLoadHistoryButton.disabled = false;
+    }
+  });
+}
+
+if (waveVisualizerLoadPresetButton) {
+  waveVisualizerLoadPresetButton.addEventListener("click", () => {
+    const name = waveVisualizerPresetSelect ? waveVisualizerPresetSelect.value : "";
+    const preset = name ? strategyPresets[name] : null;
+    if (!preset) {
+      setStatus("请先选择一个模型。", true);
+      return;
+    }
+    if (waveVisualizerConditionRow) waveVisualizerConditionRow.classList.add("hidden");
+    if (preset.strategyType === "wave") {
+      const threshold = Math.max(0.1, Number(preset.waveThreshold) || 5);
+      setWaveVisualizerThreshold(threshold);
+      setStatus(`已加载模型「${preset.label}」的波浪阈值（wave 策略自身用的那个）：${threshold}%`);
+      redrawWaveVisualizer();
+      return;
+    }
+    const conditions = collectWaveConditionsFromPreset(preset);
+    if (conditions.length === 0) {
+      setStatus(`模型「${preset.label}」没有用到波浪确认阈值（没有 drawdownFromWaveHigh 条件）。`, true);
+      return;
+    }
+    if (conditions.length === 1) {
+      setWaveVisualizerThreshold(conditions[0].threshold);
+      setStatus(`已加载模型「${preset.label}」的波浪阈值：${conditions[0].threshold}%`);
+      redrawWaveVisualizer();
+      return;
+    }
+    if (waveVisualizerConditionRow) waveVisualizerConditionRow.classList.remove("hidden");
+    waveVisualizerConditionSelect.innerHTML = conditions
+      .map((c, i) => `<option value="${i}">${escapeHtml(c.label)}：${c.threshold}%</option>`)
+      .join("");
+    waveVisualizerConditionSelect.dataset.thresholds = JSON.stringify(conditions.map((c) => c.threshold));
+    setWaveVisualizerThreshold(conditions[0].threshold);
+    setStatus(`模型「${preset.label}」有 ${conditions.length} 条波浪确认条件，已选第一条，可在右侧下拉框切换。`);
+    redrawWaveVisualizer();
+  });
+}
+
+if (waveVisualizerConditionSelect) {
+  waveVisualizerConditionSelect.addEventListener("change", () => {
+    const thresholds = JSON.parse(waveVisualizerConditionSelect.dataset.thresholds || "[]");
+    const threshold = thresholds[Number(waveVisualizerConditionSelect.value)];
+    if (Number.isFinite(threshold)) {
+      setWaveVisualizerThreshold(threshold);
+      redrawWaveVisualizer();
+    }
+  });
+}
+
+if (waveVisualizerThresholdInput) {
+  waveVisualizerThresholdInput.addEventListener("input", () => {
+    if (waveVisualizerThresholdSlider) waveVisualizerThresholdSlider.value = waveVisualizerThresholdInput.value;
+    redrawWaveVisualizer();
+  });
+}
+if (waveVisualizerThresholdSlider) {
+  waveVisualizerThresholdSlider.addEventListener("input", () => {
+    if (waveVisualizerThresholdInput) waveVisualizerThresholdInput.value = waveVisualizerThresholdSlider.value;
+    redrawWaveVisualizer();
+  });
+}
+
 if (adminValidationRunButton) {
   adminValidationRunButton.addEventListener("click", () => {
     if (!window.confirm("确定要运行全市场验证吗？这会对通过初筛的候选逐一跑全市场股票，可能耗时较久。")) return;
@@ -6176,6 +6368,30 @@ function updateWaveTracker(wave, row) {
   }
 
   return events;
+}
+
+// Thin wrapper for the 波浪可视化 admin tool — reuses createWaveTracker/updateWaveTracker
+// as-is (same algorithm getDrawdownFromWaveHighSeries already runs on every backtest) rather
+// than reimplementing the zigzag logic, just collects each CONFIRMED turning point's
+// date/price/rowIndex/type instead of a per-day drawdown series. A "new-high" event on the
+// CONFIRMATION day refers to a peak that was actually SET on an earlier day (wave.high.date) —
+// look that day's rowIndex back up via a date map so the marker lands on the real peak, not on
+// the day the pullback happened to confirm it.
+function getWaveTurningPoints(rows, waveThreshold) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const rowIndexByDate = new Map(rows.map((row, index) => [row.date, index]));
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  const points = [];
+  rows.forEach((row) => {
+    const events = updateWaveTracker(wave, row);
+    if (events.includes("new-high")) {
+      points.push({ rowIndex: rowIndexByDate.get(wave.high.date), date: wave.high.date, price: wave.high.price, type: "high" });
+    }
+    if (events.includes("new-low")) {
+      points.push({ rowIndex: rowIndexByDate.get(wave.low.date), date: wave.low.date, price: wave.low.price, type: "low" });
+    }
+  });
+  return points;
 }
 
 function getWaveThreshold() {
@@ -11867,8 +12083,11 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   const upToIndex = Number.isInteger(options.upToIndex) ? Math.max(0, Math.min(options.upToIndex, rows.length - 1)) : rows.length - 1;
   const visibleRows = rows.slice(0, upToIndex + 1);
   const visibleTrades = trades.filter((trade) => Number.isInteger(trade.rowIndex) && trade.rowIndex <= upToIndex);
+  const wavePoints = Array.isArray(options.wavePoints) ? options.wavePoints : [];
+  const visibleWavePoints = wavePoints.filter((point) => Number.isInteger(point.rowIndex) && point.rowIndex <= upToIndex);
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
   trades.forEach((trade) => priceValues.push(trade.price));
+  wavePoints.forEach((point) => priceValues.push(point.price));
   const max = Math.max(...priceValues);
   const min = Math.min(...priceValues);
   const spread = max - min || max * 0.02 || 1;
@@ -11900,6 +12119,32 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     })
     .join("");
 
+  // options.wavePoints (from getWaveTurningPoints) draws two things on top of the same price
+  // line: a dashed zigzag connecting confirmed high/low points in sequence — the part that
+  // actually makes the chart read as "a wave" rather than scattered dots — and a small
+  // triangle marker per point (up for a low, down for a high, matching the shape to which
+  // direction just got confirmed). Reuses this function's own xForIndex/scaleY, same as the
+  // trade markers just above, so wave points share the exact same coordinate system.
+  const waveLinePath = visibleWavePoints
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xForIndex(point.rowIndex).toFixed(2)},${scaleY(point.price).toFixed(2)}`)
+    .join(" ");
+  const waveMarkerNodes = visibleWavePoints
+    .map((point) => {
+      const x = xForIndex(point.rowIndex);
+      const y = scaleY(point.price);
+      const label = `${point.date} 波浪${point.type === "high" ? "高点" : "低点"} ${formatPrice(point.price)}`;
+      const trianglePoints = point.type === "high"
+        ? `${x},${y - 7} ${x - 6},${y + 5} ${x + 6},${y + 5}`
+        : `${x},${y + 7} ${x - 6},${y - 5} ${x + 6},${y - 5}`;
+      const cssClass = point.type === "high" ? "wave-high-marker" : "wave-low-marker";
+      return `
+        <polygon class="${cssClass}" points="${trianglePoints}">
+          <title>${escapeHtml(label)}</title>
+        </polygon>
+      `;
+    })
+    .join("");
+
   target.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
     ${ticks
@@ -11914,6 +12159,8 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     <path class="price-line" d="${pricePath}"></path>
+    ${waveLinePath ? `<path class="wave-line" d="${waveLinePath}"></path>` : ""}
+    ${waveMarkerNodes}
     ${tradeNodes}
     ${dateTickIndexes
       .map((index) => {
