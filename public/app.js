@@ -12268,6 +12268,19 @@ function initModelTradesCharts(result) {
   }
 }
 
+// resetBacktest()清空整次模拟时调用——清掉这个弹窗自己的状态、把图表画成空的占位提示，
+// 跟initModelTradesCharts(result)是一对：那个是"切换到某条具体结果"，这个是"没有结果了"。
+function resetModelTradesCharts() {
+  currentModelTradesResult = null;
+  modelTradesRuleFormState = null;
+  if (modelTradesRuleEditorSection) modelTradesRuleEditorSection.classList.add("hidden");
+  if (modelTradesRuleEditor) modelTradesRuleEditor.innerHTML = "";
+  if (modelTradesRuleStats) modelTradesRuleStats.textContent = "";
+  if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
+  if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.add("hidden");
+  drawModelOrderPriceChartInto(modelOrderPriceChart, [], [], {});
+}
+
 // 仅用于对话框刚显示出来、SVG容器真实尺寸才第一次可测量时的二次重绘（跟其它图表的
 // requestAnimationFrame重绘是同一个原因），不应该重置规则编辑器的状态。
 function redrawModelTradesChart() {
@@ -12699,7 +12712,7 @@ function resetBacktest() {
   renderBacktestState(null, 0, 0);
   renderModelComparisonTable([]);
   renderTradeDetail(null);
-  drawModelOrderPriceChart(null);
+  resetModelTradesCharts();
   if (modelTradesDetail) modelTradesDetail.innerHTML = "";
   renderSelectedModelDetail(null);
   renderModelRanking();
