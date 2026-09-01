@@ -7937,9 +7937,36 @@ function buildPeVolumeBacktestStates(rows, config) {
 // never share a cache slot), everything else keeps the existing lookbackDays/slopeWindowDays
 // key — shared by buildBlockRuleSeriesCache/getBlockConditionValue/getBlockConditionSeries so
 // the three don't each reimplement (and risk drifting on) the same key format.
+// drawdownFromWaveHigh has no lookbackDays/slopeWindowDays of its own, so without something
+// distinguishing them in the key, every drawdownFromWaveHigh condition in a model collides on
+// the same cache entry — conditions with an explicit per-condition waveThreshold get their own
+// key (and therefore their own independently-cached wave series); conditions without one all
+// share the "shared" key, same as before, since they're meant to fall back to the same
+// model-level config.waveThreshold. Deliberately doesn't need the fallback's numeric value
+// here (unlike resolveConditionWaveThreshold) — only has to tell conditions apart, so lookup
+// call sites without the fallback in scope (getBlockConditionValue/getBlockConditionSeries)
+// still work unchanged.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
+  if (condition.indicator === "drawdownFromWaveHigh") {
+    const explicit = Number(condition && condition.waveThreshold);
+    return Number.isFinite(explicit) && explicit > 0 ? `drawdownFromWaveHigh:${explicit}` : "drawdownFromWaveHigh:shared";
+  }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
+}
+
+// condition.waveThreshold (per-condition override) beats the shared config-level
+// fallbackWaveThreshold when it's a real positive number; existing saved models never have
+// this field set, so they fall through to the old shared-threshold behavior unchanged. Ceiling
+// is the condition's own drawdown target (value) — a confirmation threshold at or above the
+// drawdown being screened for defeats the point — falling back to 30 only when value isn't a
+// usable positive number.
+function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
+  const explicit = Number(condition && condition.waveThreshold);
+  if (!Number.isFinite(explicit) || explicit <= 0) return Number(fallbackWaveThreshold) || 5;
+  const targetValue = Number(condition && condition.value);
+  const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
+  return Math.min(ceiling, Math.max(1, explicit));
 }
 
 function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
@@ -7950,7 +7977,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     if (cache.has(key)) return;
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
-    else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, waveThreshold || 5);
+    else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
@@ -8116,7 +8143,7 @@ function getBlockActionTypeLabel(type) {
 }
 
 function createEmptyBlockCondition() {
-  return { indicator: "drawdownFromHigh", comparator: ">", value: 0, lookbackDays: 20, slopeWindowDays: null, sustainedDays: null };
+  return { indicator: "drawdownFromHigh", comparator: ">", value: 0, lookbackDays: 20, slopeWindowDays: null, sustainedDays: null, waveThreshold: null };
 }
 
 function createEmptyBlockAction() {
@@ -9044,6 +9071,7 @@ const RULE_FIELD_LABELS = {
 function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex) {
   const showSlopeWindow = condition.indicator === "maSlope";
   const showFormula = condition.indicator === "formula";
+  const showWaveThreshold = condition.indicator === "drawdownFromWaveHigh";
   const numOrEmpty = (value) => (value === null || value === undefined ? "" : value);
   return `
     <div class="block-rule-condition-row" data-condition-index="${conditionIndex}">
@@ -9058,6 +9086,7 @@ function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex)
       <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="数值" step="any">
       <input type="number" data-role="slopeWindowDays" value="${numOrEmpty(condition.slopeWindowDays)}" placeholder="斜率窗口(仅均线斜率)" min="1" step="1" ${showSlopeWindow ? "" : "disabled"}>
       <input type="number" data-role="sustainedDays" value="${numOrEmpty(condition.sustainedDays)}" placeholder="连续天数(可选)" min="1" step="1">
+      <input type="number" data-role="waveThreshold" value="${numOrEmpty(condition.waveThreshold)}" placeholder="波浪确认阈值%(留空=回撤目标的1/3)" min="1" step="any" ${showWaveThreshold ? "" : "disabled"}>
       <button type="button" class="ghost-button block-rule-remove-condition" data-side="${sideKey}" data-block-index="${blockIndex}" data-condition-index="${conditionIndex}">删除条件</button>
     </div>
   `;
@@ -9133,6 +9162,7 @@ function collectBlockRuleFormState() {
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
+        const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
         return {
           indicator,
           comparator,
@@ -9141,6 +9171,7 @@ function collectBlockRuleFormState() {
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
+          waveThreshold: indicator !== "drawdownFromWaveHigh" || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
         };
       });
       const actionType = blockEl.querySelector('[data-role="action-type"]').value;
@@ -9973,6 +10004,7 @@ const CONDITION_FIELD_LABELS = {
   slopeWindowDays: "斜率窗口天数",
   sustainedDays: "持续天数",
   value: "阈值",
+  waveThreshold: "波浪确认阈值%",
 };
 const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
 // These indicators are inherently day-counts, so their comparison threshold (the
@@ -9988,7 +10020,7 @@ const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
   (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
     const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
-    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value"].forEach((field) => {
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold"].forEach((field) => {
       const raw = condition[field];
       if (raw === null || raw === undefined || raw === "") return;
       const current = Number(raw);
@@ -9998,7 +10030,11 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
       const isStreakDayCount = field === "value" && CONDITION_STREAK_COMPARATORS.has(condition.comparator);
       const isInteger = CONDITION_INTEGER_FIELDS.has(field) || isStreakDayCount || (field === "value" && CONDITION_DAY_COUNT_INDICATORS.has(condition.indicator));
       const isPercent = !isStreakDayCount && field === "value" && CONDITION_PERCENT_INDICATORS.has(condition.indicator);
-      const range = computeDefaultParamRange(current, isInteger, isPercent);
+      // Bounded range instead of the generic {1,100} percent range or the generic
+      // value-scaled range — see engine.js's pushConditionParamDescriptors for the same logic.
+      const range = field === "waveThreshold"
+        ? { min: 1, max: Number(condition.value) > 0 ? Number(condition.value) : 30, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT }
+        : computeDefaultParamRange(current, isInteger, isPercent);
       const fieldLabel = isStreakDayCount ? "连续天数" : CONDITION_FIELD_LABELS[field];
       descriptors.push({
         path: `${pathPrefix}.conditions[${conditionIndex}].${field}`,
