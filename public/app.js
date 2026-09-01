@@ -13347,29 +13347,37 @@ function refreshIndicatorView(message) {
   }
 }
 
+// This used to also silently swap in "whichever preset happens to be first" for the newly
+// picked type via applyStrategyPreset — a real bug, not a feature: the user manually switching
+// this dropdown to browse a different indicator overlay would silently discard whatever
+// specific model they'd actually loaded via 选择模拟模型 (modelCompareOptions ->
+// applyStrategyPreset, the ONLY working way to pick a specific named preset — strategyPresetSelect/
+// .preset-panel is permanently `hidden` in the HTML and nothing ever un-hides it, confirmed by a
+// full-codebase search) and replace it with an unrelated one of the matching type. Switching this
+// dropdown should only ever change which generic indicator calculation is being PREVIEWED on the
+// already-loaded raw price data — never swap the actually-selected model out from under the user.
+// renderStrategyPresetOptions is still called (updates strategyPresetSelect's hidden option list/
+// value) because a couple of other functions — e.g. getCurrentStagnationReversalRule — still read
+// strategyPresetSelect.value as internal state, independent of this dropdown's own visible role.
 indicatorModelSelect.addEventListener("change", () => {
   const strategyType = indicatorModelSelect.value;
-  const presetName = renderStrategyPresetOptions(strategyType);
-  if (presetName) {
-    applyStrategyPreset(presetName);
-  } else {
-    const message = strategyType === "local-high-ladder"
-      ? "已切换到近端高点阶梯指标。"
-      : strategyType === "ma-rsi-band"
-        ? "已切换到 MA-RSI 波段模型。"
-        : strategyType === "order-grid"
-          ? "已切换到近端高点订单网格模型。"
-          : strategyType === "pe-volume"
-            ? "已切换到 PE-成交量指标模型。"
-            : strategyType === "stagnation-reversal"
-              ? "已切换到停滞反转模型。"
-              : strategyType === "block-rules"
-                ? "已切换到组合规则模型。"
-                : strategyType === "score-rules"
-                  ? "已切换到打分模型。"
-        : "已切换到波浪模型。";
-    refreshIndicatorView(message);
-  }
+  renderStrategyPresetOptions(strategyType);
+  const message = strategyType === "local-high-ladder"
+    ? "已切换到近端高点阶梯指标。"
+    : strategyType === "ma-rsi-band"
+      ? "已切换到 MA-RSI 波段模型。"
+      : strategyType === "order-grid"
+        ? "已切换到近端高点订单网格模型。"
+        : strategyType === "pe-volume"
+          ? "已切换到 PE-成交量指标模型。"
+          : strategyType === "stagnation-reversal"
+            ? "已切换到停滞反转模型。"
+            : strategyType === "block-rules"
+              ? "已切换到组合规则模型。"
+              : strategyType === "score-rules"
+                ? "已切换到打分模型。"
+      : "已切换到波浪模型。";
+  refreshIndicatorView(message);
 });
 
 function triggerWaveThresholdRedraw() {
