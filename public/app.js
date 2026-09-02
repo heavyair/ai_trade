@@ -1757,6 +1757,7 @@ function filterAdminScanRecords(records) {
 const ADMIN_TRAIN_TEST_SORT_KEYS = new Set([
   "trainAnnualizedReturn", "testYear1AnnualizedReturn", "testYear2AnnualizedReturn",
   "annualizedDiffYear1", "annualizedDiffYear2", "maxAnnualizedDiff", "avgTestAnnualizedReturn",
+  "tradeCountDiff",
 ]);
 
 function sortAdminScanRecords(records) {
@@ -3258,6 +3259,9 @@ function getAdminAutoGenerateSortValue(record, key) {
   // 验证两年平均回报率——"推荐盯盘筛选"的主排序依据，差异率降级成它的并列时的次要依据
   // （见sortAiGeneratedRecords里的处理），不再是主依据。
   if (key === "avgTestAnnualizedReturn") return ((Number(record.testYear1AnnualizedReturn) || 0) + (Number(record.testYear2AnnualizedReturn) || 0)) / 2;
+  // 两年交易次数差得越多，说明这个模型在两年里的实际交易行为越不一致（比如一年几乎没动，
+  // 另一年频繁交易）——"推荐盯盘筛选"排序链最后一层的并列判据，越小越好。
+  if (key === "tradeCountDiff") return Math.abs((Number(record.testYear1Trades) || 0) - (Number(record.testYear2Trades) || 0));
   return Number(record[key]) || 0;
 }
 
@@ -3317,12 +3321,16 @@ function sortAiGeneratedRecords(records, sortKey, sortDirection, bucketByReached
       return dir * String(va).localeCompare(String(vb), "zh-CN");
     }
     const primary = dir * (va - vb);
-    // 差异率的优先级排在验证两年平均回报率后面——只有平均回报率打平(几乎不会发生，但万一
-    // 真的相等)才轮到差异率当次要依据，差异率永远是"越小越好"，不受主排序方向影响。
+    // 排序链（"推荐盯盘筛选"专用）：主依据验证两年平均回报率，打平（几乎不会发生）才轮到
+    // 下面两层——先比差异率，差异率也打平才比两年交易次数差——两层都永远是"越小越好"，
+    // 不受主排序方向影响。
     if (primary !== 0 || sortKey !== "avgTestAnnualizedReturn") return primary;
     const da = getAdminAutoGenerateSortValue(a, "maxAnnualizedDiff");
     const db = getAdminAutoGenerateSortValue(b, "maxAnnualizedDiff");
-    return da - db;
+    if (da !== db) return da - db;
+    const ta = getAdminAutoGenerateSortValue(a, "tradeCountDiff");
+    const tb = getAdminAutoGenerateSortValue(b, "tradeCountDiff");
+    return ta - tb;
   });
 }
 
@@ -3339,10 +3347,11 @@ function renderAiGeneratedPresetRow(p, options = {}) {
     : "";
   const recheckCell = options.showStatus ? `<td>${formatRecheckCell(p)}</td>` : "";
   // 只在"推荐盯盘筛选"打开时才显示这一列——平时藏起来，免得跟已有的几列重复；打开筛选时把
-  // 排序真正依据的两个数字（主：两年平均回报率，次：最大差异）一起亮出来，不然用户看不出
-  // 表格到底是按什么排的（各自单独的列排序时压根没有一个"综合考虑"的列可看）。
+  // 排序链依据的三个数字（主：两年平均回报率，次：最大差异，再次：两年交易次数差）一起
+  // 亮出来，不然用户看不出表格到底是按什么排的（各自单独的列排序时压根没有一个"综合
+  // 考虑"的列可看）。
   const recommendDiffCell = options.showRecommendDiff
-    ? `<td>均值${formatPercent(((Number(p.testYear1AnnualizedReturn) || 0) + (Number(p.testYear2AnnualizedReturn) || 0)) / 2)} · 差异${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))}</td>`
+    ? `<td>均值${formatPercent(((Number(p.testYear1AnnualizedReturn) || 0) + (Number(p.testYear2AnnualizedReturn) || 0)) / 2)} · 差异${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))} · 交易次数差${Math.abs((Number(p.testYear1Trades) || 0) - (Number(p.testYear2Trades) || 0))}</td>`
     : "";
   return `
     <tr>
