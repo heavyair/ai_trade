@@ -1756,7 +1756,7 @@ function filterAdminScanRecords(records) {
 // the end regardless of direction, matching the server's own default ORDER BY.
 const ADMIN_TRAIN_TEST_SORT_KEYS = new Set([
   "trainAnnualizedReturn", "testYear1AnnualizedReturn", "testYear2AnnualizedReturn",
-  "annualizedDiffYear1", "annualizedDiffYear2",
+  "annualizedDiffYear1", "annualizedDiffYear2", "maxAnnualizedDiff",
 ]);
 
 function sortAdminScanRecords(records) {
@@ -3316,6 +3316,12 @@ function renderAiGeneratedPresetRow(p, options = {}) {
     ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最差年份${formatPercent(worstTestAnnualized)}</span>`}</td>`
     : "";
   const recheckCell = options.showStatus ? `<td>${formatRecheckCell(p)}</td>` : "";
+  // 只在"推荐盯盘筛选"打开时才显示这一列——平时藏起来，免得跟已有的两列"差异(第1年/第2年)"
+  // 重复；打开筛选时把max(diff1,diff2)单独列出来，是为了让排序依据直接可见，不然用户看不出
+  // 表格到底是按什么排的（这两列各自单独排序时压根没有一个"两个都考虑"的列可看）。
+  const recommendDiffCell = options.showRecommendDiff
+    ? `<td>${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))}</td>`
+    : "";
   return `
     <tr>
       ${statusCell}
@@ -3336,19 +3342,21 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
       <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
       ${recheckCell}
+      ${recommendDiffCell}
     </tr>
   `;
 }
 
-function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus }) {
+function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus, showRecommendDiff }) {
   if (presets.length === 0) {
     return '<div class="ranking-empty">还没有相关记录。</div>';
   }
   const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection);
-  const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus })).join("");
-  const columns = showStatus
+  const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus, showRecommendDiff })).join("");
+  let columns = showStatus
     ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
     : ADMIN_AUTO_GENERATE_COLUMNS;
+  if (showRecommendDiff) columns = [...columns, { key: "maxAnnualizedDiff", label: "推荐排序·最大差异" }];
   const headerCells = columns.map((column) => {
     const active = sortKey === column.key;
     const arrow = active ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
@@ -3778,6 +3786,7 @@ function renderAdminValidatedSearchList(payload) {
         sortDirection: adminValidatedSearchSortDirection,
         sortAttr: "admin-validated-search-sort-key",
         showStatus: true,
+        showRecommendDiff: adminValidatedSearchRecommendFilterActive,
       });
     }
   }
