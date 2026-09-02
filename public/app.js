@@ -3286,10 +3286,23 @@ function formatRecheckCell(p) {
 // findAiGeneratedRecord above), so their sort/row/table rendering is one implementation with
 // a couple of per-panel switches (whether to show the "状态" 达标/搜索中 badge column, and
 // which data- sort-key attribute name the panel's own click handler reads).
-function sortAiGeneratedRecords(records, sortKey, sortDirection) {
+// bucketByReachedTarget (验证搜索 only — see caller) always puts 已达标 rows ahead of 搜索中
+// rows, no matter which column the user clicked to sort within each group — otherwise sorting
+// by, say, "差异(第2年)" freely interleaves a not-yet-qualified candidate with a small diff
+// above an actually-qualified one with a bigger diff, which reads as "why are unqualified
+// results on top" (real complaint, confirmed against production data: sorting by the default
+// column put reached_target=false rows at positions 2/4/5/8/11 among the top 15). This mirrors
+// the exact same "bucket first, sort within" pattern already used for the migrated/un-migrated
+// train-test split below.
+function sortAiGeneratedRecords(records, sortKey, sortDirection, bucketByReachedTarget) {
   const dir = sortDirection === "asc" ? 1 : -1;
   const isTrainTestKey = ADMIN_TRAIN_TEST_SORT_KEYS.has(sortKey);
   return [...records].sort((a, b) => {
+    if (bucketByReachedTarget) {
+      const aReached = Boolean(a.reachedTarget);
+      const bReached = Boolean(b.reachedTarget);
+      if (aReached !== bReached) return aReached ? -1 : 1;
+    }
     if (isTrainTestKey) {
       const aMigrated = Boolean(a.trainStartDate);
       const bMigrated = Boolean(b.trainStartDate);
@@ -3351,7 +3364,7 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
   if (presets.length === 0) {
     return '<div class="ranking-empty">还没有相关记录。</div>';
   }
-  const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection);
+  const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection, showStatus);
   const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus, showRecommendDiff })).join("");
   let columns = showStatus
     ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
