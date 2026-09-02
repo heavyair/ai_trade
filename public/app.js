@@ -4501,11 +4501,22 @@ function renderWatchAlertEntry(watch, options = {}) {
       <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     </div>
   `;
+  // invalidPart/failurePart上面那两个摘要里的title=""都只是悬浮提示——鼠标hover才看得到，
+  // 触屏设备基本看不到，之前用户就是这么问"在哪能看到这段文字"的。这里在正文区域把完整
+  // 原因都再显示一遍，不用hover就能看见。
+  const invalidReasonPart = watch.isInvalid && watch.invalidReason
+    ? `<div class="field-hint down">${escapeHtml(watch.invalidReason)}</div>`
+    : "";
+  const failureReasonPart = watch.consecutiveFailures > 0 && watch.lastError
+    ? `<div class="field-hint down">检查失败：${escapeHtml(watch.lastError)}</div>`
+    : "";
   // 指数盯盘没有单一股票的模拟账户/价格图/订单表——每次检查扫的是当前全部成分股，不是
   // 一支固定的票，跟"从创建那一刻起模拟交易"的单股账户模型不是一回事。
   const bodyPart = isIndexWatch
     ? `<div class="field-hint">${watch.lastSignalReason ? escapeHtml(watch.lastSignalReason) : "指数盯盘不模拟账户，触发信号时会邮件列出当次所有触发的成分股。"}</div>`
     : `
+      ${invalidReasonPart}
+      ${failureReasonPart}
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
