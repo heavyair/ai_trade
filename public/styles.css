@@ -2394,6 +2394,12 @@ textarea:focus {
   background: var(--accent);
 }
 
+.ghost-button.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Clickable model name — inline text, not button chrome, since it appears embedded inside
    table cells, card headers, and <summary> lines all over the app. */
 .model-name-link {

@@ -192,6 +192,7 @@ const adminValidatedSearchPauseResumeButton = document.querySelector("#adminVali
 const adminValidatedSearchRunStatus = document.querySelector("#adminValidatedSearchRunStatus");
 const adminValidatedSearchProgressBanner = document.querySelector("#adminValidatedSearchProgressBanner");
 const adminValidatedSearchList = document.querySelector("#adminValidatedSearchList");
+const adminValidatedSearchRecommendFilterButton = document.querySelector("#adminValidatedSearchRecommendFilterButton");
 const adminQualifiedRecheckTargetPercentInput = document.querySelector("#adminQualifiedRecheckTargetPercent");
 const adminQualifiedRecheckRunButton = document.querySelector("#adminQualifiedRecheckRunButton");
 const adminQualifiedRecheckRunStatus = document.querySelector("#adminQualifiedRecheckRunStatus");
@@ -3251,7 +3252,19 @@ function getAdminAutoGenerateSortValue(record, key) {
   if (key === "reason") return record.reason || "";
   if (key === "updatedAt") return record.updatedAt || "";
   if (key === "lastRecheckedAt") return record.lastRecheckedAt || "";
+  // "两年里差得更多的那一年"——跟reachedTarget要求两年都达标是同一个"看最差情况"的原则，用
+  // 这个而不是随便一年单独的差异，才能反映一个模型真正最不可信的那个方面。
+  if (key === "maxAnnualizedDiff") return Math.max(Number(record.annualizedDiffYear1) || 0, Number(record.annualizedDiffYear2) || 0);
   return Number(record[key]) || 0;
+}
+
+// "推荐盯盘"筛选：两年验证期都要有真实交易（排除0笔交易的买入持有假象），并且如果已经复查过
+// 必须是仍达标（还没复查过的不排除——reached_target本身还是true，没有证据说明它不行）。
+// 这套标准是2026-09-01跟用户对话时商定的人工分析口径，这里做成按钮，不用每次手动查DB。
+function passesAdminRecommendFilter(record) {
+  if (Number(record.testYear1Trades) <= 0 || Number(record.testYear2Trades) <= 0) return false;
+  if (record.lastRecheckedAt && record.recheckStillQualifies === false) return false;
+  return true;
 }
 
 // 达标复查(recheck_*字段)只在"showStatus"的表(即验证搜索面板)里显示——达标这个概念本来就
@@ -3748,13 +3761,17 @@ let adminValidatedSearchSortKey = "annualizedDiffYear2";
 let adminValidatedSearchSortDirection = "asc";
 let adminValidatedSearchLastPayload = null;
 let adminValidatedSearchPollTimer = null;
+let adminValidatedSearchRecommendFilterActive = false;
 
 function renderAdminValidatedSearchList(payload) {
   adminValidatedSearchLastPayload = payload;
-  const presets = Array.isArray(payload.presets) ? payload.presets : [];
+  const allPresets = Array.isArray(payload.presets) ? payload.presets : [];
+  const presets = adminValidatedSearchRecommendFilterActive ? allPresets.filter(passesAdminRecommendFilter) : allPresets;
   if (adminValidatedSearchList) {
     if (presets.length === 0) {
-      adminValidatedSearchList.innerHTML = '<div class="ranking-empty">还没有搜索并保存的模型。</div>';
+      adminValidatedSearchList.innerHTML = adminValidatedSearchRecommendFilterActive
+        ? '<div class="ranking-empty">没有满足"两年都有真实交易+复查仍达标"的记录。</div>'
+        : '<div class="ranking-empty">还没有搜索并保存的模型。</div>';
     } else {
       adminValidatedSearchList.innerHTML = renderAiGeneratedPresetTable(presets, {
         sortKey: adminValidatedSearchSortKey,
@@ -3763,6 +3780,12 @@ function renderAdminValidatedSearchList(payload) {
         showStatus: true,
       });
     }
+  }
+  if (adminValidatedSearchRecommendFilterButton) {
+    adminValidatedSearchRecommendFilterButton.classList.toggle("active", adminValidatedSearchRecommendFilterActive);
+    adminValidatedSearchRecommendFilterButton.textContent = adminValidatedSearchRecommendFilterActive
+      ? `已筛选（${presets.length}/${allPresets.length}）· 点击恢复全部`
+      : "推荐盯盘筛选（真实交易+复查仍达标，按差异排序）";
   }
 
   const running = Boolean(payload.running);
@@ -4894,6 +4917,18 @@ if (adminQualifiedRecheckRunButton) {
   adminQualifiedRecheckRunButton.addEventListener("click", () => {
     if (!window.confirm("确定要对下面全部已达标的模型做一次复查吗？会用最新数据重新跑一遍验证期回测，可能耗时较久，跟其它后台批量任务共用同一个队列。")) return;
     triggerAdminQualifiedRecheckRun();
+  });
+}
+if (adminValidatedSearchRecommendFilterButton) {
+  adminValidatedSearchRecommendFilterButton.addEventListener("click", () => {
+    adminValidatedSearchRecommendFilterActive = !adminValidatedSearchRecommendFilterActive;
+    // 打开筛选时顺手把排序切到"两年里更差那年的差异，从小到大"——这正是筛选本身要突出的
+    // 排序方式；关闭筛选不改排序，回到用户手动点过的那个列。
+    if (adminValidatedSearchRecommendFilterActive) {
+      adminValidatedSearchSortKey = "maxAnnualizedDiff";
+      adminValidatedSearchSortDirection = "asc";
+    }
+    if (adminValidatedSearchLastPayload) renderAdminValidatedSearchList(adminValidatedSearchLastPayload);
   });
 }
 if (adminValidatedSearchRunButton) {

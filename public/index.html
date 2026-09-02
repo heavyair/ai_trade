@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260901-risefromwavelow-indicator">
+    <link rel="stylesheet" href="/styles.css?v=20260901-recommend-watch-filter">
   </head>
   <body>
     <main class="shell">
@@ -408,6 +408,9 @@
               <span id="adminQualifiedRecheckRunStatus" class="field-hint"></span>
             </div>
             <div id="adminQualifiedRecheckProgressBanner" class="admin-progress-banner hidden"></div>
+            <div class="admin-scan-filter-row">
+              <button type="button" id="adminValidatedSearchRecommendFilterButton" class="ghost-button">推荐盯盘筛选（真实交易+复查仍达标，按差异排序）</button>
+            </div>
             <div id="adminValidatedSearchList" class="admin-ranking-list"></div>
           </div>
           <div id="adminWaveVisualizerPanel" class="hidden">
@@ -1460,7 +1463,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260901-risefromwavelow-indicator"></script>
-    <script src="/app.js?v=20260901-risefromwavelow-indicator"></script>
+    <script src="/formula-engine.js?v=20260901-recommend-watch-filter"></script>
+    <script src="/app.js?v=20260901-recommend-watch-filter"></script>
   </body>
 </html>
