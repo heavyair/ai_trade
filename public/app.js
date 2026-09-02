@@ -1756,7 +1756,7 @@ function filterAdminScanRecords(records) {
 // the end regardless of direction, matching the server's own default ORDER BY.
 const ADMIN_TRAIN_TEST_SORT_KEYS = new Set([
   "trainAnnualizedReturn", "testYear1AnnualizedReturn", "testYear2AnnualizedReturn",
-  "annualizedDiffYear1", "annualizedDiffYear2", "maxAnnualizedDiff",
+  "annualizedDiffYear1", "annualizedDiffYear2", "maxAnnualizedDiff", "avgTestAnnualizedReturn",
 ]);
 
 function sortAdminScanRecords(records) {
@@ -3255,6 +3255,9 @@ function getAdminAutoGenerateSortValue(record, key) {
   // "两年里差得更多的那一年"——跟reachedTarget要求两年都达标是同一个"看最差情况"的原则，用
   // 这个而不是随便一年单独的差异，才能反映一个模型真正最不可信的那个方面。
   if (key === "maxAnnualizedDiff") return Math.max(Number(record.annualizedDiffYear1) || 0, Number(record.annualizedDiffYear2) || 0);
+  // 验证两年平均回报率——"推荐盯盘筛选"的主排序依据，差异率降级成它的并列时的次要依据
+  // （见sortAiGeneratedRecords里的处理），不再是主依据。
+  if (key === "avgTestAnnualizedReturn") return ((Number(record.testYear1AnnualizedReturn) || 0) + (Number(record.testYear2AnnualizedReturn) || 0)) / 2;
   return Number(record[key]) || 0;
 }
 
@@ -3313,7 +3316,13 @@ function sortAiGeneratedRecords(records, sortKey, sortDirection, bucketByReached
     if (typeof va === "string" || typeof vb === "string") {
       return dir * String(va).localeCompare(String(vb), "zh-CN");
     }
-    return dir * (va - vb);
+    const primary = dir * (va - vb);
+    // 差异率的优先级排在验证两年平均回报率后面——只有平均回报率打平(几乎不会发生，但万一
+    // 真的相等)才轮到差异率当次要依据，差异率永远是"越小越好"，不受主排序方向影响。
+    if (primary !== 0 || sortKey !== "avgTestAnnualizedReturn") return primary;
+    const da = getAdminAutoGenerateSortValue(a, "maxAnnualizedDiff");
+    const db = getAdminAutoGenerateSortValue(b, "maxAnnualizedDiff");
+    return da - db;
   });
 }
 
@@ -3329,11 +3338,11 @@ function renderAiGeneratedPresetRow(p, options = {}) {
     ? `<td>${p.reachedTarget ? '<span class="up">已验证达标</span>' : `<span class="field-hint">搜索中·最差年份${formatPercent(worstTestAnnualized)}</span>`}</td>`
     : "";
   const recheckCell = options.showStatus ? `<td>${formatRecheckCell(p)}</td>` : "";
-  // 只在"推荐盯盘筛选"打开时才显示这一列——平时藏起来，免得跟已有的两列"差异(第1年/第2年)"
-  // 重复；打开筛选时把max(diff1,diff2)单独列出来，是为了让排序依据直接可见，不然用户看不出
-  // 表格到底是按什么排的（这两列各自单独排序时压根没有一个"两个都考虑"的列可看）。
+  // 只在"推荐盯盘筛选"打开时才显示这一列——平时藏起来，免得跟已有的几列重复；打开筛选时把
+  // 排序真正依据的两个数字（主：两年平均回报率，次：最大差异）一起亮出来，不然用户看不出
+  // 表格到底是按什么排的（各自单独的列排序时压根没有一个"综合考虑"的列可看）。
   const recommendDiffCell = options.showRecommendDiff
-    ? `<td>${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))}</td>`
+    ? `<td>均值${formatPercent(((Number(p.testYear1AnnualizedReturn) || 0) + (Number(p.testYear2AnnualizedReturn) || 0)) / 2)} · 差异${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))}</td>`
     : "";
   return `
     <tr>
@@ -3369,7 +3378,7 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
   let columns = showStatus
     ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
     : ADMIN_AUTO_GENERATE_COLUMNS;
-  if (showRecommendDiff) columns = [...columns, { key: "maxAnnualizedDiff", label: "推荐排序·最大差异" }];
+  if (showRecommendDiff) columns = [...columns, { key: "avgTestAnnualizedReturn", label: "推荐排序·均值/差异" }];
   const headerCells = columns.map((column) => {
     const active = sortKey === column.key;
     const arrow = active ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
@@ -4944,11 +4953,12 @@ if (adminQualifiedRecheckRunButton) {
 if (adminValidatedSearchRecommendFilterButton) {
   adminValidatedSearchRecommendFilterButton.addEventListener("click", () => {
     adminValidatedSearchRecommendFilterActive = !adminValidatedSearchRecommendFilterActive;
-    // 打开筛选时顺手把排序切到"两年里更差那年的差异，从小到大"——这正是筛选本身要突出的
-    // 排序方式；关闭筛选不改排序，回到用户手动点过的那个列。
+    // 打开筛选时顺手把排序切到"验证两年平均回报率，从高到低"——差异率的优先级排在它后面，
+    // 只在平均回报率打平时才当次要依据（见sortAiGeneratedRecords）。关闭筛选不改排序，
+    // 回到用户手动点过的那个列。
     if (adminValidatedSearchRecommendFilterActive) {
-      adminValidatedSearchSortKey = "maxAnnualizedDiff";
-      adminValidatedSearchSortDirection = "asc";
+      adminValidatedSearchSortKey = "avgTestAnnualizedReturn";
+      adminValidatedSearchSortDirection = "desc";
     }
     if (adminValidatedSearchLastPayload) renderAdminValidatedSearchList(adminValidatedSearchLastPayload);
   });
