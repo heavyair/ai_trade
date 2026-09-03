@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260902-show-invalid-reason-visibly">
+    <link rel="stylesheet" href="/styles.css?v=20260902-upside-deviation-gate">
   </head>
   <body>
     <main class="shell">
@@ -377,6 +377,9 @@
               <label>目标年化收益率(%)
                 <input id="adminValidatedSearchTargetPercent" type="number" step="1" min="1" max="500" value="50">
               </label>
+              <label>年化收益需达到当年上行标准差的(%)
+                <input id="adminValidatedSearchUpsideThresholdPercent" type="number" step="1" min="0" max="500" value="30">
+              </label>
               <label>每只股票尝试次数
                 <input id="adminValidatedSearchAttemptsPerSymbol" type="number" step="1" min="1" max="200" value="60">
               </label>
@@ -403,6 +406,9 @@
             <div id="adminQualifiedRecheckTriggerRow" class="admin-scan-filter-row">
               <label>达标复查目标年化收益率(%)
                 <input id="adminQualifiedRecheckTargetPercent" type="number" step="1" min="1" max="500" value="50">
+              </label>
+              <label>达标复查·年化收益需达到当年上行标准差的(%)
+                <input id="adminQualifiedRecheckUpsideThresholdPercent" type="number" step="1" min="0" max="500" value="30">
               </label>
               <button type="button" id="adminQualifiedRecheckRunButton" class="ghost-button">达标复查（用最新数据重新验证下面已达标的模型是否仍站得住）</button>
               <span id="adminQualifiedRecheckRunStatus" class="field-hint"></span>
@@ -512,6 +518,9 @@
             </label>
             <label>目标年化收益率(%)
               <input id="revalidateTargetPercent" type="number" step="1" min="1" max="500" value="50">
+            </label>
+            <label>年化收益需达到当年上行标准差的(%)
+              <input id="revalidateUpsideThresholdPercent" type="number" step="1" min="0" max="500" value="30">
             </label>
           </div>
           <div class="dialog-actions">
@@ -1463,7 +1472,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260902-show-invalid-reason-visibly"></script>
-    <script src="/app.js?v=20260902-show-invalid-reason-visibly"></script>
+    <script src="/formula-engine.js?v=20260902-upside-deviation-gate"></script>
+    <script src="/app.js?v=20260902-upside-deviation-gate"></script>
   </body>
 </html>

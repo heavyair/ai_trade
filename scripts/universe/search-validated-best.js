@@ -29,7 +29,8 @@ const { searchBestConfig } = require("./search-best-config.js");
 const ModelGenerator = require("../shared/model-generator.js");
 const { inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
-const { splitTrainTestWindows } = require("../shared/train-test-window.js");
+const { annualizedUpsideDeviation } = require("../shared/volatility.js");
+const { splitTrainTestWindows, shiftYears, toIsoDate } = require("../shared/train-test-window.js");
 const { ensureResultsTable, saveOptimizationResult, fetchPriorSuccessfulModels } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -45,6 +46,19 @@ const getArgString = (name) => {
   return found ? found.split("=").slice(1).join("=") : "";
 };
 const TARGET_PERCENT = getArg("targetPercent", 50);
+// New gate (on top of TARGET_PERCENT): a model's annualized return for a given year must ALSO
+// clear this fraction of that SAME STOCK's own annualized upside deviation for that year — see
+// scripts/shared/volatility.js's header comment for why this is a volatility-scaled bar rather
+// than a flat one. Applies to every individual training year AND to each validation year
+// separately (never a blended average) — same "no single good year can carry a bad one"
+// philosophy as TARGET_PERCENT already uses across the two validation years.
+const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30));
+// A year-slice this thin makes both the return and the upside-deviation numbers mostly noise
+// (see the real cases surfaced by manual analysis this session — some symbols' first nominal
+// training year had well under 30 rows of actual price history). Below this row count the gate
+// is skipped for that specific year (treated as unevaluable, not as a pass or a fail) rather than
+// let a handful of days decide whether an otherwise-solid model gets thrown out.
+const MIN_UPSIDE_GATE_ROWS = 30;
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 60));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 400));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
@@ -106,6 +120,45 @@ async function loadRows(symbol, market) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
+// Model's annualized return for one arbitrary [windowStart, windowEnd) slice of a CONTINUOUS
+// states array (see engine.js's buildBacktestStates) — finds the account's equity the day
+// before windowStart as the baseline (falling back to the very first state if the window starts
+// at or before the data begins) and the equity at the last day inside the window as the
+// endpoint, exactly the same baseline/endpoint convention run-watch-alerts.js's
+// deriveAccountStatsSinceDate uses for a live paper account. Returns null when the window has no
+// rows in this states array at all (can't evaluate, not "0% return").
+function annualizedReturnForWindow(states, windowStart, windowEnd) {
+  let baselineIndex = -1;
+  let endIndex = -1;
+  for (let i = 0; i < states.length; i += 1) {
+    const date = states[i].row.date;
+    if (date < windowStart) baselineIndex = i;
+    if (date < windowEnd) endIndex = i;
+  }
+  if (endIndex < 0) return null;
+  const baselineEquity = baselineIndex >= 0 ? states[baselineIndex].equity : states[0].equity;
+  const rowsInWindow = endIndex - baselineIndex;
+  if (rowsInWindow <= 0 || !(baselineEquity > 0)) return null;
+  const returnPct = ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100;
+  return annualizedReturnRate(returnPct, rowsInWindow);
+}
+
+// Splits the training window into TRAIN_YEARS sequential 1-year [start, end) slices (anchored on
+// trainStartDate, same convention testWindows already uses relative to "today") and precomputes
+// each slice's own annualized upside deviation from the raw price history — done once per symbol
+// since it only depends on price data, not on any particular AI attempt's config.
+function buildTrainYearWindows(allRows, trainStartDate, trainYears) {
+  const windows = [];
+  for (let y = 0; y < trainYears; y += 1) {
+    const start = toIsoDate(shiftYears(new Date(trainStartDate), y));
+    const end = toIsoDate(shiftYears(new Date(trainStartDate), y + 1));
+    const yearRows = allRows.filter((row) => row.date >= start && row.date < end);
+    const upsideDev = yearRows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(yearRows) : null;
+    windows.push({ start, end, upsideDev });
+  }
+  return windows;
+}
+
 function modelHasRules(model) {
   if (model.strategyType === "block-rules") return model.buyBlockRules.length > 0 || model.sellBlockRules.length > 0;
   if (model.strategyType === "score-rules") return model.scoreRules.length > 0 && model.positionBands.length > 0;
@@ -126,7 +179,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`targetPercent=${TARGET_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -182,6 +235,15 @@ async function main() {
       const buyHoldStates = engine.buildBuyHoldStates(trainRows, INITIAL_CASH, TRADE_FEE);
       const buyHold = buyHoldStates[buyHoldStates.length - 1];
 
+      // Upside-deviation gate inputs — computed once per symbol from raw price data, reused by
+      // every AI attempt below (see UPSIDE_THRESHOLD_PERCENT's doc comment).
+      const trainYearWindows = buildTrainYearWindows(allRows, trainStartDate, TRAIN_YEARS);
+      const testUpsideDev = testWindows.map((win) => {
+        const winRows = allRows.filter((row) => row.date >= win.startDate && row.date < win.endDate);
+        return winRows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(winRows) : null;
+      });
+      console.log(`[${symbolEntry.code}] upside deviation — train years: ${trainYearWindows.map((w) => w.upsideDev === null ? "N/A" : `${w.upsideDev.toFixed(1)}%`).join("/")}; test years: ${testUpsideDev.map((v) => v === null ? "N/A" : `${v.toFixed(1)}%`).join("/")}`);
+
       const previousAttempts = [];
       const qualifyingAttempts = []; // { model, best, trainAnnualized } — every attempt that beat buy-hold on TRAIN
 
@@ -230,8 +292,32 @@ async function main() {
 
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
+
+        // Upside-deviation gate: re-run this exact config as one continuous backtest over the
+        // full training window (best.last only carries the FINAL day's state, not the day-by-day
+        // states this per-year slicing needs) and require EVERY individual training year — not
+        // just the 4-year aggregate beatsReturn/beatsDrawdown check above — to clear
+        // UPSIDE_THRESHOLD_PERCENT of that year's own upside deviation. A year with too little
+        // price history to evaluate (upsideDev === null, see buildTrainYearWindows) is skipped,
+        // not treated as a pass or a fail.
+        const trainStates = engine.buildBacktestStates(trainRows, best.config);
+        const failingTrainYears = trainYearWindows
+          .map((win) => {
+            if (win.upsideDev === null) return null;
+            const yearReturn = annualizedReturnForWindow(trainStates, win.start, win.end);
+            if (yearReturn === null) return null;
+            const required = (UPSIDE_THRESHOLD_PERCENT / 100) * win.upsideDev;
+            return yearReturn >= required ? null : `${win.start}~${win.end}: ${yearReturn.toFixed(1)}%<${required.toFixed(1)}%`;
+          })
+          .filter(Boolean);
+        const passesTrainUpsideGate = failingTrainYears.length === 0;
+
         if (!beatsReturn || !beatsDrawdown) {
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
+          continue;
+        }
+        if (!passesTrainUpsideGate) {
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the upside-deviation gate in: ${failingTrainYears.join("; ")} — skipping`);
           continue;
         }
 
@@ -254,8 +340,15 @@ async function main() {
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
         const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
         const worstTestAnnualized = Math.min(year1Annualized, year2Annualized);
-        const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化${reachedTarget ? " — TARGET MET" : ""}`);
+        // Same upside-deviation gate as the training phase, applied to each validation year
+        // separately (never averaged) — a year whose upsideDev couldn't be computed
+        // (testUpsideDev[n] === null, too little price history) is treated as passing, same as
+        // the training-year gate does.
+        const passesUpsideYear1 = testUpsideDev[0] === null || year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[0];
+        const passesUpsideYear2 = testUpsideDev[1] === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[1];
+        const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
+          && passesUpsideYear1 && passesUpsideYear2;
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
       });

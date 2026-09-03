@@ -109,6 +109,12 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_year2_annualized_return DOUBLE PRECISION;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_target_percent DOUBLE PRECISION;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_error TEXT NOT NULL DEFAULT '';
+
+    -- Upside-deviation gate (see scripts/shared/volatility.js + search-validated-best.js's
+    -- UPSIDE_THRESHOLD_PERCENT): the fraction of that year's own upside deviation a recheck
+    -- required the model to clear, recorded alongside recheck_target_percent for the same
+    -- "what standard was this judged against" transparency.
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_upside_threshold_percent DOUBLE PRECISION;
   `);
 }
 
@@ -284,7 +290,7 @@ async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
 // finding. The original test_year1/test_year2 numbers are left alone either way (that's the
 // historical record of what it achieved when it first qualified); recheck_year1/year2 above
 // carry the fresh numbers instead of overwriting them.
-async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, year2Annualized, targetPercent, error }) {
+async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, year2Annualized, targetPercent, upsideThresholdPercent, error }) {
   await pool.query(
     `UPDATE optimization_scan_results
      SET last_rechecked_at = NOW(),
@@ -292,13 +298,15 @@ async function saveRecheckResult(pool, { id, stillQualifies, year1Annualized, ye
          recheck_year1_annualized_return = $3,
          recheck_year2_annualized_return = $4,
          recheck_target_percent = $5,
-         recheck_error = $6,
+         recheck_upside_threshold_percent = $6,
+         recheck_error = $7,
          reached_target = CASE WHEN $2 = FALSE THEN FALSE ELSE reached_target END
      WHERE id = $1`,
     [id, stillQualifies === undefined || stillQualifies === null ? null : Boolean(stillQualifies),
       year1Annualized === undefined || year1Annualized === null ? null : Number(year1Annualized),
       year2Annualized === undefined || year2Annualized === null ? null : Number(year2Annualized),
       targetPercent === undefined || targetPercent === null ? null : Number(targetPercent),
+      upsideThresholdPercent === undefined || upsideThresholdPercent === null ? null : Number(upsideThresholdPercent),
       String(error || "")]
   );
 }

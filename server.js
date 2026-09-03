@@ -11,8 +11,9 @@ const { postJsonToResend } = require("./scripts/shared/send-email.js");
 const { runAkshareBridge } = require("./scripts/shared/akshare-client.js");
 const { ensureIndexCatalogTable, listIndexCatalog, resolveIndexConstituents } = require("./scripts/shared/index-catalog.js");
 const { loadRowsForSymbol } = require("./scripts/shared/load-rows.js");
-const { splitTrainTestWindows } = require("./scripts/shared/train-test-window.js");
+const { splitTrainTestWindows, shiftYears, toIsoDate: shiftedDateToIso } = require("./scripts/shared/train-test-window.js");
 const { annualizedReturnRate } = require("./scripts/shared/annualize.js");
+const { annualizedUpsideDeviation } = require("./scripts/shared/volatility.js");
 const engine = require("./scripts/universe/engine.js");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -2257,14 +2258,15 @@ function readValidatedSearchProgress() {
   }
 }
 
-function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
+function launchValidatedSearchProcess({ symbols, targetPercent, upsideThresholdPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, triggeredBy, ownerUserId, ownerEmail }) {
   try {
     fs.unlinkSync(VALIDATED_SEARCH_PROGRESS_FILE);
   } catch (error) {
     // fine if it didn't exist yet
   }
   const scriptArgs = [
-    `--symbols=${symbols.join(",")}`, `--targetPercent=${targetPercent}`, `--attemptsPerSymbol=${attemptsPerSymbol}`,
+    `--symbols=${symbols.join(",")}`, `--targetPercent=${targetPercent}`, `--upsideThresholdPercent=${upsideThresholdPercent}`,
+    `--attemptsPerSymbol=${attemptsPerSymbol}`,
     `--maxAttempts=${maxAttempts}`, `--candidates=${candidates}`, `--pointCount=${pointCount}`,
     `--trainYears=${trainYears}`, `--testYears=${testYears}`, "--save",
   ];
@@ -2276,7 +2278,7 @@ function launchValidatedSearchProcess({ symbols, targetPercent, attemptsPerSymbo
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears },
+    extra: { symbols, targetPercent, upsideThresholdPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears },
   });
 }
 
@@ -2293,13 +2295,13 @@ function readQualifiedRecheckProgress() {
 // validatedSearch/autoGenerate/scan/stockScreen/validation since it does real per-symbol
 // backtesting reads against the DB (see isScanRunning()'s comment on why these don't run
 // concurrently), unlike the lightweight cron-mirror jobs below.
-function launchQualifiedRecheckProcess({ symbols, targetPercent, testYears, sessionStartedAt, triggeredBy }) {
+function launchQualifiedRecheckProcess({ symbols, targetPercent, upsideThresholdPercent, testYears, sessionStartedAt, triggeredBy }) {
   try {
     fs.unlinkSync(QUALIFIED_RECHECK_PROGRESS_FILE);
   } catch (error) {
     // fine if it didn't exist yet
   }
-  const scriptArgs = [`--targetPercent=${targetPercent}`, `--testYears=${testYears}`];
+  const scriptArgs = [`--targetPercent=${targetPercent}`, `--upsideThresholdPercent=${upsideThresholdPercent}`, `--testYears=${testYears}`];
   if (symbols && symbols.length > 0) scriptArgs.push(`--symbols=${symbols.join(",")}`);
   launchBackgroundJob({
     jobType: "qualifiedRecheck",
@@ -2307,7 +2309,7 @@ function launchQualifiedRecheckProcess({ symbols, targetPercent, testYears, sess
     scriptArgs,
     sessionStartedAt,
     triggeredBy,
-    extra: { symbols: symbols || [], targetPercent, testYears },
+    extra: { symbols: symbols || [], targetPercent, upsideThresholdPercent, testYears },
   });
 }
 
@@ -2748,7 +2750,7 @@ async function handleAdminValidatedSearchRunApi(req, res) {
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
 
-    let symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt;
+    let symbols, targetPercent, upsideThresholdPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt;
     if (payload.resume) {
       if (!lastScanResult || lastScanResult.jobType !== "validatedSearch" || lastScanResult.exitCode === 0) {
         sendJson(res, 400, { error: "没有可以继续的中断验证搜索（上一次不是异常退出）。" });
@@ -2756,6 +2758,7 @@ async function handleAdminValidatedSearchRunApi(req, res) {
       }
       symbols = Array.isArray(lastScanResult.symbols) ? lastScanResult.symbols : [];
       targetPercent = lastScanResult.targetPercent || 50;
+      upsideThresholdPercent = Number.isFinite(lastScanResult.upsideThresholdPercent) ? lastScanResult.upsideThresholdPercent : 30;
       attemptsPerSymbol = lastScanResult.attemptsPerSymbol || 60;
       maxAttempts = lastScanResult.maxAttempts || 400;
       candidates = lastScanResult.candidates || 400;
@@ -2790,6 +2793,10 @@ async function handleAdminValidatedSearchRunApi(req, res) {
         return;
       }
       targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+      {
+        const rawUpside = Number(payload.upsideThresholdPercent);
+        upsideThresholdPercent = Number.isFinite(rawUpside) ? Math.max(0, Math.min(500, Math.round(rawUpside))) : 30;
+      }
       attemptsPerSymbol = Math.max(1, Math.min(200, Math.round(Number(payload.attemptsPerSymbol)) || 60));
       maxAttempts = Math.max(1, Math.min(2000, Math.round(Number(payload.maxAttempts)) || 400));
       candidates = Math.max(1, Math.min(2000, Math.round(Number(payload.candidates)) || 400));
@@ -2814,10 +2821,10 @@ async function handleAdminValidatedSearchRunApi(req, res) {
     // Per the standing rule established for validated/found models this session: they default
     // to the admin's own account, never left ownerless — same as NET/GOOGL/TSM earlier.
     launchValidatedSearchProcess({
-      symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears,
+      symbols, targetPercent, upsideThresholdPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears,
       sessionStartedAt, triggeredBy: admin.email, ownerUserId: userIdForEmail(admin.email), ownerEmail: admin.email,
     });
-    sendJson(res, 200, { started: true, symbols, targetPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, resumed: Boolean(payload.resume) });
+    sendJson(res, 200, { started: true, symbols, targetPercent, upsideThresholdPercent, attemptsPerSymbol, maxAttempts, candidates, pointCount, trainYears, testYears, sessionStartedAt, resumed: Boolean(payload.resume) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动验证搜索失败。" });
   }
@@ -2865,10 +2872,14 @@ async function handleAdminQualifiedRecheckRunApi(req, res) {
       ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)
       : [];
     const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+    const rawUpsideThresholdPercent = Number(payload.upsideThresholdPercent);
+    const upsideThresholdPercent = Number.isFinite(rawUpsideThresholdPercent)
+      ? Math.max(0, Math.min(500, Math.round(rawUpsideThresholdPercent)))
+      : 30;
     const testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
     const sessionStartedAt = new Date().toISOString();
-    launchQualifiedRecheckProcess({ symbols, targetPercent, testYears, sessionStartedAt, triggeredBy: admin.email });
-    sendJson(res, 200, { started: true, symbols, targetPercent, testYears, sessionStartedAt });
+    launchQualifiedRecheckProcess({ symbols, targetPercent, upsideThresholdPercent, testYears, sessionStartedAt, triggeredBy: admin.email });
+    sendJson(res, 200, { started: true, symbols, targetPercent, upsideThresholdPercent, testYears, sessionStartedAt });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "启动达标复查失败。" });
   }
@@ -4538,6 +4549,10 @@ async function fetchKlines({ code, start, end }) {
 
 const REVALIDATE_MIN_TRAIN_ROWS = 200;
 const REVALIDATE_MIN_TEST_ROWS = 50;
+// Same upside-deviation gate and minimum-row floor as search-validated-best.js's
+// UPSIDE_THRESHOLD_PERCENT/MIN_UPSIDE_GATE_ROWS — kept in sync so a manual "重新验证" reports the
+// same 达标 standard the batch search/recheck jobs use.
+const REVALIDATE_MIN_UPSIDE_GATE_ROWS = 30;
 
 // "重新验证": takes a model's EXISTING config exactly as-is (no re-optimization/AI search —
 // just a fresh backtest + two-year-separate-validation), lets the user pick a different
@@ -4561,6 +4576,10 @@ async function handlePresetRevalidateApi(req, res) {
     const trainYears = Math.max(1, Math.min(10, Math.round(Number(payload.trainYears)) || 4));
     const testYears = Math.max(1, Math.min(5, Math.round(Number(payload.testYears)) || 2));
     const targetPercent = Math.max(1, Math.min(500, Math.round(Number(payload.targetPercent)) || 50));
+    const rawUpsideThresholdPercent = Number(payload.upsideThresholdPercent);
+    const upsideThresholdPercent = Number.isFinite(rawUpsideThresholdPercent)
+      ? Math.max(0, Math.min(500, Math.round(rawUpsideThresholdPercent)))
+      : 30;
 
     await ensureDbReady();
     const market = isChinaCode(symbol) ? inferMarket(symbol) : "US";
@@ -4613,11 +4632,49 @@ async function handlePresetRevalidateApi(req, res) {
     const trainLast = trainStates[trainStates.length - 1];
     const trainAnnualizedReturn = annualizedReturnRate(trainLast.returnRate, trainRows.length) || 0;
 
+    // Upside-deviation gate (see scripts/shared/volatility.js) — every individual training year
+    // must clear upsideThresholdPercent% of that year's own upside deviation, same as
+    // search-validated-best.js requires when a model first qualifies.
+    const failingTrainYears = [];
+    for (let y = 0; y < trainYears; y += 1) {
+      const yearStart = shiftedDateToIso(shiftYears(new Date(trainStartDate), y));
+      const yearEnd = shiftedDateToIso(shiftYears(new Date(trainStartDate), y + 1));
+      const yearRows = allRows.filter((row) => row.date >= yearStart && row.date < yearEnd);
+      if (yearRows.length < REVALIDATE_MIN_UPSIDE_GATE_ROWS) continue;
+      const upsideDev = annualizedUpsideDeviation(yearRows);
+      if (upsideDev === null) continue;
+      let baselineIndex = -1;
+      let endIndex = -1;
+      for (let i = 0; i < trainStates.length; i += 1) {
+        const date = trainStates[i].row.date;
+        if (date < yearStart) baselineIndex = i;
+        if (date < yearEnd) endIndex = i;
+      }
+      if (endIndex < 0) continue;
+      const baselineEquity = baselineIndex >= 0 ? trainStates[baselineIndex].equity : trainStates[0].equity;
+      const rowsInWindow = endIndex - baselineIndex;
+      if (rowsInWindow <= 0 || !(baselineEquity > 0)) continue;
+      const yearReturn = annualizedReturnRate(((trainStates[endIndex].equity - baselineEquity) / baselineEquity) * 100, rowsInWindow);
+      if (yearReturn === null) continue;
+      const required = (upsideThresholdPercent / 100) * upsideDev;
+      if (yearReturn < required) failingTrainYears.push({ start: yearStart, end: yearEnd, yearReturn, required });
+    }
+    const passesTrainUpsideGate = failingTrainYears.length === 0;
+
     const scoredYear1 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[0].startDate, testWindows[0].endDate);
     const scoredYear2 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[1].startDate, testWindows[1].endDate);
     const testYear1AnnualizedReturn = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
     const testYear2AnnualizedReturn = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
-    const reachedTarget = testYear1AnnualizedReturn >= targetPercent && testYear2AnnualizedReturn >= targetPercent;
+
+    const testYear1Rows = allRows.filter((row) => row.date >= testWindows[0].startDate && row.date < testWindows[0].endDate);
+    const testYear2Rows = allRows.filter((row) => row.date >= testWindows[1].startDate && row.date < testWindows[1].endDate);
+    const testUpsideDev1 = testYear1Rows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(testYear1Rows) : null;
+    const testUpsideDev2 = testYear2Rows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(testYear2Rows) : null;
+    const passesUpsideYear1 = testUpsideDev1 === null || testYear1AnnualizedReturn >= (upsideThresholdPercent / 100) * testUpsideDev1;
+    const passesUpsideYear2 = testUpsideDev2 === null || testYear2AnnualizedReturn >= (upsideThresholdPercent / 100) * testUpsideDev2;
+
+    const reachedTarget = testYear1AnnualizedReturn >= targetPercent && testYear2AnnualizedReturn >= targetPercent
+      && passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2;
 
     sendJson(res, 200, {
       symbol,
@@ -4643,6 +4700,9 @@ async function handlePresetRevalidateApi(req, res) {
         maxDrawdown: scoredYear2.maxDrawdown,
         trades: scoredYear2.trades.length,
       },
+      upsideThresholdPercent,
+      passesUpsideGate: passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2,
+      failingTrainYears,
       reachedTarget,
     });
   } catch (error) {

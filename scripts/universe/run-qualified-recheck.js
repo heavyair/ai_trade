@@ -28,6 +28,7 @@ const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
+const { annualizedUpsideDeviation } = require("../shared/volatility.js");
 const { splitTrainTestWindows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, fetchQualifiedForRecheck, saveRecheckResult } = require("../shared/optimization-results.js");
 
@@ -44,6 +45,10 @@ const getArgString = (name) => {
   return found ? found.split("=").slice(1).join("=") : "";
 };
 const TARGET_PERCENT = getArg("targetPercent", 50);
+// Same gate and default as search-validated-best.js's UPSIDE_THRESHOLD_PERCENT — kept in sync so
+// "达标"/"仍达标" means the same thing at recheck time as it did when a model first qualified.
+const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30));
+const MIN_UPSIDE_GATE_ROWS = 30;
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -93,7 +98,7 @@ async function main() {
   await ensureResultsTable(pool);
 
   const candidates = await fetchQualifiedForRecheck(pool, { symbols: SYMBOLS_FILTER });
-  console.log(`targetPercent=${TARGET_PERCENT}% testYears=${TEST_YEARS} candidates=${candidates.length}${SYMBOLS_FILTER.length ? ` symbols=${SYMBOLS_FILTER.join(",")}` : " (all qualified rows)"}`);
+  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% testYears=${TEST_YEARS} candidates=${candidates.length}${SYMBOLS_FILTER.length ? ` symbols=${SYMBOLS_FILTER.join(",")}` : " (all qualified rows)"}`);
 
   let checked = 0;
   let stillQualifies = 0;
@@ -125,7 +130,8 @@ async function main() {
         skipped += 1;
         await saveRecheckResult(pool, {
           id: candidate.id, stillQualifies: null, year1Annualized: null, year2Annualized: null,
-          targetPercent: TARGET_PERCENT, error: `最新数据不足以复查（验证窗口行数 ${testWindowRowCounts.join("/")}，需要至少 ${MIN_TEST_ROWS}）`,
+          targetPercent: TARGET_PERCENT, upsideThresholdPercent: UPSIDE_THRESHOLD_PERCENT,
+          error: `最新数据不足以复查（验证窗口行数 ${testWindowRowCounts.join("/")}，需要至少 ${MIN_TEST_ROWS}）`,
         });
         writeProgress({ skipped });
         continue;
@@ -135,15 +141,26 @@ async function main() {
       const scoredYear2 = engine.buildScoredBacktestStates(allRows, candidate.bestConfig, testWindows[1].startDate, testWindows[1].endDate);
       const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
       const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
-      const nowQualifies = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT;
+
+      // Same upside-deviation gate search-validated-best.js applies when a model first
+      // qualifies — recomputed here from the FRESH rolling test windows (not the ones stored at
+      // original qualification time), same as year1Annualized/year2Annualized above.
+      const year1Rows = allRows.filter((row) => row.date >= testWindows[0].startDate && row.date < testWindows[0].endDate);
+      const year2Rows = allRows.filter((row) => row.date >= testWindows[1].startDate && row.date < testWindows[1].endDate);
+      const upsideDev1 = year1Rows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(year1Rows) : null;
+      const upsideDev2 = year2Rows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(year2Rows) : null;
+      const passesUpsideYear1 = upsideDev1 === null || year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev1;
+      const passesUpsideYear2 = upsideDev2 === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev2;
+      const nowQualifies = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
+        && passesUpsideYear1 && passesUpsideYear2;
 
       await saveRecheckResult(pool, {
         id: candidate.id, stillQualifies: nowQualifies, year1Annualized, year2Annualized,
-        targetPercent: TARGET_PERCENT, error: "",
+        targetPercent: TARGET_PERCENT, upsideThresholdPercent: UPSIDE_THRESHOLD_PERCENT, error: "",
       });
       checked += 1;
       if (nowQualifies) stillQualifies += 1; else noLongerQualifies += 1;
-      console.log(`[${candidate.symbol}] ${candidate.label}: 复查 year1=${year1Annualized.toFixed(1)}%年化 year2=${year2Annualized.toFixed(1)}%年化 ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
+      console.log(`[${candidate.symbol}] ${candidate.label}: 复查 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"} ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
       writeProgress({ checked, stillQualifies, noLongerQualifies });
     } catch (error) {
       console.error(`[error] ${candidate.symbol}: ${error.message}`);
@@ -151,7 +168,8 @@ async function main() {
       try {
         await saveRecheckResult(pool, {
           id: candidate.id, stillQualifies: null, year1Annualized: null, year2Annualized: null,
-          targetPercent: TARGET_PERCENT, error: `复查出错：${error.message}`.slice(0, 500),
+          targetPercent: TARGET_PERCENT, upsideThresholdPercent: UPSIDE_THRESHOLD_PERCENT,
+          error: `复查出错：${error.message}`.slice(0, 500),
         });
       } catch (saveError) {
         console.error(`[error] failed to record recheck error for ${candidate.symbol}: ${saveError.message}`);
