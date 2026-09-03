@@ -51,6 +51,11 @@ const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30
 const MIN_UPSIDE_GATE_ROWS = 30;
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
+// Matches search-validated-best.js's INITIAL_CASH/TRADE_FEE — only used here for the per-year
+// buy-hold drawdown gate's dedicated buildBuyHoldStates run; the actual candidate account values
+// (scoredYear1/scoredYear2) already come from candidate.bestConfig, which carries its own.
+const INITIAL_CASH = 2000000;
+const TRADE_FEE = 5;
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 
 // Live progress, polled by server.js's /api/admin/qualified-recheck status — same file-based
@@ -151,8 +156,19 @@ async function main() {
       const upsideDev2 = year2Rows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(year2Rows) : null;
       const passesUpsideYear1 = upsideDev1 === null || year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev1;
       const passesUpsideYear2 = upsideDev2 === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev2;
+
+      // Per-year drawdown gate: this validation year's own max drawdown must stay smaller than
+      // buy-hold's own drawdown in that SAME (fresh, rolling) window — same standard
+      // search-validated-best.js applies at original qualification time.
+      const buyHoldYear1 = engine.buildBuyHoldStates(year1Rows, INITIAL_CASH, TRADE_FEE);
+      const buyHoldYear2 = engine.buildBuyHoldStates(year2Rows, INITIAL_CASH, TRADE_FEE);
+      const buyHoldDD1 = buyHoldYear1.length > 0 ? buyHoldYear1[buyHoldYear1.length - 1].maxDrawdown : null;
+      const buyHoldDD2 = buyHoldYear2.length > 0 ? buyHoldYear2[buyHoldYear2.length - 1].maxDrawdown : null;
+      const passesDrawdownYear1 = buyHoldDD1 === null || scoredYear1.maxDrawdown < buyHoldDD1;
+      const passesDrawdownYear2 = buyHoldDD2 === null || scoredYear2.maxDrawdown < buyHoldDD2;
+
       const nowQualifies = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
-        && passesUpsideYear1 && passesUpsideYear2;
+        && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
 
       await saveRecheckResult(pool, {
         id: candidate.id, stillQualifies: nowQualifies, year1Annualized, year2Annualized,
@@ -160,7 +176,7 @@ async function main() {
       });
       checked += 1;
       if (nowQualifies) stillQualifies += 1; else noLongerQualifies += 1;
-      console.log(`[${candidate.symbol}] ${candidate.label}: 复查 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"} ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
+      console.log(`[${candidate.symbol}] ${candidate.label}: 复查 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"} ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
       writeProgress({ checked, stillQualifies, noLongerQualifies });
     } catch (error) {
       console.error(`[error] ${candidate.symbol}: ${error.message}`);

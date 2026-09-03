@@ -3176,18 +3176,22 @@ if (closeRevalidateButton && revalidateDialog) {
 function renderRevalidateResult(payload) {
   if (!revalidateResult) return;
   const badge = payload.reachedTarget
-    ? '<span class="up">已达标（两年都 ≥ 目标，且上行波动门槛也都通过）</span>'
+    ? '<span class="up">已达标（两年都 ≥ 目标，且上行波动门槛、逐年回撤门槛也都通过）</span>'
     : '<span class="down">未达标</span>';
   const upsideBadge = payload.passesUpsideGate
     ? '<span class="up">通过</span>'
     : `<span class="down">未通过${payload.failingTrainYears && payload.failingTrainYears.length > 0 ? `（训练期${payload.failingTrainYears.length}个年份未达标）` : ""}</span>`;
+  const drawdownBadge = payload.passesDrawdownGate
+    ? '<span class="up">通过</span>'
+    : `<span class="down">未通过${payload.failingTrainDrawdownYears && payload.failingTrainDrawdownYears.length > 0 ? `（训练期${payload.failingTrainDrawdownYears.length}个年份回撤未小于买入持有）` : ""}</span>`;
   revalidateResult.innerHTML = `
     <div class="admin-progress-banner-stats">
       <div>训练期（${escapeHtml(payload.trainStartDate)} ~ ${escapeHtml(payload.trainEndDate)}）年化：${formatPercent(payload.trainAnnualizedReturn)}</div>
-      <div>验证第1年（${escapeHtml(payload.testYear1.startDate)} ~ ${escapeHtml(payload.testYear1.endDate)}）年化：${formatPercent(payload.testYear1.annualizedReturn)} · ${payload.testYear1.trades}笔交易</div>
-      <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · ${payload.testYear2.trades}笔交易</div>
+      <div>验证第1年（${escapeHtml(payload.testYear1.startDate)} ~ ${escapeHtml(payload.testYear1.endDate)}）年化：${formatPercent(payload.testYear1.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear1.maxDrawdown)} · ${payload.testYear1.trades}笔交易</div>
+      <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear2.maxDrawdown)} · ${payload.testYear2.trades}笔交易</div>
       <div>目标年化收益率 ${formatPercent(payload.targetPercent)}：${badge}</div>
       <div>上行波动门槛（每年年化收益需≥当年上行标准差的${formatPercent(payload.upsideThresholdPercent)}）：${upsideBadge}</div>
+      <div>逐年回撤门槛（每年最大回撤需小于当年买入持有的最大回撤）：${drawdownBadge}</div>
     </div>
   `;
 }

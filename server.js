@@ -4632,17 +4632,16 @@ async function handlePresetRevalidateApi(req, res) {
     const trainLast = trainStates[trainStates.length - 1];
     const trainAnnualizedReturn = annualizedReturnRate(trainLast.returnRate, trainRows.length) || 0;
 
-    // Upside-deviation gate (see scripts/shared/volatility.js) — every individual training year
-    // must clear upsideThresholdPercent% of that year's own upside deviation, same as
-    // search-validated-best.js requires when a model first qualifies.
+    // Upside-deviation gate (see scripts/shared/volatility.js) AND per-year drawdown gate —
+    // every individual training year must (a) clear upsideThresholdPercent% of that year's own
+    // upside deviation and (b) have a smaller max drawdown than buy-hold's OWN drawdown in that
+    // same year — same standard search-validated-best.js requires when a model first qualifies.
     const failingTrainYears = [];
+    const failingTrainDrawdownYears = [];
     for (let y = 0; y < trainYears; y += 1) {
       const yearStart = shiftedDateToIso(shiftYears(new Date(trainStartDate), y));
       const yearEnd = shiftedDateToIso(shiftYears(new Date(trainStartDate), y + 1));
       const yearRows = allRows.filter((row) => row.date >= yearStart && row.date < yearEnd);
-      if (yearRows.length < REVALIDATE_MIN_UPSIDE_GATE_ROWS) continue;
-      const upsideDev = annualizedUpsideDeviation(yearRows);
-      if (upsideDev === null) continue;
       let baselineIndex = -1;
       let endIndex = -1;
       for (let i = 0; i < trainStates.length; i += 1) {
@@ -4655,11 +4654,32 @@ async function handlePresetRevalidateApi(req, res) {
       const rowsInWindow = endIndex - baselineIndex;
       if (rowsInWindow <= 0 || !(baselineEquity > 0)) continue;
       const yearReturn = annualizedReturnRate(((trainStates[endIndex].equity - baselineEquity) / baselineEquity) * 100, rowsInWindow);
-      if (yearReturn === null) continue;
-      const required = (upsideThresholdPercent / 100) * upsideDev;
-      if (yearReturn < required) failingTrainYears.push({ start: yearStart, end: yearEnd, yearReturn, required });
+
+      if (yearRows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS) {
+        const upsideDev = annualizedUpsideDeviation(yearRows);
+        if (upsideDev !== null && yearReturn !== null) {
+          const required = (upsideThresholdPercent / 100) * upsideDev;
+          if (yearReturn < required) failingTrainYears.push({ start: yearStart, end: yearEnd, yearReturn, required });
+        }
+      }
+
+      let peak = baselineEquity;
+      let modelYearMaxDD = 0;
+      for (let i = baselineIndex + 1; i <= endIndex; i += 1) {
+        const equity = trainStates[i].equity;
+        peak = Math.max(peak, equity);
+        modelYearMaxDD = Math.max(modelYearMaxDD, peak > 0 ? ((peak - equity) / peak) * 100 : 0);
+      }
+      if (yearRows.length > 0) {
+        const buyHoldYearStates = engine.buildBuyHoldStates(yearRows, initialCash, tradeFee);
+        const buyHoldYearDD = buyHoldYearStates[buyHoldYearStates.length - 1].maxDrawdown;
+        if (!(modelYearMaxDD < buyHoldYearDD)) {
+          failingTrainDrawdownYears.push({ start: yearStart, end: yearEnd, modelYearMaxDD, buyHoldYearDD });
+        }
+      }
     }
     const passesTrainUpsideGate = failingTrainYears.length === 0;
+    const passesTrainDrawdownGate = failingTrainDrawdownYears.length === 0;
 
     const scoredYear1 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[0].startDate, testWindows[0].endDate);
     const scoredYear2 = engine.buildScoredBacktestStates(allRows, baseConfig, testWindows[1].startDate, testWindows[1].endDate);
@@ -4673,8 +4693,17 @@ async function handlePresetRevalidateApi(req, res) {
     const passesUpsideYear1 = testUpsideDev1 === null || testYear1AnnualizedReturn >= (upsideThresholdPercent / 100) * testUpsideDev1;
     const passesUpsideYear2 = testUpsideDev2 === null || testYear2AnnualizedReturn >= (upsideThresholdPercent / 100) * testUpsideDev2;
 
+    // Per-year drawdown gate, validation side — same standard as the training loop above.
+    const buyHoldTestYear1States = testYear1Rows.length > 0 ? engine.buildBuyHoldStates(testYear1Rows, initialCash, tradeFee) : [];
+    const buyHoldTestYear2States = testYear2Rows.length > 0 ? engine.buildBuyHoldStates(testYear2Rows, initialCash, tradeFee) : [];
+    const buyHoldTestDD1 = buyHoldTestYear1States.length > 0 ? buyHoldTestYear1States[buyHoldTestYear1States.length - 1].maxDrawdown : null;
+    const buyHoldTestDD2 = buyHoldTestYear2States.length > 0 ? buyHoldTestYear2States[buyHoldTestYear2States.length - 1].maxDrawdown : null;
+    const passesDrawdownYear1 = buyHoldTestDD1 === null || scoredYear1.maxDrawdown < buyHoldTestDD1;
+    const passesDrawdownYear2 = buyHoldTestDD2 === null || scoredYear2.maxDrawdown < buyHoldTestDD2;
+
     const reachedTarget = testYear1AnnualizedReturn >= targetPercent && testYear2AnnualizedReturn >= targetPercent
-      && passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2;
+      && passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2
+      && passesTrainDrawdownGate && passesDrawdownYear1 && passesDrawdownYear2;
 
     sendJson(res, 200, {
       symbol,
@@ -4703,6 +4732,8 @@ async function handlePresetRevalidateApi(req, res) {
       upsideThresholdPercent,
       passesUpsideGate: passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2,
       failingTrainYears,
+      passesDrawdownGate: passesTrainDrawdownGate && passesDrawdownYear1 && passesDrawdownYear2,
+      failingTrainDrawdownYears,
       reachedTarget,
     });
   } catch (error) {

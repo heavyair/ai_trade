@@ -120,14 +120,18 @@ async function loadRows(symbol, market) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
-// Model's annualized return for one arbitrary [windowStart, windowEnd) slice of a CONTINUOUS
-// states array (see engine.js's buildBacktestStates) — finds the account's equity the day
-// before windowStart as the baseline (falling back to the very first state if the window starts
-// at or before the data begins) and the equity at the last day inside the window as the
+// Model's annualized return AND max drawdown for one arbitrary [windowStart, windowEnd) slice of
+// a CONTINUOUS states array (see engine.js's buildBacktestStates) — finds the account's equity
+// the day before windowStart as the baseline (falling back to the very first state if the window
+// starts at or before the data begins) and the equity at the last day inside the window as the
 // endpoint, exactly the same baseline/endpoint convention run-watch-alerts.js's
-// deriveAccountStatsSinceDate uses for a live paper account. Returns null when the window has no
-// rows in this states array at all (can't evaluate, not "0% return").
-function annualizedReturnForWindow(states, windowStart, windowEnd) {
+// deriveAccountStatsSinceDate uses for a live paper account. The drawdown's peak is reset to that
+// SAME baseline equity (not carried over from before the window), so it measures this window's
+// own peak-to-trough, not a drawdown that happened to already be underway when the window opened
+// — the same semantics engine.js's buildScoredBacktestStates already uses for validation years.
+// Returns null when the window has no rows in this states array at all (can't evaluate, not "0%
+// return / 0% drawdown").
+function computeWindowStats(states, windowStart, windowEnd) {
   let baselineIndex = -1;
   let endIndex = -1;
   for (let i = 0; i < states.length; i += 1) {
@@ -140,7 +144,17 @@ function annualizedReturnForWindow(states, windowStart, windowEnd) {
   const rowsInWindow = endIndex - baselineIndex;
   if (rowsInWindow <= 0 || !(baselineEquity > 0)) return null;
   const returnPct = ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100;
-  return annualizedReturnRate(returnPct, rowsInWindow);
+
+  let peak = baselineEquity;
+  let maxDrawdown = 0;
+  for (let i = baselineIndex + 1; i <= endIndex; i += 1) {
+    const equity = states[i].equity;
+    peak = Math.max(peak, equity);
+    const drawdown = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+    maxDrawdown = Math.max(maxDrawdown, drawdown);
+  }
+
+  return { ann: annualizedReturnRate(returnPct, rowsInWindow), maxDrawdown };
 }
 
 // Splits the training window into TRAIN_YEARS sequential 1-year [start, end) slices (anchored on
@@ -244,6 +258,25 @@ async function main() {
       });
       console.log(`[${symbolEntry.code}] upside deviation — train years: ${trainYearWindows.map((w) => w.upsideDev === null ? "N/A" : `${w.upsideDev.toFixed(1)}%`).join("/")}; test years: ${testUpsideDev.map((v) => v === null ? "N/A" : `${v.toFixed(1)}%`).join("/")}`);
 
+      // Per-year drawdown gate inputs — buy-hold's OWN max drawdown within each year, computed
+      // once per symbol (doesn't depend on any attempt's config). Train years reuse the SAME
+      // continuous buyHoldStates array already built above, sliced with the same
+      // reset-peak-at-window-baseline convention computeWindowStats uses for the model side —
+      // train years and test years use consistent semantics for what "this year's drawdown"
+      // means. Test years get a fresh, dedicated buy-hold run scoped to just that window (not a
+      // slice of buyHoldStates, which only spans the training window).
+      const trainYearBuyHoldDD = trainYearWindows.map((win) => {
+        const stats = computeWindowStats(buyHoldStates, win.start, win.end);
+        return stats ? stats.maxDrawdown : null;
+      });
+      const testBuyHoldDD = testWindows.map((win) => {
+        const winRows = allRows.filter((row) => row.date >= win.startDate && row.date < win.endDate);
+        if (winRows.length === 0) return null;
+        const states = engine.buildBuyHoldStates(winRows, INITIAL_CASH, TRADE_FEE);
+        return states[states.length - 1].maxDrawdown;
+      });
+      console.log(`[${symbolEntry.code}] buy-hold drawdown — train years: ${trainYearBuyHoldDD.map((v) => v === null ? "N/A" : `${v.toFixed(1)}%`).join("/")}; test years: ${testBuyHoldDD.map((v) => v === null ? "N/A" : `${v.toFixed(1)}%`).join("/")}`);
+
       const previousAttempts = [];
       const qualifyingAttempts = []; // { model, best, trainAnnualized } — every attempt that beat buy-hold on TRAIN
 
@@ -293,24 +326,35 @@ async function main() {
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
 
-        // Upside-deviation gate: re-run this exact config as one continuous backtest over the
-        // full training window (best.last only carries the FINAL day's state, not the day-by-day
-        // states this per-year slicing needs) and require EVERY individual training year — not
-        // just the 4-year aggregate beatsReturn/beatsDrawdown check above — to clear
-        // UPSIDE_THRESHOLD_PERCENT of that year's own upside deviation. A year with too little
-        // price history to evaluate (upsideDev === null, see buildTrainYearWindows) is skipped,
-        // not treated as a pass or a fail.
+        // Upside-deviation AND per-year-drawdown gates: re-run this exact config as one
+        // continuous backtest over the full training window (best.last only carries the FINAL
+        // day's state, not the day-by-day states this per-year slicing needs) and require EVERY
+        // individual training year — not just the 4-year aggregate beatsReturn/beatsDrawdown
+        // check above — to (a) clear UPSIDE_THRESHOLD_PERCENT of that year's own upside deviation
+        // and (b) have a smaller max drawdown than buy-hold's OWN drawdown in that same year. A
+        // year with too little price history to evaluate (upsideDev/buy-hold-DD === null) is
+        // skipped, not treated as a pass or a fail.
         const trainStates = engine.buildBacktestStates(trainRows, best.config);
-        const failingTrainYears = trainYearWindows
-          .map((win) => {
-            if (win.upsideDev === null) return null;
-            const yearReturn = annualizedReturnForWindow(trainStates, win.start, win.end);
-            if (yearReturn === null) return null;
+        const failingTrainYears = [];
+        const failingTrainDrawdownYears = [];
+        trainYearWindows.forEach((win, i) => {
+          const stats = computeWindowStats(trainStates, win.start, win.end);
+          if (!stats) return;
+          if (win.upsideDev !== null) {
             const required = (UPSIDE_THRESHOLD_PERCENT / 100) * win.upsideDev;
-            return yearReturn >= required ? null : `${win.start}~${win.end}: ${yearReturn.toFixed(1)}%<${required.toFixed(1)}%`;
-          })
-          .filter(Boolean);
+            if (!(stats.ann >= required)) {
+              failingTrainYears.push(`${win.start}~${win.end}: ${stats.ann.toFixed(1)}%<${required.toFixed(1)}%`);
+            }
+          }
+          const buyHoldDD = trainYearBuyHoldDD[i];
+          if (buyHoldDD !== null) {
+            if (!(stats.maxDrawdown < buyHoldDD)) {
+              failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%`);
+            }
+          }
+        });
         const passesTrainUpsideGate = failingTrainYears.length === 0;
+        const passesTrainDrawdownGate = failingTrainDrawdownYears.length === 0;
 
         if (!beatsReturn || !beatsDrawdown) {
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
@@ -318,6 +362,10 @@ async function main() {
         }
         if (!passesTrainUpsideGate) {
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the upside-deviation gate in: ${failingTrainYears.join("; ")} — skipping`);
+          continue;
+        }
+        if (!passesTrainDrawdownGate) {
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the per-year drawdown gate in: ${failingTrainDrawdownYears.join("; ")} — skipping`);
           continue;
         }
 
@@ -346,9 +394,16 @@ async function main() {
         // the training-year gate does.
         const passesUpsideYear1 = testUpsideDev[0] === null || year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[0];
         const passesUpsideYear2 = testUpsideDev[1] === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[1];
+        // Per-year drawdown gate, validation side: this validation year's own max drawdown
+        // (scoredYearN.maxDrawdown, reset at the window's own start — same semantics as
+        // testBuyHoldDD's dedicated buy-hold run for that window) must be smaller than buy-hold's
+        // own drawdown in that SAME window. A window whose buy-hold drawdown couldn't be computed
+        // is treated as passing.
+        const passesDrawdownYear1 = testBuyHoldDD[0] === null || scoredYear1.maxDrawdown < testBuyHoldDD[0];
+        const passesDrawdownYear2 = testBuyHoldDD[1] === null || scoredYear2.maxDrawdown < testBuyHoldDD[1];
         const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
-          && passesUpsideYear1 && passesUpsideYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${reachedTarget ? " — TARGET MET" : ""}`);
+          && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
       });
