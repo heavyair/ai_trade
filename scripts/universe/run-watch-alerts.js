@@ -115,14 +115,22 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function buildAlertEmail(watch, trades) {
+// 关注(follow) accounts never see the frozen model's actual rules (see server.js's
+// mapWatchAlertRow doc comment on why) — the per-trade "reason" text embeds exact rule
+// thresholds (e.g. "总分7：规则5(+7分：3日RSI<83.4)"), so it's the one thing masked out of an
+// otherwise-identical email when forFollower is set.
+function tradeReasonText(t, forFollower) {
+  return forFollower ? "（关注者不展示具体触发规则）" : (t.reason || t.label || "");
+}
+
+function buildAlertEmail(watch, trades, { forFollower = false } = {}) {
   const symbolLabel = `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
   const actionsText = trades.map((t) => (t.side === "buy" ? "买入" : "卖出")).join("、");
   const rows = trades.map((t) => `
     <tr>
       <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${t.side === "buy" ? "买入" : "卖出"}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(t.price)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(t.reason || t.label || "")}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(tradeReasonText(t, forFollower))}</td>
     </tr>
   `).join("");
   const html = `
@@ -149,21 +157,35 @@ function buildAlertEmail(watch, trades) {
     `盯盘提醒：${symbolLabel} 出现${actionsText}信号`,
     `模型：${watch.preset_label}`,
     `交易日：${trades[0].date}`,
-    ...trades.map((t) => `- ${t.side === "buy" ? "买入" : "卖出"} @ ${t.price}：${t.reason || t.label || ""}`),
+    ...trades.map((t) => `- ${t.side === "buy" ? "买入" : "卖出"} @ ${t.price}：${tradeReasonText(t, forFollower)}`),
     "",
     "这是模拟回测信号，不构成投资建议。",
   ].join("\n");
   return { html, text, subject: `盯盘提醒：${symbolLabel} 出现${actionsText}信号` };
 }
 
+// Followers get their OWN, separate send (not just added to the owner's `to:` array) so
+// recipients never see each other's email addresses, and so the buy/sell signal content can be
+// masked per-recipient (see tradeReasonText) without affecting the owner's copy.
+async function getWatchFollowerEmails(watchId) {
+  const result = await pool.query(`SELECT follower_email FROM watch_alert_followers WHERE watch_id = $1`, [watchId]);
+  return result.rows.map((row) => row.follower_email);
+}
+
 async function sendAlertEmail(watch, trades) {
   const { html, text, subject } = buildAlertEmail(watch, trades);
   await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  const followerEmails = await getWatchFollowerEmails(watch.id);
+  if (followerEmails.length === 0) return;
+  const followerVersion = buildAlertEmail(watch, trades, { forFollower: true });
+  for (const email of followerEmails) {
+    await postJsonToResend({ from: EMAIL_FROM, to: [email], subject: followerVersion.subject, html: followerVersion.html, text: followerVersion.text });
+  }
 }
 
 // One combined email per index-watch check cycle listing EVERY constituent that triggered,
 // with 模型/股票/操作 per row — not one email per matching stock.
-function buildIndexAlertEmail(watch, matches) {
+function buildIndexAlertEmail(watch, matches, { forFollower = false } = {}) {
   const indexLabel = watch.index_name || watch.index_code;
   const rows = matches.map((m) => `
     <tr>
@@ -171,7 +193,7 @@ function buildIndexAlertEmail(watch, matches) {
       <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(`${m.name}（${m.code}）`)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${m.side === "buy" ? "买入" : "卖出"}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(m.price)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(m.reason || m.label || "")}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(tradeReasonText(m, forFollower))}</td>
     </tr>
   `).join("");
   const html = `
@@ -200,7 +222,7 @@ function buildIndexAlertEmail(watch, matches) {
     `指数盯盘提醒：${indexLabel} 有 ${matches.length} 只成分股出现信号`,
     `模型：${watch.preset_label}`,
     `交易日：${matches[0].date}`,
-    ...matches.map((m) => `- ${m.name}（${m.code}） ${m.side === "buy" ? "买入" : "卖出"} @ ${m.price}：${m.reason || m.label || ""}`),
+    ...matches.map((m) => `- ${m.name}（${m.code}） ${m.side === "buy" ? "买入" : "卖出"} @ ${m.price}：${tradeReasonText(m, forFollower)}`),
     "",
     "这是模拟回测信号，不构成投资建议。",
   ].join("\n");
@@ -210,6 +232,12 @@ function buildIndexAlertEmail(watch, matches) {
 async function sendIndexAlertEmail(watch, matches) {
   const { html, text, subject } = buildIndexAlertEmail(watch, matches);
   await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  const followerEmails = await getWatchFollowerEmails(watch.id);
+  if (followerEmails.length === 0) return;
+  const followerVersion = buildIndexAlertEmail(watch, matches, { forFollower: true });
+  for (const email of followerEmails) {
+    await postJsonToResend({ from: EMAIL_FROM, to: [email], subject: followerVersion.subject, html: followerVersion.html, text: followerVersion.text });
+  }
 }
 
 async function sendAutoDisabledEmail(watch) {
@@ -227,13 +255,14 @@ async function sendAutoDisabledEmail(watch) {
     </div>
   `;
   const text = `你的盯盘提醒 "${watch.preset_label} · ${symbolLabel}" 已因连续失败自动暂停，最近错误：${watch.last_error || ""}`;
-  await postJsonToResend({
-    from: EMAIL_FROM,
-    to: [watch.owner_email],
-    subject: `盯盘提醒已自动暂停：${symbolLabel}`,
-    html,
-    text,
-  });
+  const subject = `盯盘提醒已自动暂停：${symbolLabel}`;
+  await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  // No rule-specific content in this email (it's about check FAILURES, not a signal), so
+  // followers get the exact same copy — no forFollower masking needed here.
+  const followerEmails = await getWatchFollowerEmails(watch.id);
+  for (const email of followerEmails) {
+    await postJsonToResend({ from: EMAIL_FROM, to: [email], subject, html, text });
+  }
 }
 
 // ~1 trading year — matches the "one full year" validation-window convention used elsewhere
@@ -375,6 +404,12 @@ function buildModelInvalidWarningEmail(watch, reason, scoredAccount) {
 async function sendModelInvalidWarningEmail(watch, reason, scoredAccount) {
   const { html, text, subject } = buildModelInvalidWarningEmail(watch, reason, scoredAccount);
   await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  // reason is aggregate performance vs buy-hold (return/drawdown numbers), not a specific rule
+  // threshold, so it's the same content for followers — no masking needed.
+  const followerEmails = await getWatchFollowerEmails(watch.id);
+  for (const email of followerEmails) {
+    await postJsonToResend({ from: EMAIL_FROM, to: [email], subject, html, text });
+  }
 }
 
 function buildModelInvalidStoppedEmail(watch, reason) {
@@ -396,6 +431,10 @@ function buildModelInvalidStoppedEmail(watch, reason) {
 async function sendModelInvalidStoppedEmail(watch, reason) {
   const { html, text, subject } = buildModelInvalidStoppedEmail(watch, reason);
   await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  const followerEmails = await getWatchFollowerEmails(watch.id);
+  for (const email of followerEmails) {
+    await postJsonToResend({ from: EMAIL_FROM, to: [email], subject, html, text });
+  }
 }
 
 async function processWatch(watch) {

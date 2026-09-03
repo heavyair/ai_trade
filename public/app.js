@@ -31,6 +31,11 @@ const watchAlertsFrequencySelect = document.querySelector("#watchAlertsFrequency
 const watchAlertsCreateButton = document.querySelector("#watchAlertsCreateButton");
 const watchAlertsCreateStatus = document.querySelector("#watchAlertsCreateStatus");
 const watchAlertsList = document.querySelector("#watchAlertsList");
+const watchAlertsFollowTokenInput = document.querySelector("#watchAlertsFollowTokenInput");
+const watchAlertsFollowButton = document.querySelector("#watchAlertsFollowButton");
+const watchAlertsFollowStatus = document.querySelector("#watchAlertsFollowStatus");
+const watchAlertsOwnedTabButton = document.querySelector("#watchAlertsOwnedTabButton");
+const watchAlertsFollowedTabButton = document.querySelector("#watchAlertsFollowedTabButton");
 const authDialog = document.querySelector("#authDialog");
 const authForm = document.querySelector("#authForm");
 const authStatusText = document.querySelector("#authStatusText");
@@ -4548,8 +4553,17 @@ function formatWatchAlertAccountStats(watch) {
 // and the admin "盯盘提醒" list (all users' watches, read-only + owner column) — a <details>
 // block keeps each watch's order history collapsed by default, same pattern as
 // renderScreenRunEntry uses for 选股 run entries.
+// 关注者(follower)权限说明: role="follower" rows come from someone ELSE's watch, shared via an
+// invite link (see shareWatchAlert/followWatchByToken) — server.js's mapWatchAlertRow already
+// stripped presetConfig/lastSignalReason/each trade's reason before this ever reaches the
+// client, so there's nothing left here that could leak the frozen model's actual rules even if
+// this function tried to show them. What this function does on top of that: never render the
+// model name as a clickable "查看参数" popup trigger for a follower row (every action in that
+// popup — 查看参数/查看历史交易记录/重新验证/另存/建立盯盘 — depends on the config this role
+// doesn't have), and swap owner-only controls (启用/停用/删除/分享) for a 取消关注 button.
 function renderWatchAlertEntry(watch, options = {}) {
   const isIndexWatch = Boolean(watch.indexCode);
+  const isFollowerRow = watch.role === "follower";
   const marketLabel = watch.market === "US" ? "美股" : "A股";
   const signalCell = isIndexWatch
     ? (watch.lastSignalDate
@@ -4568,21 +4582,36 @@ function renderWatchAlertEntry(watch, options = {}) {
   const invalidPart = watch.isInvalid
     ? ` · <span class="down" title="${escapeHtml(watch.invalidReason || "")}">⚠ 模型已失效${watch.enabled ? "（仍有持仓，继续跟踪）" : ""}</span>`
     : "";
-  const modelLink = formatModelNameLink({
-    id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
-    config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
-    isOwner: false, name: null,
-  });
+  const modelLink = isFollowerRow
+    ? `${escapeHtml(watch.presetLabel || "模型")}<span class="field-hint">（关注·不可查看参数）</span>`
+    : formatModelNameLink({
+      id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
+      config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
+      isOwner: false, name: null,
+    });
   const targetLabel = isIndexWatch
     ? `${escapeHtml(watch.indexName || watch.indexCode)}（全指数）`
     : `${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol)}）`;
   const summary = `${ownerPart}${modelLink} · ${targetLabel} · ${marketLabel} · ${formatWatchAlertFrequency(watch.frequencyMinutes)} · ${signalCell}${statusPart}${invalidPart}${failurePart} · 设置于 ${escapeHtml(formatAdminDate(watch.createdAt))}`;
-  const actionsPart = options.showOwner ? "" : `
-    <div class="admin-scan-actions">
-      <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
-      <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
-    </div>
-  `;
+
+  let actionsPart = "";
+  if (!options.showOwner && isFollowerRow) {
+    actionsPart = `
+      <div class="admin-scan-actions">
+        <button type="button" class="ghost-button watch-alert-unfollow-button" data-watch-id="${escapeHtml(watch.id)}">取消关注</button>
+      </div>
+    `;
+  } else if (!options.showOwner) {
+    actionsPart = `
+      <div class="admin-scan-actions">
+        <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
+        <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
+        <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
+        ${watch.inviteToken ? `<button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="1">重新生成（原链接失效）</button>` : ""}
+      </div>
+    `;
+  }
+
   // invalidPart/failurePart上面那两个摘要里的title=""都只是悬浮提示——鼠标hover才看得到，
   // 触屏设备基本看不到，之前用户就是这么问"在哪能看到这段文字"的。这里在正文区域把完整
   // 原因都再显示一遍，不用hover就能看见。
@@ -4592,6 +4621,11 @@ function renderWatchAlertEntry(watch, options = {}) {
   const failureReasonPart = watch.consecutiveFailures > 0 && watch.lastError
     ? `<div class="field-hint down">检查失败：${escapeHtml(watch.lastError)}</div>`
     : "";
+  // Owner-only: who's currently following this watch, with a per-follower 移除 button. Never
+  // shown for a follower's own row (they don't get to see who else follows it) or the admin view.
+  const followersPart = (!options.showOwner && !isFollowerRow && Array.isArray(watch.followers))
+    ? `<div class="field-hint">关注者（${watch.followers.length}）：${watch.followers.length === 0 ? "暂无" : watch.followers.map((f) => `${escapeHtml(f.followerEmail)} <button type="button" class="ghost-button watch-alert-remove-follower-button" data-watch-id="${escapeHtml(watch.id)}" data-follower-user-id="${escapeHtml(f.followerUserId)}">移除</button>`).join("、 ")}</div>`
+    : "";
   // 指数盯盘没有单一股票的模拟账户/价格图/订单表——每次检查扫的是当前全部成分股，不是
   // 一支固定的票，跟"从创建那一刻起模拟交易"的单股账户模型不是一回事。
   const bodyPart = isIndexWatch
@@ -4599,6 +4633,7 @@ function renderWatchAlertEntry(watch, options = {}) {
     : `
       ${invalidReasonPart}
       ${failureReasonPart}
+      ${followersPart}
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
@@ -4652,14 +4687,36 @@ function handleWatchAlertsToggle(event, watchesCache) {
   if (watch && svgEl) loadWatchAlertChart(watch, svgEl);
 }
 
-function renderWatchAlertsList(watches) {
+// "我的" shows watches this account owns (role="owner"); "关注的" shows watches someone else
+// shared a link/code for and this account followed (role="follower", see server.js's
+// mapWatchAlertRow doc comment for what's hidden on those rows). Both come back from the same
+// GET /api/watch-alerts call — this only switches which slice of the already-fetched cache is
+// rendered, no refetch needed.
+let watchAlertsActiveTab = "owned";
+
+function renderWatchAlertsList() {
   if (!watchAlertsList) return;
-  watchAlertsCache = Array.isArray(watches) ? watches : [];
-  if (watchAlertsCache.length === 0) {
-    watchAlertsList.innerHTML = '<div class="ranking-empty">还没有设置盯盘提醒。</div>';
+  const wantRole = watchAlertsActiveTab === "followed" ? "follower" : "owner";
+  const visible = watchAlertsCache.filter((watch) => (watch.role || "owner") === wantRole);
+  if (visible.length === 0) {
+    watchAlertsList.innerHTML = `<div class="ranking-empty">${wantRole === "follower" ? "还没有关注任何人的盯盘。" : "还没有设置盯盘提醒。"}</div>`;
     return;
   }
-  watchAlertsList.innerHTML = watchAlertsCache.map((watch) => renderWatchAlertEntry(watch)).join("");
+  watchAlertsList.innerHTML = visible.map((watch) => renderWatchAlertEntry(watch)).join("");
+}
+
+function setWatchAlertsActiveTab(tab) {
+  watchAlertsActiveTab = tab;
+  if (watchAlertsOwnedTabButton) watchAlertsOwnedTabButton.classList.toggle("active", tab === "owned");
+  if (watchAlertsFollowedTabButton) watchAlertsFollowedTabButton.classList.toggle("active", tab === "followed");
+  renderWatchAlertsList();
+}
+
+if (watchAlertsOwnedTabButton) {
+  watchAlertsOwnedTabButton.addEventListener("click", () => setWatchAlertsActiveTab("owned"));
+}
+if (watchAlertsFollowedTabButton) {
+  watchAlertsFollowedTabButton.addEventListener("click", () => setWatchAlertsActiveTab("followed"));
 }
 
 if (watchAlertsList) {
@@ -4674,7 +4731,8 @@ async function loadMyWatchAlerts() {
   try {
     const response = await fetch("/api/watch-alerts", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
-    renderWatchAlertsList(payload.watches);
+    watchAlertsCache = Array.isArray(payload.watches) ? payload.watches : [];
+    renderWatchAlertsList();
   } catch (error) {
     watchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
@@ -4768,6 +4826,124 @@ async function deleteWatchAlert(id) {
   }
 }
 
+// A pasted "邀请码" can be either the bare token or a full share URL (?followWatch=<token>) —
+// accept both so users don't have to know which one they were handed.
+function extractInviteToken(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    const fromQuery = url.searchParams.get("followWatch");
+    if (fromQuery) return fromQuery;
+  } catch (error) {
+    // Not a URL — treat the whole thing as a bare token.
+  }
+  return text;
+}
+
+async function followWatchByToken(token, statusEl) {
+  const cleanToken = extractInviteToken(token);
+  if (!cleanToken) {
+    setStatus("请输入邀请码或链接。", true);
+    return false;
+  }
+  if (statusEl) statusEl.textContent = "正在关注...";
+  try {
+    const response = await fetch("/api/watch-alerts/follow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: cleanToken }),
+    });
+    const payload = await readJsonResponse(response, "关注失败。");
+    if (statusEl) statusEl.textContent = `已关注：${payload.label || ""} ${payload.target || ""}`.trim();
+    await loadMyWatchAlerts();
+    setWatchAlertsActiveTab("followed");
+    return true;
+  } catch (error) {
+    if (statusEl) statusEl.textContent = "";
+    setStatus(`关注失败：${error.message}`, true);
+    return false;
+  }
+}
+
+async function unfollowWatchAlert(watchId) {
+  if (!window.confirm("确定取消关注这个盯盘吗？")) return;
+  try {
+    const response = await fetch("/api/watch-alerts/follow", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchId }),
+    });
+    await readJsonResponse(response, "取消关注失败。");
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`取消关注失败：${error.message}`, true);
+  }
+}
+
+async function removeWatchFollower(watchId, followerUserId) {
+  if (!window.confirm("确定移除这个关注者吗？移除后对方不会再收到这个盯盘的通知。")) return;
+  try {
+    const response = await fetch("/api/watch-alerts/follow", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchId, followerUserId }),
+    });
+    await readJsonResponse(response, "移除关注者失败。");
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`移除关注者失败：${error.message}`, true);
+  }
+}
+
+async function shareWatchAlert(id, regenerate) {
+  try {
+    const response = await fetch("/api/watch-alerts/share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, regenerate: Boolean(regenerate) }),
+    });
+    const payload = await readJsonResponse(response, "生成分享链接失败。");
+    const shareUrl = `${location.origin}/?followWatch=${encodeURIComponent(payload.inviteToken)}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setStatus("分享链接已复制到剪贴板，发给对方即可（对方打开链接、登录后会自动关注，看不到具体规则参数）。");
+    } catch (clipboardError) {
+      window.prompt("复制这个链接发给对方（对方看不到具体规则参数）：", shareUrl);
+    }
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`生成分享链接失败：${error.message}`, true);
+  }
+}
+
+if (watchAlertsFollowButton) {
+  watchAlertsFollowButton.addEventListener("click", async () => {
+    const ok = await followWatchByToken(watchAlertsFollowTokenInput ? watchAlertsFollowTokenInput.value : "", watchAlertsFollowStatus);
+    if (ok && watchAlertsFollowTokenInput) watchAlertsFollowTokenInput.value = "";
+  });
+}
+
+// A link shared via shareWatchAlert() lands here as ?followWatch=<token>. Called from
+// initializeApp() AFTER fetchAuthSession() resolves, so currentUser is already known one way or
+// the other by the time this runs — cleans the URL immediately either way so a page refresh
+// never tries to follow (or re-prompts to log in) a second time.
+function checkAutoFollowFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const token = params.get("followWatch");
+  if (!token) return;
+  params.delete("followWatch");
+  const nextSearch = params.toString();
+  window.history.replaceState({}, "", location.pathname + (nextSearch ? `?${nextSearch}` : "") + location.hash);
+  if (!currentUser) {
+    setStatus("这是一个盯盘分享链接，请先登录再重新打开链接，登录后会自动关注。", true);
+    return;
+  }
+  followWatchByToken(token).then((ok) => {
+    if (ok && watchAlertsDialog) openWatchAlertsDialog();
+  });
+}
+
 if (watchAlertsCreateButton) {
   watchAlertsCreateButton.addEventListener("click", () => createWatchAlert());
 }
@@ -4785,6 +4961,21 @@ if (watchAlertsList) {
     const deleteButton = target && target.closest ? target.closest(".watch-alert-delete-button") : null;
     if (deleteButton) {
       deleteWatchAlert(deleteButton.dataset.watchId);
+      return;
+    }
+    const shareButton = target && target.closest ? target.closest(".watch-alert-share-button") : null;
+    if (shareButton) {
+      shareWatchAlert(shareButton.dataset.watchId, shareButton.dataset.regenerate === "1");
+      return;
+    }
+    const unfollowButton = target && target.closest ? target.closest(".watch-alert-unfollow-button") : null;
+    if (unfollowButton) {
+      unfollowWatchAlert(unfollowButton.dataset.watchId);
+      return;
+    }
+    const removeFollowerButton = target && target.closest ? target.closest(".watch-alert-remove-follower-button") : null;
+    if (removeFollowerButton) {
+      removeWatchFollower(removeFollowerButton.dataset.watchId, removeFollowerButton.dataset.followerUserId);
     }
   });
 }
@@ -14310,6 +14501,7 @@ async function initializeApp() {
   updateBacktestWindowUi();
   renderAuthState();
   await fetchAuthSession();
+  checkAutoFollowFromUrl();
   await initializeServerCustomPresets();
   initializeServerRankingRecords();
   setStatus(t("initialStatus"));

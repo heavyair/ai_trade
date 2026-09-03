@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260903-year-breakdown-report">
+    <link rel="stylesheet" href="/styles.css?v=20260903-watch-alert-follow">
   </head>
   <body>
     <main class="shell">
@@ -128,7 +128,17 @@
             <button type="button" id="watchAlertsCreateButton" class="ghost-button">添加提醒</button>
             <span id="watchAlertsCreateStatus" class="field-hint"></span>
           </div>
-          <div class="section-label">我的盯盘提醒</div>
+          <div id="watchAlertsFollowRow" class="admin-scan-filter-row">
+            <label>关注别人分享的盯盘
+              <input id="watchAlertsFollowTokenInput" type="text" placeholder="粘贴对方给你的邀请码或链接">
+            </label>
+            <button type="button" id="watchAlertsFollowButton" class="ghost-button">关注</button>
+            <span id="watchAlertsFollowStatus" class="field-hint"></span>
+          </div>
+          <div class="auth-tabs">
+            <button type="button" id="watchAlertsOwnedTabButton" class="active">我的盯盘提醒</button>
+            <button type="button" id="watchAlertsFollowedTabButton">我关注的盯盘</button>
+          </div>
           <div id="watchAlertsList" class="admin-ranking-list"></div>
         </form>
       </dialog>
@@ -1481,7 +1491,7 @@
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
     </main>
-    <script src="/formula-engine.js?v=20260903-year-breakdown-report"></script>
-    <script src="/app.js?v=20260903-year-breakdown-report"></script>
+    <script src="/formula-engine.js?v=20260903-watch-alert-follow"></script>
+    <script src="/app.js?v=20260903-watch-alert-follow"></script>
   </body>
 </html>

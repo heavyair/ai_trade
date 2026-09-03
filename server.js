@@ -453,6 +453,27 @@ async function initializeDatabase() {
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_reason TEXT NOT NULL DEFAULT '';
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_since TIMESTAMPTZ;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS last_invalid_warning_date DATE;
+
+    -- 关注(follow): a non-owner registers to receive the SAME buy/sell/invalidity email alerts
+    -- as the owner, without ever seeing the frozen model's actual rules/config — only the owner
+    -- can generate/rotate the invite_token (a link/code, see handleWatchAlertShareApi), and only
+    -- someone holding that token can call handleWatchAlertFollowApi to add themselves as a
+    -- follower. Rotating invite_token invalidates the OLD link for new follows but does not
+    -- remove existing followers — that's a separate, explicit action (owner removing one row here,
+    -- or a follower deleting their own row) so a link rotation can't accidentally kick people off.
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invite_token TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS watch_alerts_invite_token_idx ON watch_alerts(invite_token) WHERE invite_token IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS watch_alert_followers (
+      id TEXT PRIMARY KEY,
+      watch_id TEXT NOT NULL REFERENCES watch_alerts(id) ON DELETE CASCADE,
+      follower_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      follower_email TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(watch_id, follower_user_id)
+    );
+    CREATE INDEX IF NOT EXISTS watch_alert_followers_watch_idx ON watch_alert_followers(watch_id);
+    CREATE INDEX IF NOT EXISTS watch_alert_followers_follower_idx ON watch_alert_followers(follower_user_id, created_at DESC);
   `);
 
   await ensureIndexCatalogTable(dbPool);
@@ -3104,9 +3125,19 @@ async function handleAdminStockScreenApi(req, res) {
   }
 }
 
-function mapWatchAlertRow(row) {
+// role: "owner" (default) sees everything, including the frozen model's actual rules/config.
+// role: "follower" gets the SAME performance numbers and signal timing (buy/sell/date/is-invalid)
+// but never the frozen rules themselves — presetConfig is nulled out, and any free-text field
+// that embeds specific rule thresholds (lastSignalReason, each trade's own reason) is stripped,
+// since those are a side-channel that would otherwise leak the "hidden" config anyway. Extra
+// context (inviteToken, followers list) is only ever attached by the caller for a role="owner"
+// row the requester actually owns — see handleWatchAlertsApi's GET handler.
+function mapWatchAlertRow(row, { role = "owner", inviteToken = null, followers = null } = {}) {
+  const isFollowerView = role === "follower";
+  const rawTrades = Array.isArray(row.account_trades) ? row.account_trades : [];
   return {
     id: row.id,
+    role,
     ownerEmail: row.owner_email,
     presetId: row.preset_id,
     presetNumericId: row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null,
@@ -3120,10 +3151,12 @@ function mapWatchAlertRow(row) {
     // Full config/strategyType (when the JOIN resolves — absent right after a fresh POST
     // create, which doesn't go through the JOIN) lets the client build a 只读 preset view for
     // the unified "model action" popup (查看参数/查看历史交易记录/另存/重新加载模拟) without a
-    // dedicated single-preset lookup endpoint.
-    presetConfig: row.preset_config && typeof row.preset_config === "object" ? row.preset_config : null,
+    // dedicated single-preset lookup endpoint. Never sent for a follower's view (see this
+    // function's doc comment) — the strategy TYPE name (score-rules/block-rules/...) still is,
+    // that's not considered part of "the具体规则/config" that follow access excludes.
+    presetConfig: isFollowerView ? null : (row.preset_config && typeof row.preset_config === "object" ? row.preset_config : null),
     presetStrategyType: row.preset_strategy_type || "",
-    presetOwnerUserId: row.preset_owner_user_id || null,
+    presetOwnerUserId: isFollowerView ? null : (row.preset_owner_user_id || null),
     symbol: row.symbol,
     symbolName: row.symbol_name,
     indexCode: row.index_code || null,
@@ -3134,7 +3167,7 @@ function mapWatchAlertRow(row) {
     lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
     lastSignalDate: row.last_signal_date ? new Date(row.last_signal_date).toISOString().slice(0, 10) : "",
     lastSignalAction: row.last_signal_action || "",
-    lastSignalReason: row.last_signal_reason || "",
+    lastSignalReason: isFollowerView ? "" : (row.last_signal_reason || ""),
     lastNotifiedAt: row.last_notified_at ? new Date(row.last_notified_at).toISOString() : "",
     consecutiveFailures: row.consecutive_failures || 0,
     lastError: row.last_error || "",
@@ -3148,14 +3181,18 @@ function mapWatchAlertRow(row) {
     accountAnnualizedReturn: row.account_annualized_return !== null && row.account_annualized_return !== undefined ? Number(row.account_annualized_return) : null,
     accountMaxDrawdown: row.account_max_drawdown !== null && row.account_max_drawdown !== undefined ? Number(row.account_max_drawdown) : null,
     accountRowsScored: row.account_rows_scored || 0,
-    accountTrades: Array.isArray(row.account_trades) ? row.account_trades : [],
+    accountTrades: isFollowerView ? rawTrades.map((trade) => ({ ...trade, reason: "" })) : rawTrades,
     accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
     // Whether the FROZEN strategy (see the schema comment on frozen_config) still beats
     // buy-and-hold on a trailing window of recent data — set by run-watch-alerts.js, not
     // recomputed here. See that script's header comment for exactly what "invalid" means.
+    // (invalid_reason is aggregate performance vs buy-hold, not a specific rule threshold, so
+    // it's shown to followers same as owners.)
     isInvalid: Boolean(row.is_invalid),
     invalidReason: row.invalid_reason || "",
     invalidSince: row.invalid_since ? new Date(row.invalid_since).toISOString() : "",
+    inviteToken: role === "owner" ? inviteToken : null,
+    followers: role === "owner" && Array.isArray(followers) ? followers : null,
   };
 }
 
@@ -3189,7 +3226,7 @@ async function handleWatchAlertsApi(req, res) {
     if (req.method === "GET") {
       const user = await requireCurrentUser(req);
       const ownerUserId = userIdForEmail(user.email);
-      const result = await dbQuery(`
+      const ownedResult = await dbQuery(`
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
           sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
         FROM watch_alerts
@@ -3197,7 +3234,44 @@ async function handleWatchAlertsApi(req, res) {
         WHERE watch_alerts.owner_user_id = $1
         ORDER BY watch_alerts.created_at DESC
       `, [ownerUserId]);
-      sendJson(res, 200, { watches: result.rows.map(mapWatchAlertRow) });
+      // Owner's own watches also carry their invite_token (for the 分享 button to show/copy the
+      // existing link without regenerating it) and their current follower list (for the
+      // 关注者管理 panel) — fetched once for all owned watches rather than N+1 per row.
+      const ownedIds = ownedResult.rows.map((row) => row.id);
+      const followersByWatch = new Map();
+      if (ownedIds.length > 0) {
+        const followerRows = await dbQuery(`
+          SELECT watch_id, follower_user_id, follower_email, created_at
+          FROM watch_alert_followers WHERE watch_id = ANY($1) ORDER BY created_at ASC
+        `, [ownedIds]);
+        for (const row of followerRows.rows) {
+          const list = followersByWatch.get(row.watch_id) || [];
+          list.push({
+            followerUserId: row.follower_user_id,
+            followerEmail: row.follower_email,
+            createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+          });
+          followersByWatch.set(row.watch_id, list);
+        }
+      }
+      const ownedWatches = ownedResult.rows.map((row) => mapWatchAlertRow(row, {
+        role: "owner",
+        inviteToken: row.invite_token || null,
+        followers: followersByWatch.get(row.id) || [],
+      }));
+
+      const followedResult = await dbQuery(`
+        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
+        FROM watch_alert_followers waf
+        JOIN watch_alerts ON watch_alerts.id = waf.watch_id
+        LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        WHERE waf.follower_user_id = $1
+        ORDER BY waf.created_at DESC
+      `, [ownerUserId]);
+      const followedWatches = followedResult.rows.map((row) => mapWatchAlertRow(row, { role: "follower" }));
+
+      sendJson(res, 200, { watches: [...ownedWatches, ...followedWatches] });
       return;
     }
 
@@ -3385,6 +3459,131 @@ async function handleWatchAlertsApi(req, res) {
   }
 }
 
+// 分享盯盘: owner-only. Returns the watch's existing invite_token (generating one on first
+// call) unless `regenerate: true` is passed, in which case a NEW token replaces the old one —
+// the old link stops working for new follows immediately, but anyone who already followed via it
+// stays followed (see the schema comment on invite_token for why those are deliberately separate
+// actions).
+async function handleWatchAlertShareApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ownerUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const id = String(payload.id || "").trim();
+    const regenerate = Boolean(payload.regenerate);
+    if (!id) {
+      sendJson(res, 400, { error: "缺少盯盘提醒 id。" });
+      return;
+    }
+    const existing = await dbQuery(`SELECT invite_token FROM watch_alerts WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
+    if (existing.rows.length === 0) {
+      sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
+      return;
+    }
+    let token = existing.rows[0].invite_token;
+    if (!token || regenerate) {
+      token = randomId("wf").replace(/^wf_/, "");
+      await dbQuery(`UPDATE watch_alerts SET invite_token = $2, updated_at = NOW() WHERE id = $1`, [id, token]);
+    }
+    sendJson(res, 200, { inviteToken: token });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "生成分享链接失败。" });
+  }
+}
+
+// 关注(follow): any signed-in, non-owner user holding a valid invite_token can add themselves as
+// a follower — idempotent (following twice is a no-op, not an error). Rejects the watch's own
+// owner (following your own watch is meaningless and would just duplicate the owner view).
+async function handleWatchAlertFollowApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const followerUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const token = String(payload.token || "").trim();
+    if (!token) {
+      sendJson(res, 400, { error: "缺少邀请码。" });
+      return;
+    }
+    const watchResult = await dbQuery(`SELECT id, owner_user_id, preset_label, symbol, symbol_name, index_name FROM watch_alerts WHERE invite_token = $1`, [token]);
+    if (watchResult.rows.length === 0) {
+      sendJson(res, 404, { error: "邀请链接无效或已失效，请让对方重新分享一次。" });
+      return;
+    }
+    const watch = watchResult.rows[0];
+    if (watch.owner_user_id === followerUserId) {
+      sendJson(res, 400, { error: "不能关注自己的盯盘。" });
+      return;
+    }
+    await dbQuery(`
+      INSERT INTO watch_alert_followers (id, watch_id, follower_user_id, follower_email)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (watch_id, follower_user_id) DO NOTHING
+    `, [randomId("wff"), watch.id, followerUserId, user.email]);
+    sendJson(res, 200, {
+      followed: true,
+      label: watch.preset_label,
+      target: watch.symbol_name || watch.symbol || watch.index_name || "",
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "关注盯盘失败。" });
+  }
+}
+
+// 取消关注 / 移除关注者: DELETE body carries EITHER {watchId} (a follower removing themselves)
+// OR {watchId, followerUserId} (the watch's owner removing a specific follower) — the WHERE
+// clause below only ever matches rows the requester is actually allowed to touch: their own
+// follower row, or (only when they own the watch) any follower row on it.
+async function handleWatchAlertUnfollowApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "DELETE") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const requesterUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const watchId = String(payload.watchId || "").trim();
+    const targetFollowerUserId = String(payload.followerUserId || "").trim();
+    if (!watchId) {
+      sendJson(res, 400, { error: "缺少盯盘提醒 id。" });
+      return;
+    }
+    let result;
+    if (targetFollowerUserId && targetFollowerUserId !== requesterUserId) {
+      // Owner removing someone else — only allowed if the requester actually owns this watch.
+      result = await dbQuery(`
+        DELETE FROM watch_alert_followers
+        WHERE watch_id = $1 AND follower_user_id = $2
+          AND EXISTS (SELECT 1 FROM watch_alerts WHERE id = $1 AND owner_user_id = $3)
+        RETURNING id
+      `, [watchId, targetFollowerUserId, requesterUserId]);
+    } else {
+      // Follower removing themselves.
+      result = await dbQuery(`
+        DELETE FROM watch_alert_followers WHERE watch_id = $1 AND follower_user_id = $2 RETURNING id
+      `, [watchId, requesterUserId]);
+    }
+    if (result.rows.length === 0) {
+      sendJson(res, 404, { error: "关注关系不存在，或者你没有权限移除它。" });
+      return;
+    }
+    sendJson(res, 200, { removed: true });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "取消关注失败。" });
+  }
+}
+
 async function handleAdminWatchAlertsApi(req, res) {
   try {
     await requireAdminUser(req);
@@ -3400,7 +3599,7 @@ async function handleAdminWatchAlertsApi(req, res) {
       ORDER BY watch_alerts.updated_at DESC
       LIMIT 500
     `);
-    sendJson(res, 200, { adminEmail: ADMIN_EMAIL, watches: result.rows.map(mapWatchAlertRow) });
+    sendJson(res, 200, { adminEmail: ADMIN_EMAIL, watches: result.rows.map((row) => mapWatchAlertRow(row)) });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
   }
@@ -5065,6 +5264,20 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/watch-alerts") {
     handleWatchAlertsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts/share") {
+    handleWatchAlertShareApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts/follow") {
+    if (req.method === "DELETE") {
+      handleWatchAlertUnfollowApi(req, res);
+    } else {
+      handleWatchAlertFollowApi(req, res);
+    }
     return;
   }
 
