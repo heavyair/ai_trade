@@ -59,6 +59,12 @@ const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30
 // is skipped for that specific year (treated as unevaluable, not as a pass or a fail) rather than
 // let a handful of days decide whether an otherwise-solid model gets thrown out.
 const MIN_UPSIDE_GATE_ROWS = 30;
+// Per-year drawdown gate tolerance: a model's max drawdown in a given year must be smaller than
+// buy-hold's OWN drawdown in that same year, scaled up by this percentage — e.g. 5 means the
+// model may draw down up to buy-hold's drawdown × 1.05. Proportional rather than a flat
+// percentage-point margin, so a stock with a small buy-hold drawdown (little room to begin with)
+// isn't given the same absolute slack as one with a large buy-hold drawdown.
+const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent", 5));
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 60));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 400));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
@@ -193,7 +199,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -348,8 +354,9 @@ async function main() {
           }
           const buyHoldDD = trainYearBuyHoldDD[i];
           if (buyHoldDD !== null) {
-            if (!(stats.maxDrawdown < buyHoldDD)) {
-              failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%`);
+            const allowedDD = buyHoldDD * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+            if (!(stats.maxDrawdown < allowedDD)) {
+              failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%×${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}=${allowedDD.toFixed(1)}%`);
             }
           }
         });
@@ -399,8 +406,8 @@ async function main() {
         // testBuyHoldDD's dedicated buy-hold run for that window) must be smaller than buy-hold's
         // own drawdown in that SAME window. A window whose buy-hold drawdown couldn't be computed
         // is treated as passing.
-        const passesDrawdownYear1 = testBuyHoldDD[0] === null || scoredYear1.maxDrawdown < testBuyHoldDD[0];
-        const passesDrawdownYear2 = testBuyHoldDD[1] === null || scoredYear2.maxDrawdown < testBuyHoldDD[1];
+        const passesDrawdownYear1 = testBuyHoldDD[0] === null || scoredYear1.maxDrawdown < testBuyHoldDD[0] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+        const passesDrawdownYear2 = testBuyHoldDD[1] === null || scoredYear2.maxDrawdown < testBuyHoldDD[1] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
         const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
         console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${reachedTarget ? " — TARGET MET" : ""}`);

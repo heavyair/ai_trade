@@ -49,6 +49,8 @@ const TARGET_PERCENT = getArg("targetPercent", 50);
 // "达标"/"仍达标" means the same thing at recheck time as it did when a model first qualified.
 const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30));
 const MIN_UPSIDE_GATE_ROWS = 30;
+// Same gate and default as search-validated-best.js's DRAWDOWN_TOLERANCE_PERCENT.
+const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent", 5));
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const MIN_TEST_ROWS = Math.max(10, getArg("minTestRows", 50));
 // Matches search-validated-best.js's INITIAL_CASH/TRADE_FEE — only used here for the per-year
@@ -103,7 +105,7 @@ async function main() {
   await ensureResultsTable(pool);
 
   const candidates = await fetchQualifiedForRecheck(pool, { symbols: SYMBOLS_FILTER });
-  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% testYears=${TEST_YEARS} candidates=${candidates.length}${SYMBOLS_FILTER.length ? ` symbols=${SYMBOLS_FILTER.join(",")}` : " (all qualified rows)"}`);
+  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% testYears=${TEST_YEARS} candidates=${candidates.length}${SYMBOLS_FILTER.length ? ` symbols=${SYMBOLS_FILTER.join(",")}` : " (all qualified rows)"}`);
 
   let checked = 0;
   let stillQualifies = 0;
@@ -164,8 +166,8 @@ async function main() {
       const buyHoldYear2 = engine.buildBuyHoldStates(year2Rows, INITIAL_CASH, TRADE_FEE);
       const buyHoldDD1 = buyHoldYear1.length > 0 ? buyHoldYear1[buyHoldYear1.length - 1].maxDrawdown : null;
       const buyHoldDD2 = buyHoldYear2.length > 0 ? buyHoldYear2[buyHoldYear2.length - 1].maxDrawdown : null;
-      const passesDrawdownYear1 = buyHoldDD1 === null || scoredYear1.maxDrawdown < buyHoldDD1;
-      const passesDrawdownYear2 = buyHoldDD2 === null || scoredYear2.maxDrawdown < buyHoldDD2;
+      const passesDrawdownYear1 = buyHoldDD1 === null || scoredYear1.maxDrawdown < buyHoldDD1 * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+      const passesDrawdownYear2 = buyHoldDD2 === null || scoredYear2.maxDrawdown < buyHoldDD2 * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
 
       const nowQualifies = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
         && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;

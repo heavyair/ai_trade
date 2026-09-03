@@ -182,6 +182,7 @@ const adminValidatedSearchSymbolClearButton = document.querySelector("#adminVali
 const adminValidatedSearchSymbolCount = document.querySelector("#adminValidatedSearchSymbolCount");
 const adminValidatedSearchTargetPercentInput = document.querySelector("#adminValidatedSearchTargetPercent");
 const adminValidatedSearchUpsideThresholdPercentInput = document.querySelector("#adminValidatedSearchUpsideThresholdPercent");
+const adminValidatedSearchDrawdownTolerancePercentInput = document.querySelector("#adminValidatedSearchDrawdownTolerancePercent");
 const adminValidatedSearchAttemptsPerSymbolInput = document.querySelector("#adminValidatedSearchAttemptsPerSymbol");
 const adminValidatedSearchMaxAttemptsInput = document.querySelector("#adminValidatedSearchMaxAttempts");
 const adminValidatedSearchCandidatesInput = document.querySelector("#adminValidatedSearchCandidates");
@@ -196,6 +197,7 @@ const adminValidatedSearchList = document.querySelector("#adminValidatedSearchLi
 const adminValidatedSearchRecommendFilterButton = document.querySelector("#adminValidatedSearchRecommendFilterButton");
 const adminQualifiedRecheckTargetPercentInput = document.querySelector("#adminQualifiedRecheckTargetPercent");
 const adminQualifiedRecheckUpsideThresholdPercentInput = document.querySelector("#adminQualifiedRecheckUpsideThresholdPercent");
+const adminQualifiedRecheckDrawdownTolerancePercentInput = document.querySelector("#adminQualifiedRecheckDrawdownTolerancePercent");
 const adminQualifiedRecheckRunButton = document.querySelector("#adminQualifiedRecheckRunButton");
 const adminQualifiedRecheckRunStatus = document.querySelector("#adminQualifiedRecheckRunStatus");
 const adminQualifiedRecheckProgressBanner = document.querySelector("#adminQualifiedRecheckProgressBanner");
@@ -268,6 +270,7 @@ const revalidateTrainYearsInput = document.querySelector("#revalidateTrainYears"
 const revalidateTestYearsInput = document.querySelector("#revalidateTestYears");
 const revalidateTargetPercentInput = document.querySelector("#revalidateTargetPercent");
 const revalidateUpsideThresholdPercentInput = document.querySelector("#revalidateUpsideThresholdPercent");
+const revalidateDrawdownTolerancePercentInput = document.querySelector("#revalidateDrawdownTolerancePercent");
 const revalidateRunButton = document.querySelector("#revalidateRunButton");
 const revalidateStatus = document.querySelector("#revalidateStatus");
 const revalidateResult = document.querySelector("#revalidateResult");
@@ -3191,7 +3194,7 @@ function renderRevalidateResult(payload) {
       <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear2.maxDrawdown)} · ${payload.testYear2.trades}笔交易</div>
       <div>目标年化收益率 ${formatPercent(payload.targetPercent)}：${badge}</div>
       <div>上行波动门槛（每年年化收益需≥当年上行标准差的${formatPercent(payload.upsideThresholdPercent)}）：${upsideBadge}</div>
-      <div>逐年回撤门槛（每年最大回撤需小于当年买入持有的最大回撤）：${drawdownBadge}</div>
+      <div>逐年回撤门槛（每年最大回撤需小于当年买入持有的最大回撤×${(1 + Number(payload.drawdownTolerancePercent || 0) / 100).toFixed(2)}，即容差${formatPercent(payload.drawdownTolerancePercent)}）：${drawdownBadge}</div>
     </div>
   `;
 }
@@ -3205,6 +3208,8 @@ if (revalidateRunButton) {
     const targetPercent = Number(revalidateTargetPercentInput && revalidateTargetPercentInput.value) || 50;
     const upsideThresholdPercentRaw = Number(revalidateUpsideThresholdPercentInput && revalidateUpsideThresholdPercentInput.value);
     const upsideThresholdPercent = Number.isFinite(upsideThresholdPercentRaw) ? upsideThresholdPercentRaw : 30;
+    const drawdownTolerancePercentRaw = Number(revalidateDrawdownTolerancePercentInput && revalidateDrawdownTolerancePercentInput.value);
+    const drawdownTolerancePercent = Number.isFinite(drawdownTolerancePercentRaw) ? drawdownTolerancePercentRaw : 5;
     if (revalidateStatus) revalidateStatus.textContent = "正在用现有参数重新回测...";
     if (revalidateResult) revalidateResult.innerHTML = "";
     revalidateRunButton.disabled = true;
@@ -3220,6 +3225,7 @@ if (revalidateRunButton) {
           testYears,
           targetPercent,
           upsideThresholdPercent,
+          drawdownTolerancePercent,
         }),
       });
       const payload = await readJsonResponse(response, "重新验证失败。");
@@ -3741,6 +3747,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
   }
   const targetPercent = Number(adminValidatedSearchTargetPercentInput && adminValidatedSearchTargetPercentInput.value);
   const upsideThresholdPercent = Number(adminValidatedSearchUpsideThresholdPercentInput && adminValidatedSearchUpsideThresholdPercentInput.value);
+  const drawdownTolerancePercent = Number(adminValidatedSearchDrawdownTolerancePercentInput && adminValidatedSearchDrawdownTolerancePercentInput.value);
   const attemptsPerSymbol = Number(adminValidatedSearchAttemptsPerSymbolInput && adminValidatedSearchAttemptsPerSymbolInput.value);
   const maxAttempts = Number(adminValidatedSearchMaxAttemptsInput && adminValidatedSearchMaxAttemptsInput.value);
   const candidates = Number(adminValidatedSearchCandidatesInput && adminValidatedSearchCandidatesInput.value);
@@ -3750,6 +3757,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
   const requested = {
     targetPercent: Number.isFinite(targetPercent) ? targetPercent : 50,
     upsideThresholdPercent: Number.isFinite(upsideThresholdPercent) ? upsideThresholdPercent : 30,
+    drawdownTolerancePercent: Number.isFinite(drawdownTolerancePercent) ? drawdownTolerancePercent : 5,
     attemptsPerSymbol: Number.isFinite(attemptsPerSymbol) ? attemptsPerSymbol : 60,
     maxAttempts: Number.isFinite(maxAttempts) ? maxAttempts : 400,
     candidates: Number.isFinite(candidates) ? candidates : 400,
@@ -3765,7 +3773,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
       body: JSON.stringify({ symbols, indexMappingId, resume: Boolean(options.resume), ...requested }),
     });
     const result = await readJsonResponse(response, "启动验证搜索失败。");
-    const adjustments = ["targetPercent", "upsideThresholdPercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYears", "testYears"]
+    const adjustments = ["targetPercent", "upsideThresholdPercent", "drawdownTolerancePercent", "attemptsPerSymbol", "maxAttempts", "candidates", "pointCount", "trainYears", "testYears"]
       .filter((key) => !options.resume && Number.isFinite(result[key]) && result[key] !== requested[key])
       .map((key) => `${key} ${requested[key]}→${result[key]}`);
     setStatus(adjustments.length > 0
@@ -3784,6 +3792,7 @@ async function triggerAdminValidatedSearchRun(options = {}) {
 async function triggerAdminQualifiedRecheckRun() {
   const targetPercent = Number(adminQualifiedRecheckTargetPercentInput && adminQualifiedRecheckTargetPercentInput.value);
   const upsideThresholdPercent = Number(adminQualifiedRecheckUpsideThresholdPercentInput && adminQualifiedRecheckUpsideThresholdPercentInput.value);
+  const drawdownTolerancePercent = Number(adminQualifiedRecheckDrawdownTolerancePercentInput && adminQualifiedRecheckDrawdownTolerancePercentInput.value);
   if (adminQualifiedRecheckRunStatus) adminQualifiedRecheckRunStatus.textContent = "正在启动达标复查...";
   try {
     const response = await fetch("/api/admin/qualified-recheck/run", {
@@ -3792,6 +3801,7 @@ async function triggerAdminQualifiedRecheckRun() {
       body: JSON.stringify({
         targetPercent: Number.isFinite(targetPercent) ? targetPercent : 50,
         upsideThresholdPercent: Number.isFinite(upsideThresholdPercent) ? upsideThresholdPercent : 30,
+        drawdownTolerancePercent: Number.isFinite(drawdownTolerancePercent) ? drawdownTolerancePercent : 5,
       }),
     });
     await readJsonResponse(response, "启动达标复查失败。");
