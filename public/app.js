@@ -3176,6 +3176,31 @@ if (closeRevalidateButton && revalidateDialog) {
   closeRevalidateButton.addEventListener("click", () => closeDialog(revalidateDialog));
 }
 
+// One row of the 逐年详情 table — shared shape for a training year (from trainYearBreakdown)
+// and a validation year (from testYear1/testYear2), so both render through the same function.
+function renderYearBreakdownRow(label, year) {
+  const gateBits = [];
+  if (year.upsideDeviation !== null && year.upsideDeviation !== undefined) {
+    gateBits.push(year.passesUpsideGate ? "" : '<span class="down">未过上行波动门槛</span>');
+  }
+  if (year.buyHoldMaxDrawdown !== null && year.buyHoldMaxDrawdown !== undefined) {
+    gateBits.push(year.passesDrawdownGate ? "" : '<span class="down">回撤未小于买入持有</span>');
+  }
+  const gateText = gateBits.filter(Boolean).join(" · ") || '<span class="up">全部通过</span>';
+  return `
+    <tr>
+      <td>${escapeHtml(label)}</td>
+      <td>${escapeHtml(year.start || "")} ~ ${escapeHtml(year.end || "")}</td>
+      <td>${year.annualizedReturn === null || year.annualizedReturn === undefined ? "—" : formatPercent(year.annualizedReturn)}</td>
+      <td>${year.trades === null || year.trades === undefined ? "—" : year.trades}</td>
+      <td>${year.maxDrawdown === null || year.maxDrawdown === undefined ? "—" : formatPercent(year.maxDrawdown)}</td>
+      <td>${year.buyHoldMaxDrawdown === null || year.buyHoldMaxDrawdown === undefined ? "—" : formatPercent(year.buyHoldMaxDrawdown)}</td>
+      <td>${year.upsideDeviation === null || year.upsideDeviation === undefined ? "—" : formatPercent(year.upsideDeviation)}</td>
+      <td>${gateText}</td>
+    </tr>
+  `;
+}
+
 function renderRevalidateResult(payload) {
   if (!revalidateResult) return;
   const badge = payload.reachedTarget
@@ -3187,6 +3212,13 @@ function renderRevalidateResult(payload) {
   const drawdownBadge = payload.passesDrawdownGate
     ? '<span class="up">通过</span>'
     : `<span class="down">未通过${payload.failingTrainDrawdownYears && payload.failingTrainDrawdownYears.length > 0 ? `（训练期${payload.failingTrainDrawdownYears.length}个年份回撤未小于买入持有）` : ""}</span>`;
+
+  const trainRows = (payload.trainYearBreakdown || [])
+    .map((year, i) => renderYearBreakdownRow(`训练第${i + 1}年`, year))
+    .join("");
+  const testRows = renderYearBreakdownRow("验证第1年", payload.testYear1)
+    + renderYearBreakdownRow("验证第2年", payload.testYear2);
+
   revalidateResult.innerHTML = `
     <div class="admin-progress-banner-stats">
       <div>训练期（${escapeHtml(payload.trainStartDate)} ~ ${escapeHtml(payload.trainEndDate)}）年化：${formatPercent(payload.trainAnnualizedReturn)}</div>
@@ -3195,6 +3227,26 @@ function renderRevalidateResult(payload) {
       <div>目标年化收益率 ${formatPercent(payload.targetPercent)}：${badge}</div>
       <div>上行波动门槛（每年年化收益需≥当年上行标准差的${formatPercent(payload.upsideThresholdPercent)}）：${upsideBadge}</div>
       <div>逐年回撤门槛（每年最大回撤需小于当年买入持有的最大回撤×${(1 + Number(payload.drawdownTolerancePercent || 0) / 100).toFixed(2)}，即容差${formatPercent(payload.drawdownTolerancePercent)}）：${drawdownBadge}</div>
+    </div>
+    <div class="admin-ranking-list">
+      <table class="admin-ranking-table">
+        <thead>
+          <tr>
+            <th>年份</th>
+            <th>区间</th>
+            <th>年化回报</th>
+            <th>交易数</th>
+            <th>模型最大回撤</th>
+            <th>买入持有最大回撤</th>
+            <th>上行标准差</th>
+            <th>门槛结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${trainRows}
+          ${testRows}
+        </tbody>
+      </table>
     </div>
   `;
 }
