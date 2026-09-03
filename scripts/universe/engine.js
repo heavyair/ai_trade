@@ -472,6 +472,35 @@ function getRiseFromWaveLowSeries(rows, waveThreshold) {
 }
 
 
+// Mirror of getDaysSinceNewLowSeries, but driven by the wave tracker's candidateLow instead of a
+// fixed N-day rolling window. candidateLow ratchets down on every fresh daily low regardless of
+// whether a reversal has been CONFIRMED yet (see updateWaveTracker) — unlike riseFromWaveLow,
+// which only moves once price reverses back up by waveThreshold% from it, this reads the
+// still-forming low itself, so "0" means today's low extended the current down-leg's own low
+// (not a fixed window's), growing counts mean price has held above it for that many days. A
+// "new-high" event (wave.candidateLow gets force-reset to today's low, starting a fresh down-leg
+// — see updateWaveTracker) also counts as day 0: that reset low IS this new down-leg's first
+// reference point, even when today's low happens to sit above the old down-leg's candidateLow.
+function getDaysSinceNewWaveLowSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  // Starts at -1, not 0: createWaveTracker already seeds candidateLow from rows[0], and the
+  // map below runs updateWaveTracker on rows[0] AGAIN (same double-processing convention
+  // getRiseFromWaveLowSeries/getDrawdownFromWaveHighSeries already use) — without this offset,
+  // day one's "compared against itself, no strict decrease" would read as streak 1 instead of
+  // the correct 0 (today's low IS this wave's first reference point).
+  let streak = -1;
+  return rows.map((row) => {
+    const beforePrice = wave.candidateLow.price;
+    const events = updateWaveTracker(wave, row);
+    const extendedLow = wave.candidateLow.price < beforePrice;
+    const startedNewDownLeg = events.includes("new-high");
+    streak = (extendedLow || startedNewDownLeg) ? 0 : streak + 1;
+    return streak;
+  });
+}
+
+
 function getMaValueDiffSeries(rows, maDays) {
   const ma = getMovingAverageSeries(rows, maDays);
   return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
@@ -1788,6 +1817,14 @@ function getConditionCacheKey(condition) {
       ? `${condition.indicator}:default:${targetValue}`
       : `${condition.indicator}:shared`;
   }
+  // daysSinceNewWaveLow's own `value` is a day count, not a percentage drawdown/rise target, so
+  // (unlike the two above) it can't be scaled into a sane default waveThreshold — see
+  // resolveConditionWaveThreshold — meaning every no-override condition here really does resolve
+  // to the same flat default regardless of its own value, and can safely share one cache slot.
+  if (condition.indicator === "daysSinceNewWaveLow") {
+    const explicit = Number(condition && condition.waveThreshold);
+    return Number.isFinite(explicit) && explicit > 0 ? `${condition.indicator}:${explicit}` : `${condition.indicator}:shared`;
+  }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
 
@@ -1802,9 +1839,18 @@ function getConditionCacheKey(condition) {
 // (the "peak" wouldn't even get confirmed until price already fell that far) — falling back to
 // a flat 30 only when value itself isn't a usable positive number.
 function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
+  const explicit = Number(condition && condition.waveThreshold);
+  // daysSinceNewWaveLow's `value` is a day count (e.g. "5 days"), not a percentage drawdown/rise
+  // target — it can't be scaled into a sane waveThreshold the way drawdownFromWaveHigh/
+  // riseFromWaveLow's value can (there's no meaningful relationship between "5 days" and "a %
+  // move that confirms a turning point"), so this skips straight to the flat model-level
+  // fallback instead of the value-scaled default below.
+  if (condition && condition.indicator === "daysSinceNewWaveLow") {
+    if (Number.isFinite(explicit) && explicit > 0) return Math.min(30, Math.max(1, explicit));
+    return Number(fallbackWaveThreshold) || 5;
+  }
   const targetValue = Number(condition && condition.value);
   const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
-  const explicit = Number(condition && condition.waveThreshold);
   if (Number.isFinite(explicit) && explicit > 0) return Math.min(ceiling, Math.max(1, explicit));
   if (Number.isFinite(targetValue) && targetValue > 0) return Math.min(ceiling, Math.max(1, (targetValue * 2) / 3));
   return Number(fallbackWaveThreshold) || 5;
@@ -1831,6 +1877,7 @@ function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThre
     else if (condition.indicator === "volumeRatio") series = getVolumeRatioSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "daysSinceNewHigh") series = getDaysSinceNewHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "daysSinceNewLow") series = getDaysSinceNewLowSeries(rows, condition.lookbackDays);
+    else if (condition.indicator === "daysSinceNewWaveLow") series = getDaysSinceNewWaveLowSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "upDayCount") series = getUpDayCountSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "downDayCount") series = getDownDayCountSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maCompare") series = getMaCompareSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -1939,6 +1986,7 @@ function getBlockIndicatorLabel(indicator) {
     volumeRatio: "量比",
     daysSinceNewHigh: "未创新高天数",
     daysSinceNewLow: "未创新低天数",
+    daysSinceNewWaveLow: "波浪未创新低天数",
     upDayCount: "上涨天数",
     downDayCount: "下跌天数",
     maCompare: "均线快慢线差%",
@@ -2330,7 +2378,7 @@ const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "su
 // These indicators are inherently day-counts, so their comparison threshold (the
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
-const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount"]);
+const CONDITION_DAY_COUNT_INDICATORS = new Set(["daysSinceNewHigh", "daysSinceNewLow", "daysSinceNewWaveLow", "upDayCount", "downDayCount"]);
 const CONDITION_PERCENT_INDICATORS = new Set(["drawdownFromHigh", "drawdownFromWaveHigh", "riseFromLow", "riseFromWaveLow", "maValue", "maSlope", "maCompare", "candleBody", "positionRatio"]);
 const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 
@@ -2358,8 +2406,14 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
       // buildBlockRuleSeriesCache — falling back to 30 only when value isn't a usable positive
       // number. Floor of 1 rules out the near-zero noise-chasing values seen from ungrounded
       // AI generation (e.g. 0.1) before this field had explicit guidance.
+      // daysSinceNewWaveLow's value is a day count, not a %, so its waveThreshold can't use that
+      // value as a ceiling either (see resolveConditionWaveThreshold) — falls back to the flat
+      // 30 ceiling unconditionally, same as when value isn't a usable positive number below.
+      const waveThresholdCeiling = condition.indicator !== "daysSinceNewWaveLow" && Number(condition.value) > 0
+        ? Number(condition.value)
+        : 30;
       const range = field === "waveThreshold"
-        ? { min: 1, max: Number(condition.value) > 0 ? Number(condition.value) : 30, pointCount: optimizationPointCountOverride > 0 ? optimizationPointCountOverride : DEFAULT_OPTIMIZATION_POINT_COUNT }
+        ? { min: 1, max: waveThresholdCeiling, pointCount: optimizationPointCountOverride > 0 ? optimizationPointCountOverride : DEFAULT_OPTIMIZATION_POINT_COUNT }
         : computeDefaultParamRange(current, isInteger, isPercent);
       const fieldLabel = isStreakDayCount ? "连续天数" : CONDITION_FIELD_LABELS[field];
       descriptors.push({

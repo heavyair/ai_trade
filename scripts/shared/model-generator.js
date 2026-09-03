@@ -18,7 +18,7 @@ const SUPPORTED_STRATEGY_TYPES = ["wave", "local-high-ladder", "ma-rsi-band", "o
 
 const BLOCK_RULE_INDICATORS = [
   "drawdownFromHigh", "drawdownFromWaveHigh", "drawdownFromBreakoutHigh", "riseFromLow", "riseFromWaveLow", "maValue", "maLevel",
-  "maSlope", "rsi", "atrPercent", "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "upDayCount", "downDayCount",
+  "maSlope", "rsi", "atrPercent", "volumeRatio", "daysSinceNewHigh", "daysSinceNewLow", "daysSinceNewWaveLow", "upDayCount", "downDayCount",
   "maCompare", "candleBody", "positionRatio", "holdingDays", "formula",
 ];
 // risingStreak/fallingStreak check whether the indicator's own value moved the same
@@ -207,11 +207,17 @@ function normalizeGeneratedModel(value) {
       // condition's own drawdown/rise target, since a wave confirmation threshold at or beyond
       // that target defeats the point (this is the fix for the earlier real bug where an
       // ungrounded 0.1 value made "wave confirmation" fire on every trivial daily wiggle).
+      // daysSinceNewWaveLow ALSO runs the wave tracker (same low-side candidate the wave model
+      // itself uses, not a fixed N-day window) so it needs this field too — but its own `value`
+      // is a day count, not a %, so it can't be scaled from value the way the other two are;
+      // falls back to a flat 5 instead (see engine.js's resolveConditionWaveThreshold).
       waveThreshold: condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow"
         ? clamp(
             Number(condition.waveThreshold) > 0 ? condition.waveThreshold : (value > 0 ? (value * 2) / 3 : 5),
             1, value > 0 ? value : 30, 5
           )
+        : condition.indicator === "daysSinceNewWaveLow"
+        ? clamp(Number(condition.waveThreshold) > 0 ? condition.waveThreshold : 5, 1, 30, 5)
         : null,
     };
   };
@@ -472,7 +478,7 @@ function buildPromptGuideLines(schema) {
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
     "- score-rules：用户的描述是“打分制”——多条独立条件各自命中就加若干分（不要求互斥，同一天可以同时命中多条、分数累加），再按当天总分落在哪个区间决定目标仓位百分比（例如“A得10分，B得10分…总分满20分半仓，满30分全仓”）。出现“得X分”“加X分”“总分”“打分”这类字眼、或者列举一串各自独立打分的条件时，必须选这个类型，不要硬套 block-rules 的且/或结构（block-rules 的 action 是触发一次性动作，没法表达“多个条件独立累加分数”）。",
     "block-rules 用 buyBlockRules/sellBlockRules 两个数组表达：每个数组元素是一个“规则块”，块内的 conditions 是且（AND）的关系，多个规则块之间是或（OR）的关系——只要任意一块的全部条件都满足就触发这个块的 action。",
-    "block-rules 和 score-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点；这个窗口是每天都重新计算的，如果价格创新高后又回落，回落几天之后这个窗口的参考高点可能已经悄悄变成一个更近、更低的高点，不适合用来判断“有没有跌破当初那次突破的价位”——那种场景要用 drawdownFromBreakoutHigh)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、drawdownFromBreakoutHigh(距最近一次“突破 lookbackDays 日高点”那个事件发生时的参考高点的回撤%——跟 drawdownFromHigh 的关键区别：这个参考高点只在价格真正创出 lookbackDays 日新高的那一天才会更新为“突破前的那个旧高点”，之后哪怕过了很多天、哪怕价格没有继续创新高，这个参考价位也不会被遗忘或替换，一直保持到下一次更高的突破发生为止；<=0 表示至今仍未跌破那次突破的价位，>0 表示已经跌破。适合表达“创新高后有没有回落跌破那个高点”“突破以来站稳在原高点之上”这类需要“记住突破那一刻的价位、之后持续对比”的描述，不要跟 daysSinceNewHigh<=N 之类的“最近N天创过新高”条件混淆——那个只说明创没创过新高，不管创新高之后有没有跌回去)、riseFromLow(过去 lookbackDays 个交易日固定滚动窗口内最低价的反弹%，只是简单的N日最低价，不代表真正的波段/趋势低点，跟 drawdownFromHigh 是同一类“每天重新算窗口”的算法)、riseFromWaveLow(距离“波浪模型”实际确认的最近一次段内低点的反弹%——用户描述里说“距离最近低点反弹”“波浪模型的低点”“上一个低点反弹”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 riseFromLow；这个指标不需要 lookbackDays，必须设为 null，用法和专属的 waveThreshold 字段跟 drawdownFromWaveHigh 完全对称，只是方向相反——一个测确认高点之后回落了多少，一个测确认低点之后反弹了多少)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、maCompare(两条均线互相比较：用 lookbackDays 当快线周期、slopeWindowDays 当慢线周期，算 (快线-慢线)/慢线*100——判断“N日均线大于/高于M日均线”这类两条均线互相比较的说法时用这个，comparator 用 > 0)、candleBody((收盘价-开盘价)/开盘价*100——判断“收阳线/收阴线”时用这个，comparator 用 >0 表示收阳线、<0 表示收阴线，lookbackDays 必须设为 null，这个指标不需要回看窗口)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(距最近一次创 lookbackDays 日新高多少天——用户说“N年/N日新高”“最近M天内突破”时，把这个年数/天数换算成交易日数填进 lookbackDays（1年≈252个交易日，例如“三年新高”约等于 lookbackDays=750，lookbackDays 现在最大支持到 1300，够表达到5年），comparator 用 <=、value 填“最近M天内”的M)、daysSinceNewLow(未创新低天数)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)、formula(上面所有固定指标都表达不了时用这个，见下方公式说明)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立——用来表达“连续N天满足某条件”，也包括“累计N天”“持续N天以上”“已经N天了”这类说法，只要是在描述同一个条件维持/持续了多少天，不管用户具体用词是“连续”还是“累计”还是“持续”，都必须用 sustainedDays 表达，不能因为用词不是“连续”就当成表达不了而漏掉这个要求。",
+    "block-rules 和 score-rules 的 condition.indicator 只能是：drawdownFromHigh(过去 lookbackDays 个交易日固定滚动窗口内最高价的回撤%，只是简单的N日最高价，不代表真正的波段/趋势高点；这个窗口是每天都重新计算的，如果价格创新高后又回落，回落几天之后这个窗口的参考高点可能已经悄悄变成一个更近、更低的高点，不适合用来判断“有没有跌破当初那次突破的价位”——那种场景要用 drawdownFromBreakoutHigh)、drawdownFromWaveHigh(距离“波浪模型”实际确认的最近一次段内高点的回撤%——用户描述里说“距离最近高点”“波浪模型的高点”“上一个高点”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 drawdownFromHigh；这个指标不需要 lookbackDays，必须设为 null)、drawdownFromBreakoutHigh(距最近一次“突破 lookbackDays 日高点”那个事件发生时的参考高点的回撤%——跟 drawdownFromHigh 的关键区别：这个参考高点只在价格真正创出 lookbackDays 日新高的那一天才会更新为“突破前的那个旧高点”，之后哪怕过了很多天、哪怕价格没有继续创新高，这个参考价位也不会被遗忘或替换，一直保持到下一次更高的突破发生为止；<=0 表示至今仍未跌破那次突破的价位，>0 表示已经跌破。适合表达“创新高后有没有回落跌破那个高点”“突破以来站稳在原高点之上”这类需要“记住突破那一刻的价位、之后持续对比”的描述，不要跟 daysSinceNewHigh<=N 之类的“最近N天创过新高”条件混淆——那个只说明创没创过新高，不管创新高之后有没有跌回去)、riseFromLow(过去 lookbackDays 个交易日固定滚动窗口内最低价的反弹%，只是简单的N日最低价，不代表真正的波段/趋势低点，跟 drawdownFromHigh 是同一类“每天重新算窗口”的算法)、riseFromWaveLow(距离“波浪模型”实际确认的最近一次段内低点的反弹%——用户描述里说“距离最近低点反弹”“波浪模型的低点”“上一个低点反弹”这类不带固定天数、指真实转折点的表述时，必须用这个指标而不是 riseFromLow；这个指标不需要 lookbackDays，必须设为 null，用法和专属的 waveThreshold 字段跟 drawdownFromWaveHigh 完全对称，只是方向相反——一个测确认高点之后回落了多少，一个测确认低点之后反弹了多少)、maValue(价格偏离均线的百分比，不是均线本身的数值)、maLevel(均线本身的数值——判断“均线连续上行/下行”“均线自己涨了/跌了”这类描述均线走势本身的说法时用这个，不要用 maValue)、maSlope(均线斜率%，跟前 slopeWindowDays 天比较的净变化，不代表这中间每天都同向变化)、maCompare(两条均线互相比较：用 lookbackDays 当快线周期、slopeWindowDays 当慢线周期，算 (快线-慢线)/慢线*100——判断“N日均线大于/高于M日均线”这类两条均线互相比较的说法时用这个，comparator 用 > 0)、candleBody((收盘价-开盘价)/开盘价*100——判断“收阳线/收阴线”时用这个，comparator 用 >0 表示收阳线、<0 表示收阴线，lookbackDays 必须设为 null，这个指标不需要回看窗口)、rsi、atrPercent、volumeRatio(量比)、daysSinceNewHigh(距最近一次创 lookbackDays 日新高多少天——用户说“N年/N日新高”“最近M天内突破”时，把这个年数/天数换算成交易日数填进 lookbackDays（1年≈252个交易日，例如“三年新高”约等于 lookbackDays=750，lookbackDays 现在最大支持到 1300，够表达到5年），comparator 用 <=、value 填“最近M天内”的M)、daysSinceNewLow(距最近一次创 lookbackDays 日新低多少天——固定滚动窗口，每天重新计算，参考低点会随窗口滑动而“遗忘”旧的低点，跟 drawdownFromHigh 是同一类算法)、daysSinceNewWaveLow(距离“波浪模型”当前这一波下跌里正在形成的低点最近一次被刷新，过去了多少天——不是固定天数窗口，而是跟 drawdownFromWaveHigh/riseFromWaveLow 共用同一套波浪追踪器：只要价格还在创新低，这个“正在形成的低点”就会跟着往下移，值维持在0附近；一旦价格连续几天没有再创比它更低的价格，这个天数就会往上涨。用户描述里说“这一波下跌里没有再创新低”“当前跌势的新低”“波浪下跌的低点N天没有再创新低”这类不带固定天数、指的是当前这一段行情里正在形成的低点（而不是某个固定N日窗口的最低价，也不是distance from已经确认反转的波浪低点）时用这个，不要跟 daysSinceNewLow（固定窗口）或 riseFromWaveLow（距已确认低点反弹%，衡量的是确认反转之后涨了多少，不是有没有创新低）混淆。这个指标不需要 lookbackDays，必须设为 null；需要专属的 waveThreshold 字段（决定这一波下跌被视为已经反转、开启下一个追踪周期的确认幅度），没有特别要求时用默认值5，不要用接近0的数值。comparator 用 >=，value 填“至少N天没创新低”的N)、upDayCount(N日内上涨天数)、downDayCount(N日内下跌天数)、positionRatio(当前仓位%)、holdingDays(持仓天数)、formula(上面所有固定指标都表达不了时用这个，见下方公式说明)。condition.sustainedDays 大于 1 表示这个条件要连续 N 天成立——用来表达“连续N天满足某条件”，也包括“累计N天”“持续N天以上”“已经N天了”这类说法，只要是在描述同一个条件维持/持续了多少天，不管用户具体用词是“连续”还是“累计”还是“持续”，都必须用 sustainedDays 表达，不能因为用词不是“连续”就当成表达不了而漏掉这个要求。",
     "sustainedDays 和 downDayCount/upDayCount 极易混淆，这是真实出过错的场景，必须特别小心区分：像“波浪高点回撤超过20%，并且下跌时间累计7天以上”这种描述，“下跌时间累计7天以上”紧跟在前一个条件（回撤超过20%）后面、用“并且”连接，说的是前一个条件这个状态本身已经维持了7天，不是一句独立的统计描述——正确写法是给 drawdownFromWaveHigh 那条 condition 加 sustainedDays: 7，绝对不能因为字面出现“下跌...天”这几个字就另外单独造一条 downDayCount 条件：downDayCount 统计的是“N日窗口内逐日收盘价比前一天低的天数”，跟“回撤超过20%这个状态持续了多久”是完全不同的两件事，前面那条 drawdownFromWaveHigh 只要没有 sustainedDays 就只检查“今天”这一天的回撤是否超标，跟需求里“已经持续7天”的意思对不上，会让实际信号跟用户需求脱节。判断方法：看这个“N天”描述前面紧跟着的是不是另一个可比较的条件（某个指标超过/低于某个阈值），如果是、且这句话在说“这个条件持续/累计/已经了N天”，就必须用 sustainedDays 挂在那个条件本身上；只有当“N天内涨跌了几天”本身就是一句独立、不依附于任何其它条件的完整描述时（例如“6天内上涨3天以上”，这句话本身就能单独判断，不是在描述别的条件持续了多久），才用 downDayCount/upDayCount。错误写法（不要这样做）：",
     JSON.stringify({
       strategyType: "block-rules",
@@ -526,6 +532,18 @@ function buildPromptGuideLines(schema) {
           { indicator: "maLevel", lookbackDays: 10, slopeWindowDays: null, comparator: "fallingStreak", value: 3, sustainedDays: null },
         ],
         action: { type: "exitAll", value: null },
+      }],
+    }),
+    "block-rules 示例——“波浪模型距离最近高点下跌超过20%以上，并且下跌时间累计7天以上，并且最近5天内股价不再创新低，调仓到90%”对应（“下跌超过20%”和“累计7天以上”是同一个 drawdownFromWaveHigh 条件的两个属性，靠 sustainedDays: 7 表达，不要拆成两条条件；“最近5天不再创新低”说的是波浪模型当前这一波下跌里正在形成的低点，不是固定N日窗口的新低，必须用 daysSinceNewWaveLow 而不是 daysSinceNewLow）：",
+    JSON.stringify({
+      strategyType: "block-rules",
+      buyBlockRules: [{
+        enabled: true,
+        conditions: [
+          { indicator: "drawdownFromWaveHigh", lookbackDays: null, comparator: ">", value: 20, slopeWindowDays: null, sustainedDays: 7, waveThreshold: 13.33 },
+          { indicator: "daysSinceNewWaveLow", lookbackDays: null, comparator: ">=", value: 5, slopeWindowDays: null, sustainedDays: null, waveThreshold: 5 },
+        ],
+        action: { type: "targetPercent", value: 90 },
       }],
     }),
     "block-rules 示例——“距离波浪模型最近低点反弹超过15%就卖出30%”对应（注意距离“最近低点”反弹用的是 riseFromWaveLow，不是 riseFromLow——riseFromLow 是固定N日滚动窗口的低点，不是波浪确认的真实转折点）：",
