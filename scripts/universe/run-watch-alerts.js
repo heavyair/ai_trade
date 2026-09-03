@@ -38,6 +38,7 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
+const { annualizedUpsideDeviation } = require("../shared/volatility.js");
 const { resolveIndexConstituents } = require("../shared/index-catalog.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -238,6 +239,14 @@ async function sendAutoDisabledEmail(watch) {
 // ~1 trading year — matches the "one full year" validation-window convention used elsewhere
 // (search-validated-best.js's testYears windows) for judging whether a model still works.
 const VALIDITY_WINDOW_ROWS = 252;
+// Same standard and defaults search-validated-best.js's UPSIDE_THRESHOLD_PERCENT/
+// DRAWDOWN_TOLERANCE_PERCENT use when a model first qualifies (and run-qualified-recheck.js
+// re-applies later) — kept in sync so "still valid" during live watching means the same thing as
+// "达标" did at qualification time. This script has no CLI args (it's a plain cron job, see the
+// header comment's Usage line), so these are constants rather than --flags.
+const UPSIDE_THRESHOLD_PERCENT = 30;
+const DRAWDOWN_TOLERANCE_PERCENT = 5;
+const MIN_UPSIDE_GATE_ROWS = 30;
 
 // Checks the watch's FROZEN strategy (see server.js's schema comment on frozen_config) against
 // the most recent ~1 year of freshly-fetched data: does it still beat buy-and-hold? rows is the
@@ -311,10 +320,35 @@ function evaluateModelValidity(rows, baseConfig) {
   const buyHoldStates = engine.buildBuyHoldStates(validityRows, INITIAL_CASH, TRADE_FEE);
   const buyHold = buyHoldStates[buyHoldStates.length - 1];
   const beatsReturn = scored.returnRate > buyHold.returnRate;
-  const beatsDrawdown = scored.maxDrawdown < buyHold.maxDrawdown;
-  const isInvalid = !(beatsReturn && beatsDrawdown);
+
+  // Upside-deviation gate (see scripts/shared/volatility.js): the model's annualized return over
+  // this trailing year must also clear UPSIDE_THRESHOLD_PERCENT of the stock's OWN upside
+  // deviation for that same year — same bar search-validated-best.js requires at qualification
+  // time, not just "better than buy-hold" in absolute terms.
+  const annualizedReturn = annualizedReturnRate(scored.returnRate, scored.rowsScored);
+  const upsideDev = validityRows.length >= MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(validityRows) : null;
+  const requiredReturn = upsideDev !== null ? (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev : null;
+  const passesUpsideGate = upsideDev === null || annualizedReturn === null || annualizedReturn >= requiredReturn;
+
+  // Per-year drawdown gate, with the same proportional tolerance as search-validated-best.js's
+  // DRAWDOWN_TOLERANCE_PERCENT — the model's drawdown may exceed buy-hold's own drawdown by up to
+  // this percentage before counting against it, instead of requiring a strict beat.
+  const allowedDrawdown = buyHold.maxDrawdown * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+  const passesDrawdownGate = scored.maxDrawdown < allowedDrawdown;
+
+  const isInvalid = !(beatsReturn && passesUpsideGate && passesDrawdownGate);
+  const reasonParts = [];
+  if (!beatsReturn) {
+    reasonParts.push(`实际年化收益 ${scored.returnRate.toFixed(1)}% 未跑赢同期买入持有 ${buyHold.returnRate.toFixed(1)}%`);
+  }
+  if (!passesUpsideGate) {
+    reasonParts.push(`年化收益 ${annualizedReturn.toFixed(1)}% 未达到当年上行标准差${upsideDev.toFixed(1)}%的${UPSIDE_THRESHOLD_PERCENT}%（需≥${requiredReturn.toFixed(1)}%）`);
+  }
+  if (!passesDrawdownGate) {
+    reasonParts.push(`最大回撤 ${scored.maxDrawdown.toFixed(1)}% 超过买入持有回撤${buyHold.maxDrawdown.toFixed(1)}%的${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}倍（上限${allowedDrawdown.toFixed(1)}%）`);
+  }
   const reason = isInvalid
-    ? `最近一年（${validityStartDate} ~ ${validityEndDate}）模型实际年化收益 ${scored.returnRate.toFixed(1)}%、最大回撤 ${scored.maxDrawdown.toFixed(1)}%；同期买入持有为 ${buyHold.returnRate.toFixed(1)}% / ${buyHold.maxDrawdown.toFixed(1)}%。模型已不再跑赢买入持有。`
+    ? `最近一年（${validityStartDate} ~ ${validityEndDate}）${reasonParts.join("；")}。模型已不再达标。`
     : "";
   return { checked: true, isInvalid, reason };
 }
