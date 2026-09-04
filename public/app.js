@@ -7486,6 +7486,47 @@ function getDaysSinceNewWaveHighSeries(rows, waveThreshold) {
   });
 }
 
+// Days since wave.high (the CONFIRMED high drawdownFromWaveHigh itself measures from) was last
+// replaced — see engine.js's copy of this function for the full explanation. Backs
+// drawdownFromWaveHigh's own condition.daysSinceHigh field rather than being its own indicator,
+// so it always shares the same waveThreshold/wave-tracker instance as the drawdown check on the
+// same condition.
+function getDaysSinceWaveHighConfirmedSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  let streak = -1;
+  let lastVersion = wave.high.version;
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    if (wave.high.version !== lastVersion) {
+      lastVersion = wave.high.version;
+      streak = 0;
+    } else {
+      streak += 1;
+    }
+    return streak;
+  });
+}
+
+// Mirror of getDaysSinceWaveHighConfirmedSeries on the low side — backs riseFromWaveLow's
+// condition.daysSinceLow field.
+function getDaysSinceWaveLowConfirmedSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  let streak = -1;
+  let lastVersion = wave.low.version;
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    if (wave.low.version !== lastVersion) {
+      lastVersion = wave.low.version;
+      streak = 0;
+    } else {
+      streak += 1;
+    }
+    return streak;
+  });
+}
+
 function getMaValueDiffSeries(rows, maDays) {
   const ma = getMovingAverageSeries(rows, maDays);
   return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
@@ -8999,18 +9040,51 @@ function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
   return Number(fallbackWaveThreshold) || 5;
 }
 
+// See engine.js's copy for the full explanation of why drawdownFromWaveHigh/riseFromWaveLow
+// can't use the blanket "if (cache.has(key)) return" early-out every other indicator uses.
+function waveSubSeriesKey(baseKey, field) {
+  return `${baseKey}::${field}`;
+}
+
 function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
   const cache = new Map();
   const ensure = (condition) => {
     if (!condition || condition.indicator === "positionRatio" || condition.indicator === "holdingDays") return;
     const key = getConditionCacheKey(condition);
+    if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
+      const threshold = resolveConditionWaveThreshold(condition, waveThreshold);
+      const isHigh = condition.indicator === "drawdownFromWaveHigh";
+      if (!cache.has(key)) {
+        cache.set(key, isHigh
+          ? getDrawdownFromWaveHighSeries(rows, threshold)
+          : getRiseFromWaveLowSeries(rows, threshold));
+      }
+      if (isHigh) {
+        if (condition.daysSinceHigh != null) {
+          const subKey = waveSubSeriesKey(key, "daysSinceHigh");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceWaveHighConfirmedSeries(rows, threshold));
+        }
+        if (condition.daysWithoutNewLow != null) {
+          const subKey = waveSubSeriesKey(key, "daysWithoutNewLow");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceNewWaveLowSeries(rows, threshold));
+        }
+      } else {
+        if (condition.daysSinceLow != null) {
+          const subKey = waveSubSeriesKey(key, "daysSinceLow");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceWaveLowConfirmedSeries(rows, threshold));
+        }
+        if (condition.daysWithoutNewHigh != null) {
+          const subKey = waveSubSeriesKey(key, "daysWithoutNewHigh");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceNewWaveHighSeries(rows, threshold));
+        }
+      }
+      return;
+    }
     if (cache.has(key)) return;
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
-    else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
-    else if (condition.indicator === "riseFromWaveLow") series = getRiseFromWaveLowSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -9072,6 +9146,30 @@ function isMonotonicStreak(series, index, days, direction) {
   return true;
 }
 
+// See engine.js's copy for the full explanation.
+function evaluateWaveExtremeConditionOnDay(condition, dayIndex, cache) {
+  const isHigh = condition.indicator === "drawdownFromWaveHigh";
+  const key = getConditionCacheKey(condition);
+  if (condition.value !== null && condition.value !== undefined) {
+    const series = cache.get(key);
+    const value = series ? series[dayIndex] : null;
+    if (!compareBlockValue(value, condition.comparator, condition.value)) return false;
+  }
+  const daysSince = isHigh ? condition.daysSinceHigh : condition.daysSinceLow;
+  if (daysSince != null) {
+    const series = cache.get(waveSubSeriesKey(key, isHigh ? "daysSinceHigh" : "daysSinceLow"));
+    const value = series ? series[dayIndex] : null;
+    if (value == null || value < daysSince) return false;
+  }
+  const daysWithout = isHigh ? condition.daysWithoutNewLow : condition.daysWithoutNewHigh;
+  if (daysWithout != null) {
+    const series = cache.get(waveSubSeriesKey(key, isHigh ? "daysWithoutNewLow" : "daysWithoutNewHigh"));
+    const value = series ? series[dayIndex] : null;
+    if (value == null || value < daysWithout) return false;
+  }
+  return true;
+}
+
 function evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
   if (condition.comparator === "risingStreak" || condition.comparator === "fallingStreak") {
     const days = Math.max(1, Math.round(Number(condition.value) || 1));
@@ -9079,10 +9177,17 @@ function evaluateBlockCondition(condition, index, cache, positionRatioHistory, h
     const series = getBlockConditionSeries(condition, cache, positionRatioHistory, holdingDaysHistory);
     return isMonotonicStreak(series, index, days, direction);
   }
+  const isWaveExtremeCompound = (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow")
+    && (condition.daysSinceHigh != null || condition.daysWithoutNewLow != null
+      || condition.daysSinceLow != null || condition.daysWithoutNewHigh != null);
   const sustainedDays = Math.max(1, Math.round(Number(condition.sustainedDays) || 1));
   for (let offset = 0; offset < sustainedDays; offset += 1) {
     const dayIndex = index - offset;
     if (dayIndex < 0) return false;
+    if (isWaveExtremeCompound) {
+      if (!evaluateWaveExtremeConditionOnDay(condition, dayIndex, cache)) return false;
+      continue;
+    }
     const value = getBlockConditionValue(condition, dayIndex, cache, positionRatioHistory, holdingDaysHistory);
     if (!compareBlockValue(value, condition.comparator, condition.value)) return false;
   }
@@ -9140,6 +9245,21 @@ function describeBlockCondition(condition) {
   if (condition.indicator === "formula") {
     const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
     return `${sustain}公式[${condition.formula}]${condition.comparator}${condition.value}`;
+  }
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
+    const isHigh = condition.indicator === "drawdownFromWaveHigh";
+    const daysSince = isHigh ? condition.daysSinceHigh : condition.daysSinceLow;
+    const daysWithout = isHigh ? condition.daysWithoutNewLow : condition.daysWithoutNewHigh;
+    if (daysSince != null || daysWithout != null) {
+      const parts = [];
+      if (condition.value !== null && condition.value !== undefined) {
+        const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
+        parts.push(`${sustain}${getBlockIndicatorLabel(condition.indicator)}${condition.comparator}${condition.value}`);
+      }
+      if (daysSince != null) parts.push(`距${isHigh ? "高" : "低"}点≥${daysSince}天`);
+      if (daysWithout != null) parts.push(`${isHigh ? "未创新低" : "未创新高"}≥${daysWithout}天`);
+      return parts.join("且");
+    }
   }
   const label = getBlockIndicatorLabel(condition.indicator);
   const days = condition.lookbackDays ? `${condition.lookbackDays}日` : "";
@@ -10108,6 +10228,17 @@ function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex)
   const showSlopeWindow = condition.indicator === "maSlope";
   const showFormula = condition.indicator === "formula";
   const showWaveThreshold = condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow" || condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh";
+  // drawdownFromWaveHigh/riseFromWaveLow can ALSO optionally require "at least N days since
+  // this confirmed extreme" / "at least N days without a new low/high in this leg" — sharing
+  // this same condition's own waveThreshold instead of needing a second sibling condition with
+  // its own (easy to desync) waveThreshold. One shared pair of inputs (daysSince/daysWithout)
+  // covers both the high and low side — which field they collect into depends on `indicator`,
+  // same pattern waveThreshold already uses above.
+  const isWaveHigh = condition.indicator === "drawdownFromWaveHigh";
+  const isWaveLow = condition.indicator === "riseFromWaveLow";
+  const isWaveExtreme = isWaveHigh || isWaveLow;
+  const daysSinceValue = isWaveHigh ? condition.daysSinceHigh : isWaveLow ? condition.daysSinceLow : null;
+  const daysWithoutValue = isWaveHigh ? condition.daysWithoutNewLow : isWaveLow ? condition.daysWithoutNewHigh : null;
   const numOrEmpty = (value) => (value === null || value === undefined ? "" : value);
   return `
     <div class="block-rule-condition-row" data-condition-index="${conditionIndex}">
@@ -10119,10 +10250,12 @@ function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex)
       <select data-role="comparator">
         ${blockRuleComparators.map((c) => `<option value="${escapeHtml(c)}" ${condition.comparator === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
       </select>
-      <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="数值" step="any">
+      <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="${isWaveExtreme ? "数值(可留空，只用右侧天数条件)" : "数值"}" step="any">
       <input type="number" data-role="slopeWindowDays" value="${numOrEmpty(condition.slopeWindowDays)}" placeholder="斜率窗口(仅均线斜率)" min="1" step="1" ${showSlopeWindow ? "" : "disabled"}>
       <input type="number" data-role="sustainedDays" value="${numOrEmpty(condition.sustainedDays)}" placeholder="连续天数(可选)" min="1" step="1">
       <input type="number" data-role="waveThreshold" value="${numOrEmpty(condition.waveThreshold)}" placeholder="波浪确认阈值%(留空=回撤目标的2/3)" min="1" step="any" ${showWaveThreshold ? "" : "disabled"}>
+      <input type="number" data-role="daysSince" value="${numOrEmpty(daysSinceValue)}" placeholder="${isWaveHigh ? "距高点至少N天(可选)" : "距低点至少N天(可选)"}" min="1" step="1" ${isWaveExtreme ? "" : "disabled"}>
+      <input type="number" data-role="daysWithout" value="${numOrEmpty(daysWithoutValue)}" placeholder="${isWaveHigh ? "这段跌势未创新低至少N天(可选)" : "这段涨势未创新高至少N天(可选)"}" min="1" step="1" ${isWaveExtreme ? "" : "disabled"}>
       <button type="button" class="ghost-button block-rule-remove-condition" data-side="${sideKey}" data-block-index="${blockIndex}" data-condition-index="${conditionIndex}">删除条件</button>
     </div>
   `;
@@ -10193,21 +10326,32 @@ function collectBlockRuleFormState() {
       const conditions = Array.from(rowEls).map((rowEl) => {
         const indicator = rowEl.querySelector('[data-role="indicator"]').value;
         const comparator = rowEl.querySelector('[data-role="comparator"]').value;
-        const value = Number(rowEl.querySelector('[data-role="value"]').value);
+        const isWaveHigh = indicator === "drawdownFromWaveHigh";
+        const isWaveLow = indicator === "riseFromWaveLow";
+        const valueRaw = rowEl.querySelector('[data-role="value"]').value;
+        const value = valueRaw === "" && (isWaveHigh || isWaveLow) ? null : (Number.isFinite(Number(valueRaw)) ? Number(valueRaw) : 0);
         const formulaRaw = rowEl.querySelector('[data-role="formula"]').value;
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
         const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
+        const daysSinceRaw = rowEl.querySelector('[data-role="daysSince"]').value;
+        const daysWithoutRaw = rowEl.querySelector('[data-role="daysWithout"]').value;
+        const daysSince = daysSinceRaw === "" ? null : Math.max(1, Math.round(Number(daysSinceRaw) || 1));
+        const daysWithout = daysWithoutRaw === "" ? null : Math.max(1, Math.round(Number(daysWithoutRaw) || 1));
         return {
           indicator,
           comparator,
-          value: Number.isFinite(value) ? value : 0,
+          value,
           formula: indicator === "formula" ? formulaRaw.trim() : null,
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
           waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow" && indicator !== "daysSinceNewWaveLow" && indicator !== "daysSinceNewWaveHigh") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          daysSinceHigh: isWaveHigh ? daysSince : null,
+          daysWithoutNewLow: isWaveHigh ? daysWithout : null,
+          daysSinceLow: isWaveLow ? daysSince : null,
+          daysWithoutNewHigh: isWaveLow ? daysWithout : null,
         };
       });
       const actionType = blockEl.querySelector('[data-role="action-type"]').value;
@@ -10472,6 +10616,11 @@ if (blockRuleFormEditor) {
       if (lookbackInput) lookbackInput.disabled = isFormula;
       const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
       if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh" && target.value !== "riseFromWaveLow" && target.value !== "daysSinceNewWaveLow" && target.value !== "daysSinceNewWaveHigh";
+      const isWaveExtreme = target.value === "drawdownFromWaveHigh" || target.value === "riseFromWaveLow";
+      const daysSinceInput = row && row.querySelector('[data-role="daysSince"]');
+      if (daysSinceInput) daysSinceInput.disabled = !isWaveExtreme;
+      const daysWithoutInput = row && row.querySelector('[data-role="daysWithout"]');
+      if (daysWithoutInput) daysWithoutInput.disabled = !isWaveExtreme;
     }
     if (target && target.dataset && target.dataset.role === "action-type") {
       const actionRow = target.closest(".block-rule-action-row");
@@ -11043,8 +11192,15 @@ const CONDITION_FIELD_LABELS = {
   sustainedDays: "持续天数",
   value: "阈值",
   waveThreshold: "波浪确认阈值%",
+  daysSinceHigh: "距高点天数",
+  daysWithoutNewLow: "未创新低天数",
+  daysSinceLow: "距低点天数",
+  daysWithoutNewHigh: "未创新高天数",
 };
-const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
+const CONDITION_INTEGER_FIELDS = new Set([
+  "lookbackDays", "slopeWindowDays", "sustainedDays",
+  "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh",
+]);
 // These indicators are inherently day-counts, so their comparison threshold (the
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
@@ -11058,7 +11214,7 @@ const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
   (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
     const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
-    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold"].forEach((field) => {
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
       const raw = condition[field];
       if (raw === null || raw === undefined || raw === "") return;
       const current = Number(raw);
@@ -13049,21 +13205,32 @@ function collectModelTradesRuleFormState() {
       const conditions = Array.from(rowEls).map((rowEl) => {
         const indicator = rowEl.querySelector('[data-role="indicator"]').value;
         const comparator = rowEl.querySelector('[data-role="comparator"]').value;
-        const value = Number(rowEl.querySelector('[data-role="value"]').value);
+        const isWaveHigh = indicator === "drawdownFromWaveHigh";
+        const isWaveLow = indicator === "riseFromWaveLow";
+        const valueRaw = rowEl.querySelector('[data-role="value"]').value;
+        const value = valueRaw === "" && (isWaveHigh || isWaveLow) ? null : (Number.isFinite(Number(valueRaw)) ? Number(valueRaw) : 0);
         const formulaRaw = rowEl.querySelector('[data-role="formula"]').value;
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
         const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
+        const daysSinceRaw = rowEl.querySelector('[data-role="daysSince"]').value;
+        const daysWithoutRaw = rowEl.querySelector('[data-role="daysWithout"]').value;
+        const daysSince = daysSinceRaw === "" ? null : Math.max(1, Math.round(Number(daysSinceRaw) || 1));
+        const daysWithout = daysWithoutRaw === "" ? null : Math.max(1, Math.round(Number(daysWithoutRaw) || 1));
         return {
           indicator,
           comparator,
-          value: Number.isFinite(value) ? value : 0,
+          value,
           formula: indicator === "formula" ? formulaRaw.trim() : null,
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
           waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow" && indicator !== "daysSinceNewWaveLow" && indicator !== "daysSinceNewWaveHigh") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          daysSinceHigh: isWaveHigh ? daysSince : null,
+          daysWithoutNewLow: isWaveHigh ? daysWithout : null,
+          daysSinceLow: isWaveLow ? daysSince : null,
+          daysWithoutNewHigh: isWaveLow ? daysWithout : null,
         };
       });
       const actionType = blockEl.querySelector('[data-role="action-type"]').value;
@@ -13118,6 +13285,11 @@ if (modelTradesRuleEditor) {
       if (lookbackInput) lookbackInput.disabled = isFormula;
       const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
       if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh" && target.value !== "riseFromWaveLow" && target.value !== "daysSinceNewWaveLow" && target.value !== "daysSinceNewWaveHigh";
+      const isWaveExtreme = target.value === "drawdownFromWaveHigh" || target.value === "riseFromWaveLow";
+      const daysSinceInput = row && row.querySelector('[data-role="daysSince"]');
+      if (daysSinceInput) daysSinceInput.disabled = !isWaveExtreme;
+      const daysWithoutInput = row && row.querySelector('[data-role="daysWithout"]');
+      if (daysWithoutInput) daysWithoutInput.disabled = !isWaveExtreme;
     }
     if (target && target.dataset && target.dataset.role === "action-type") {
       const actionRow = target.closest(".block-rule-action-row");

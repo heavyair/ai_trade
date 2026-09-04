@@ -521,6 +521,58 @@ function getDaysSinceNewWaveHighSeries(rows, waveThreshold) {
 }
 
 
+// Days since wave.high (the CONFIRMED high drawdownFromWaveHigh itself measures from) was last
+// replaced — i.e. since a "new-high" event last fired. Unlike getDaysSinceNewWaveHighSeries
+// (which tracks the still-forming candidateHigh, and resets on ANY opposite-side "new-low"
+// confirmation even when that confirmation has nothing to do with this high — a real case that
+// silently broke a "回撤>20% 且 距高点N天" model: a minor low got confirmed mid-decline and
+// wiped out a day-count that had nothing to do with it), this only resets when wave.high itself
+// gets replaced by a genuinely new, higher confirmed high — stable through an entire decline
+// even if a minor low gets confirmed partway through it. Backs drawdownFromWaveHigh's own
+// condition.daysSinceHigh field (see buildBlockRuleSeriesCache) rather than being its own
+// indicator, specifically so it always shares the exact same waveThreshold/wave-tracker instance
+// as the drawdown check on the same condition — two separate conditions each with their own
+// waveThreshold could silently drift apart (manual edits, AI generation, and brute-force
+// optimization can all independently vary a wave-tracker parameter with no way to keep two
+// separate fields in sync; a single shared field can't drift by construction).
+function getDaysSinceWaveHighConfirmedSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  let streak = -1;
+  let lastVersion = wave.high.version;
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    if (wave.high.version !== lastVersion) {
+      lastVersion = wave.high.version;
+      streak = 0;
+    } else {
+      streak += 1;
+    }
+    return streak;
+  });
+}
+
+
+// Mirror of getDaysSinceWaveHighConfirmedSeries on the low side — days since wave.low was last
+// replaced by a "new-low" event. Backs riseFromWaveLow's condition.daysSinceLow field.
+function getDaysSinceWaveLowConfirmedSeries(rows, waveThreshold) {
+  if (!rows || rows.length === 0) return [];
+  const wave = createWaveTracker(rows[0], waveThreshold);
+  let streak = -1;
+  let lastVersion = wave.low.version;
+  return rows.map((row) => {
+    updateWaveTracker(wave, row);
+    if (wave.low.version !== lastVersion) {
+      lastVersion = wave.low.version;
+      streak = 0;
+    } else {
+      streak += 1;
+    }
+    return streak;
+  });
+}
+
+
 function getMaValueDiffSeries(rows, maDays) {
   const ma = getMovingAverageSeries(rows, maDays);
   return rows.map((row, index) => (ma[index] ? ((row.close - ma[index]) / ma[index]) * 100 : null));
@@ -1877,18 +1929,61 @@ function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
 }
 
 
+// Sub-series cache-key suffix for drawdownFromWaveHigh/riseFromWaveLow's optional
+// daysSinceHigh/daysWithoutNewLow (or daysSinceLow/daysWithoutNewHigh) fields — see
+// buildBlockRuleSeriesCache. Exported as its own function only so evaluateWaveExtremeCondition
+// can reconstruct the exact same key at evaluation time without recomputing anything.
+function waveSubSeriesKey(baseKey, field) {
+  return `${baseKey}::${field}`;
+}
+
 function buildBlockRuleSeriesCache(rows, buyBlockRules, sellBlockRules, waveThreshold) {
   const cache = new Map();
   const ensure = (condition) => {
     if (!condition || condition.indicator === "positionRatio" || condition.indicator === "holdingDays") return;
     const key = getConditionCacheKey(condition);
+    // drawdownFromWaveHigh/riseFromWaveLow can ALSO carry optional daysSinceHigh/
+    // daysWithoutNewLow (or daysSinceLow/daysWithoutNewHigh) fields that read from the exact
+    // same wave-tracker instance as the drawdown/rise check itself (see resolveConditionWaveThreshold
+    // — same threshold, same run). Two different conditions can share the same base `key` (same
+    // threshold/value) while differing in which of these optional fields they set, so this can't
+    // use the blanket "if (cache.has(key)) return" early-out every other indicator below uses —
+    // each optional sub-series has to be checked/filled independently even when the base series
+    // is already cached from a sibling condition.
+    if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
+      const threshold = resolveConditionWaveThreshold(condition, waveThreshold);
+      const isHigh = condition.indicator === "drawdownFromWaveHigh";
+      if (!cache.has(key)) {
+        cache.set(key, isHigh
+          ? getDrawdownFromWaveHighSeries(rows, threshold)
+          : getRiseFromWaveLowSeries(rows, threshold));
+      }
+      if (isHigh) {
+        if (condition.daysSinceHigh != null) {
+          const subKey = waveSubSeriesKey(key, "daysSinceHigh");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceWaveHighConfirmedSeries(rows, threshold));
+        }
+        if (condition.daysWithoutNewLow != null) {
+          const subKey = waveSubSeriesKey(key, "daysWithoutNewLow");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceNewWaveLowSeries(rows, threshold));
+        }
+      } else {
+        if (condition.daysSinceLow != null) {
+          const subKey = waveSubSeriesKey(key, "daysSinceLow");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceWaveLowConfirmedSeries(rows, threshold));
+        }
+        if (condition.daysWithoutNewHigh != null) {
+          const subKey = waveSubSeriesKey(key, "daysWithoutNewHigh");
+          if (!cache.has(subKey)) cache.set(subKey, getDaysSinceNewWaveHighSeries(rows, threshold));
+        }
+      }
+      return;
+    }
     if (cache.has(key)) return;
     let series = null;
     if (condition.indicator === "drawdownFromHigh") series = getDrawdownFromHighSeries(rows, condition.lookbackDays);
-    else if (condition.indicator === "drawdownFromWaveHigh") series = getDrawdownFromWaveHighSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "drawdownFromBreakoutHigh") series = getDrawdownFromBreakoutHighSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "riseFromLow") series = getRiseFromLowSeries(rows, condition.lookbackDays);
-    else if (condition.indicator === "riseFromWaveLow") series = getRiseFromWaveLowSeries(rows, resolveConditionWaveThreshold(condition, waveThreshold));
     else if (condition.indicator === "maValue") series = getMaValueDiffSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maLevel") series = getMovingAverageSeries(rows, condition.lookbackDays);
     else if (condition.indicator === "maSlope") series = getMaSlopeSeries(rows, condition.lookbackDays, condition.slopeWindowDays);
@@ -1953,6 +2048,36 @@ function isMonotonicStreak(series, index, days, direction) {
   return true;
 }
 
+// True iff every one of drawdownFromWaveHigh/riseFromWaveLow's optional sub-checks that's
+// actually set on this condition holds on this one day — the drawdown/rise-vs-value check (only
+// if condition.value isn't null), the "at least N days since this confirmed extreme" check, and
+// the "at least N days without a new low/high in this leg" check. All three read from series
+// cached under the SAME base waveThreshold (see buildBlockRuleSeriesCache), so they can never
+// refer to different wave-tracker runs the way two separate sibling conditions each with their
+// own waveThreshold could.
+function evaluateWaveExtremeConditionOnDay(condition, dayIndex, cache) {
+  const isHigh = condition.indicator === "drawdownFromWaveHigh";
+  const key = getConditionCacheKey(condition);
+  if (condition.value !== null && condition.value !== undefined) {
+    const series = cache.get(key);
+    const value = series ? series[dayIndex] : null;
+    if (!compareBlockValue(value, condition.comparator, condition.value)) return false;
+  }
+  const daysSince = isHigh ? condition.daysSinceHigh : condition.daysSinceLow;
+  if (daysSince != null) {
+    const series = cache.get(waveSubSeriesKey(key, isHigh ? "daysSinceHigh" : "daysSinceLow"));
+    const value = series ? series[dayIndex] : null;
+    if (value == null || value < daysSince) return false;
+  }
+  const daysWithout = isHigh ? condition.daysWithoutNewLow : condition.daysWithoutNewHigh;
+  if (daysWithout != null) {
+    const series = cache.get(waveSubSeriesKey(key, isHigh ? "daysWithoutNewLow" : "daysWithoutNewHigh"));
+    const value = series ? series[dayIndex] : null;
+    if (value == null || value < daysWithout) return false;
+  }
+  return true;
+}
+
 function evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
   if (condition.comparator === "risingStreak" || condition.comparator === "fallingStreak") {
     const days = Math.max(1, Math.round(Number(condition.value) || 1));
@@ -1960,10 +2085,17 @@ function evaluateBlockCondition(condition, index, cache, positionRatioHistory, h
     const series = getBlockConditionSeries(condition, cache, positionRatioHistory, holdingDaysHistory);
     return isMonotonicStreak(series, index, days, direction);
   }
+  const isWaveExtremeCompound = (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow")
+    && (condition.daysSinceHigh != null || condition.daysWithoutNewLow != null
+      || condition.daysSinceLow != null || condition.daysWithoutNewHigh != null);
   const sustainedDays = Math.max(1, Math.round(Number(condition.sustainedDays) || 1));
   for (let offset = 0; offset < sustainedDays; offset += 1) {
     const dayIndex = index - offset;
     if (dayIndex < 0) return false;
+    if (isWaveExtremeCompound) {
+      if (!evaluateWaveExtremeConditionOnDay(condition, dayIndex, cache)) return false;
+      continue;
+    }
     const value = getBlockConditionValue(condition, dayIndex, cache, positionRatioHistory, holdingDaysHistory);
     if (!compareBlockValue(value, condition.comparator, condition.value)) return false;
   }
@@ -2025,6 +2157,21 @@ function describeBlockCondition(condition) {
   if (condition.indicator === "formula") {
     const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
     return `${sustain}公式[${condition.formula}]${condition.comparator}${condition.value}`;
+  }
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
+    const isHigh = condition.indicator === "drawdownFromWaveHigh";
+    const daysSince = isHigh ? condition.daysSinceHigh : condition.daysSinceLow;
+    const daysWithout = isHigh ? condition.daysWithoutNewLow : condition.daysWithoutNewHigh;
+    if (daysSince != null || daysWithout != null) {
+      const parts = [];
+      if (condition.value !== null && condition.value !== undefined) {
+        const sustain = condition.sustainedDays && condition.sustainedDays > 1 ? `连续${condition.sustainedDays}天` : "";
+        parts.push(`${sustain}${getBlockIndicatorLabel(condition.indicator)}${condition.comparator}${condition.value}`);
+      }
+      if (daysSince != null) parts.push(`距${isHigh ? "高" : "低"}点≥${daysSince}天`);
+      if (daysWithout != null) parts.push(`${isHigh ? "未创新低" : "未创新高"}≥${daysWithout}天`);
+      return parts.join("且");
+    }
   }
   const label = getBlockIndicatorLabel(condition.indicator);
   const days = condition.lookbackDays ? `${condition.lookbackDays}日` : "";
@@ -2395,8 +2542,18 @@ const CONDITION_FIELD_LABELS = {
   sustainedDays: "持续天数",
   value: "阈值",
   waveThreshold: "波浪确认阈值%",
+  daysSinceHigh: "距高点天数",
+  daysWithoutNewLow: "未创新低天数",
+  daysSinceLow: "距低点天数",
+  daysWithoutNewHigh: "未创新高天数",
 };
-const CONDITION_INTEGER_FIELDS = new Set(["lookbackDays", "slopeWindowDays", "sustainedDays"]);
+// daysSinceHigh/daysWithoutNewLow/daysSinceLow/daysWithoutNewHigh (drawdownFromWaveHigh/
+// riseFromWaveLow's optional day-count sub-fields — see buildBlockRuleSeriesCache) are day
+// counts same as lookbackDays/sustainedDays, so the optimizer must treat them as integers too.
+const CONDITION_INTEGER_FIELDS = new Set([
+  "lookbackDays", "slopeWindowDays", "sustainedDays",
+  "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh",
+]);
 // These indicators are inherently day-counts, so their comparison threshold (the
 // "value" field) only ever makes sense as a whole number too — e.g. "未创新低天数
 // >= 0.667" is meaningless, since a day count can't be a fraction of a day.
@@ -2410,7 +2567,7 @@ const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
   (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
     const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
-    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold"].forEach((field) => {
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
       const raw = condition[field];
       if (raw === null || raw === undefined || raw === "") return;
       const current = Number(raw);
