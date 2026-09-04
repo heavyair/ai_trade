@@ -14400,8 +14400,23 @@ if (viewGeneratedModelParamsButton) {
 }
 
 if (saveGeneratedModelButton) {
+  // Same window.prompt-for-a-name pattern saveAsNewPresetButton already uses — the inline
+  // "预设名称" field above is easy to miss (or leave on its "自动生成" placeholder) since
+  // nothing forces the user to look at it before clicking 生成安全模型, so this asks again,
+  // right at the point of saving, defaulting to whatever createSafePresetDraft already
+  // resolved (the inline field's value if filled in, otherwise the AI's own suggested label
+  // or the auto-generated fallback).
   saveGeneratedModelButton.addEventListener("click", async () => {
     if (!generatedPresetDraft) return;
+    const defaultLabel = String(generatedPresetDraft.preset.label || "").slice(0, 60);
+    const label = window.prompt("请输入模型名称：", defaultLabel);
+    if (label === null) return;
+    const trimmed = label.trim().slice(0, 80);
+    if (!trimmed) {
+      setStatus("模型名称不能为空。", true);
+      return;
+    }
+    generatedPresetDraft.preset.label = trimmed;
     const presetName = await saveGeneratedPreset(generatedPresetDraft.preset);
     if (!presetName) return;
     generatedPresetDraft = null;
