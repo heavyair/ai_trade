@@ -99,7 +99,8 @@ function writeProgress(patch) {
 async function loadRows(symbol, market) {
   const result = await pool.query(`
     SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume,
-           dv.pe, dv.pe_ttm, dv.pb
+           dv.pe, dv.pe_ttm, dv.pb,
+           sf.gross_margin, sf.roe, sf.revenue_growth
     FROM daily_prices dp
     LEFT JOIN LATERAL (
       -- Forward-fill: see run-watch-alerts.js's loadRows for why (US PE lands once a day,
@@ -111,6 +112,17 @@ async function loadRows(symbol, market) {
       ORDER BY trade_date DESC
       LIMIT 1
     ) dv ON TRUE
+    LEFT JOIN LATERAL (
+      -- Same forward-fill idea, but financial-statement data lands quarterly (A-share) or only
+      -- annually (US, via AKShare) rather than daily, so the lookback has to be wide enough to
+      -- span a full US annual gap plus filing delay — 400 days covers that with margin.
+      SELECT gross_margin, roe, revenue_growth
+      FROM stock_fundamentals
+      WHERE symbol = dp.symbol AND market = dp.market
+        AND report_date <= dp.trade_date AND report_date >= dp.trade_date - INTERVAL '400 days'
+      ORDER BY report_date DESC
+      LIMIT 1
+    ) sf ON TRUE
     WHERE dp.symbol = $1 AND dp.market = $2
     ORDER BY dp.trade_date ASC
   `, [symbol, market]);
@@ -121,6 +133,9 @@ async function loadRows(symbol, market) {
       pe: row.pe !== null ? Number(row.pe) : undefined,
       peTtm: row.pe_ttm !== null ? Number(row.pe_ttm) : undefined,
       pb: row.pb !== null ? Number(row.pb) : undefined,
+      grossMargin: row.gross_margin !== null ? Number(row.gross_margin) : undefined,
+      roe: row.roe !== null ? Number(row.roe) : undefined,
+      revenueGrowth: row.revenue_growth !== null ? Number(row.revenue_growth) : undefined,
     }))
     .filter((row) => Number.isFinite(row.open) && Number.isFinite(row.close) && row.close > 0
       && Number.isFinite(row.high) && Number.isFinite(row.low));

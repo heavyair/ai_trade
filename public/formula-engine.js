@@ -45,7 +45,7 @@
   const MIN_WINDOW = 1;
   const MAX_WINDOW = 250;
 
-  const FIELDS = new Set(["close", "open", "high", "low", "volume", "pe", "peTtm", "pb"]);
+  const FIELDS = new Set(["close", "open", "high", "low", "volume", "pe", "peTtm", "pb", "grossMargin", "roe", "revenueGrowth"]);
   const WINDOW_FUNCS = new Set(["sma", "ema", "stdev", "max", "min", "sum"]);
   const FIXED_FUNCS = new Set(["rsi", "atr"]);
   const UNARY_FUNCS = new Set(["abs"]);

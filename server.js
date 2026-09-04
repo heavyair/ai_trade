@@ -259,6 +259,26 @@ async function initializeDatabase() {
       PRIMARY KEY(symbol, market, trade_date)
     );
 
+    -- 毛利率/净资产收益率/营收增长率 — one row per DISCLOSED financial report period, not per
+    -- trading day (unlike daily_valuations' PE/PB, which the source itself already computes
+    -- daily). A股 gets quarterly + annual periods; 美股 only gets annual (AKShare's US
+    -- indicator endpoint has no quarterly option — confirmed by testing). Forward-filled into
+    -- each trading day at query time (see load-rows.js and its per-script copies), same idea
+    -- as daily_valuations' JOIN LATERAL but with a much longer lookback window since periods
+    -- here can be ~1 year apart, not ~1 day.
+    CREATE TABLE IF NOT EXISTS stock_fundamentals (
+      symbol TEXT NOT NULL,
+      market TEXT NOT NULL,
+      report_date DATE NOT NULL,
+      gross_margin DOUBLE PRECISION,
+      roe DOUBLE PRECISION,
+      revenue_growth DOUBLE PRECISION,
+      source TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(symbol, market, report_date)
+    );
+
     CREATE TABLE IF NOT EXISTS data_fetch_logs (
       id TEXT PRIMARY KEY,
       symbol TEXT NOT NULL,
@@ -4366,6 +4386,147 @@ async function fetchAkshareValuations({ code, start, end }) {
   }
 }
 
+function parseAkshareFundamentalsRows(payload) {
+  const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  return rows
+    .map((item) => ({
+      date: parseDateOnly(item.date),
+      grossMargin: toValidNumberOrNull(item.grossMargin),
+      roe: toValidNumberOrNull(item.roe),
+      revenueGrowth: toValidNumberOrNull(item.revenueGrowth),
+    }))
+    .filter((item) => item.date)
+    .filter((item) => item.grossMargin !== null || item.roe !== null || item.revenueGrowth !== null)
+    .sort((a, b) => itemDateCompare(a.date, b.date));
+}
+
+async function fetchAkshareFundamentals({ code, market }) {
+  try {
+    const payload = await runAkshareBridge("fundamentals", { code, market });
+    return parseAkshareFundamentalsRows(payload);
+  } catch (error) {
+    console.warn(`AKShare fundamentals fetch skipped for ${code}: ${error.message}`);
+    return [];
+  }
+}
+
+async function persistFundamentalsRows(code, market, rows) {
+  for (const row of rows) {
+    await dbPool.query(`
+      INSERT INTO stock_fundamentals (symbol, market, report_date, gross_margin, roe, revenue_growth, source, updated_at)
+      VALUES ($1, $2, $3::date, $4, $5, $6, $7, NOW())
+      ON CONFLICT (symbol, market, report_date) DO UPDATE
+        SET gross_margin = EXCLUDED.gross_margin,
+            roe = EXCLUDED.roe,
+            revenue_growth = EXCLUDED.revenue_growth,
+            source = EXCLUDED.source,
+            updated_at = NOW()
+    `, [code, market, row.date, row.grossMargin, row.roe, row.revenueGrowth, "AKShare"]);
+  }
+}
+
+// Quarterly/annual data doesn't need daily-fresh checks — a report that was current yesterday
+// is still current today. 100 days comfortably covers checking in at least ~3-4x/year even for
+// the US annual-only source, so a new disclosure doesn't sit unnoticed for a full year.
+const FUNDAMENTALS_STALE_TOLERANCE_DAYS = 100;
+
+async function ensureFreshFundamentals(code, market) {
+  const result = await dbPool.query(
+    `SELECT MAX(updated_at) AS last_updated FROM stock_fundamentals WHERE symbol = $1 AND market = $2`,
+    [code, market]
+  );
+  const lastUpdated = result.rows[0] && result.rows[0].last_updated;
+  if (lastUpdated) {
+    const daysSince = Math.round((Date.now() - new Date(lastUpdated).getTime()) / 86400000);
+    if (daysSince <= FUNDAMENTALS_STALE_TOLERANCE_DAYS) return { refreshed: false };
+  }
+  const rows = await fetchAkshareFundamentals({ code, market });
+  if (rows.length === 0) return { refreshed: false, error: "no data returned" };
+  await persistFundamentalsRows(code, market, rows);
+  return { refreshed: true, rowCount: rows.length };
+}
+
+// All stored reports up to `end` (no lower bound — mergeFundamentalsIntoRows forward-fills from
+// whatever the latest report on-or-before each row's date is, so a report from years before
+// `start` still has to be in this list for the very first requested row to resolve correctly).
+async function fetchStoredFundamentals({ code, market, end }) {
+  const result = await dbPool.query(
+    `SELECT report_date, gross_margin, roe, revenue_growth
+     FROM stock_fundamentals
+     WHERE symbol = $1 AND market = $2 AND report_date <= $3::date
+     ORDER BY report_date ASC`,
+    [code, market, end]
+  );
+  return result.rows.map((row) => ({
+    date: row.report_date.toISOString().slice(0, 10),
+    grossMargin: row.gross_margin !== null ? Number(row.gross_margin) : null,
+    roe: row.roe !== null ? Number(row.roe) : null,
+    revenueGrowth: row.revenue_growth !== null ? Number(row.revenue_growth) : null,
+  }));
+}
+
+// Same forward-fill shape as mergeValuationsIntoRows, but for quarterly/annual fundamentals
+// instead of daily PE — no time-window cutoff needed here since a report genuinely does stay
+// "current" until the next one is disclosed (unlike PE, which goes stale within days).
+function mergeFundamentalsIntoRows(rows, fundamentals) {
+  if (!Array.isArray(fundamentals) || fundamentals.length === 0) {
+    return rows.map((row) => ({ ...row, grossMargin: null, roe: null, revenueGrowth: null }));
+  }
+
+  let fundamentalsIndex = 0;
+  let latest = null;
+  return rows.map((row) => {
+    while (fundamentalsIndex < fundamentals.length && fundamentals[fundamentalsIndex].date <= row.date) {
+      latest = fundamentals[fundamentalsIndex];
+      fundamentalsIndex += 1;
+    }
+
+    return {
+      ...row,
+      grossMargin: latest && Number.isFinite(latest.grossMargin) ? latest.grossMargin : null,
+      roe: latest && Number.isFinite(latest.roe) ? latest.roe : null,
+      revenueGrowth: latest && Number.isFinite(latest.revenueGrowth) ? latest.revenueGrowth : null,
+    };
+  });
+}
+
+// Mirrors /api/klines' role for scripts/universe/ensure-fresh-data.js: standalone batch scripts
+// (which can't require() server.js directly) hit this over localhost HTTP to trigger a refresh
+// instead of duplicating the AKShare-bridge-plus-persist logic — see ensure-fresh-fundamentals.js.
+async function handleFundamentalsApi(req, res, requestUrl) {
+  try {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const symbol = normalizeCode(requestUrl.searchParams.get("code") || "");
+    if (!symbol) {
+      sendJson(res, 400, { error: "缺少股票代码。" });
+      return;
+    }
+    const market = isChinaCode(symbol) ? inferMarket(symbol) : "US";
+    await ensureDbReady();
+    const result = await ensureFreshFundamentals(symbol, market);
+    const stored = await dbPool.query(
+      `SELECT report_date, gross_margin, roe, revenue_growth, updated_at
+       FROM stock_fundamentals WHERE symbol = $1 AND market = $2 ORDER BY report_date ASC`,
+      [symbol, market]
+    );
+    sendJson(res, 200, {
+      symbol, market, refreshed: Boolean(result.refreshed),
+      rows: stored.rows.map((row) => ({
+        reportDate: row.report_date.toISOString().slice(0, 10),
+        grossMargin: row.gross_margin !== null ? Number(row.gross_margin) : null,
+        roe: row.roe !== null ? Number(row.roe) : null,
+        revenueGrowth: row.revenue_growth !== null ? Number(row.revenue_growth) : null,
+        updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+      })),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取财务指标失败。" });
+  }
+}
+
 function parseAkshareKlineRows(payload) {
   const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
   return rows
@@ -4729,7 +4890,15 @@ async function fetchKlines({ code, start, end }) {
       valuationSource = " + Hugging Face PE (cached)";
     }
   }
-  const rows = mergeValuationsIntoRows(result.rows, valuations);
+  let rows = mergeValuationsIntoRows(result.rows, valuations);
+  try {
+    await ensureFreshFundamentals(code, market);
+    const fundamentalsRows = await fetchStoredFundamentals({ code, market, end });
+    rows = mergeFundamentalsIntoRows(rows, fundamentalsRows);
+  } catch (fundamentalsError) {
+    console.warn(`Fundamentals merge skipped for ${code}: ${fundamentalsError.message}`);
+    rows = rows.map((row) => ({ ...row, grossMargin: null, roe: null, revenueGrowth: null }));
+  }
   const source = `${result.source}${valuationSource}`;
   const info = {
     code,
@@ -5124,6 +5293,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/klines") {
     handleApi(req, res, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/fundamentals") {
+    handleFundamentalsApi(req, res, requestUrl);
     return;
   }
 

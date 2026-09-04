@@ -61,6 +61,53 @@ def fetch_valuations(ak, payload):
     return {"source": "AKShare stock_a_lg_indicator", "rows": rows}
 
 
+def fetch_fundamentals(ak, payload):
+    # 毛利率/净资产收益率/营收增长率 — quarterly/annual financial-statement data, NOT daily
+    # like PE/PB. A-share uses Sina's 财务分析指标 (already returns every disclosed period,
+    # quarterly and annual mixed); US stocks only expose an ANNUAL report via AKShare's
+    # 美股财务指标 endpoint (no quarterly "indicator" value is accepted there — confirmed by
+    # testing 一季报/中报/三季报 against a real symbol, all rejected).
+    code = str(payload["code"])
+    market = str(payload.get("market") or "")
+    is_us = market == "US"
+
+    if is_us:
+        frame = ak.stock_financial_us_analysis_indicator_em(symbol=code, indicator="年报")
+
+        def map_row(item):
+            date = clean_date(item.get("REPORT_DATE"))
+            if not date:
+                return None
+            return {
+                "date": date,
+                "grossMargin": clean_number(item.get("GROSS_PROFIT_RATIO")),
+                "roe": clean_number(item.get("ROE_AVG")),
+                "revenueGrowth": clean_number(item.get("OPERATE_INCOME_YOY")),
+            }
+
+        source = "AKShare stock_financial_us_analysis_indicator_em"
+    else:
+        code6 = code.zfill(6)
+        frame = ak.stock_financial_analysis_indicator(symbol=code6)
+
+        def map_row(item):
+            date = clean_date(item.get("日期"))
+            if not date:
+                return None
+            return {
+                "date": date,
+                "grossMargin": clean_number(item.get("销售毛利率(%)")),
+                "roe": clean_number(item.get("净资产收益率(%)")),
+                "revenueGrowth": clean_number(item.get("主营业务收入增长率(%)")),
+            }
+
+        source = "AKShare stock_financial_analysis_indicator"
+
+    rows = frame_to_rows(frame, map_row)
+    rows.sort(key=lambda row: row["date"])
+    return {"source": source, "rows": rows}
+
+
 def fetch_klines(ak, payload):
     code = str(payload["code"]).zfill(6)
     start = str(payload["start"]).replace("-", "")
@@ -138,6 +185,8 @@ def main():
     mode = payload.get("mode")
     if mode == "valuations":
         result = fetch_valuations(ak, payload)
+    elif mode == "fundamentals":
+        result = fetch_fundamentals(ak, payload)
     elif mode == "klines":
         result = fetch_klines(ak, payload)
     elif mode == "index_cons":

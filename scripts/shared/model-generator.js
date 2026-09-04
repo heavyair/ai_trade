@@ -504,7 +504,7 @@ function buildPromptGuideLines(schema) {
     }),
     "drawdownFromWaveHigh 和 riseFromWaveLow 条件都有一个专属字段 condition.waveThreshold（不是模型全局共用的，是这一条 condition 自己的）——drawdownFromWaveHigh 是价格从候选高点回落超过这个百分比才把该高点确认锁定为“波浪高点”，riseFromWaveLow 是价格从候选低点反弹超过这个百分比才把该低点确认锁定为“波浪低点”，两者是完全对称的同一套确认机制，只是方向相反，都是用来过滤噪音、只认真正的转折点；一个模型里如果有多条这两种条件，各自可以有不同的确认阈值，不用互相牵制。默认规则：用户没有明确指定这个阈值时，取这条条件自己 value（回撤/反弹目标）的 2/3 作为 waveThreshold；取值必须大于等于1、且必须小于这条条件自己的 value——绝对不要生成接近0（比如0.1、0.5）或者大于等于 value 的数值：太小会导致“波浪高点/低点”被任何一天的正常波动噪音刷新，起不到过滤转折点的作用；大于等于 value 则会导致高点/低点要等回撤/反弹已经达到甚至超过要筛选的目标才被确认，参考价位会滞后、失真。其他所有指标不需要这个字段，必须设为 null。",
     "condition.comparator 除了 >、>=、<、<=、== 之外，还有 risingStreak 和 fallingStreak 两个特殊值：用来表达“某个指标自己连续 N 天每天都在涨/跌”（比如“10日均线连续3天每天都在涨”“RSI连续5天下降”），这跟 maSlope 只看首尾两个点净变化不一样——risingStreak/fallingStreak 会检查这 N 天里逐日都是同一个方向。用户描述里出现“连续N天都在涨/跌”“连续上行/下行”这类明确要求逐日同向的表述时，必须用 risingStreak/fallingStreak，不要用 maSlope+sustainedDays 或 maSlope+slopeWindowDays 去凑。用这两个值时，condition.value 表示天数 N（正整数），不是阈值，sustainedDays 留空即可。",
-    "formula 指标——当用户描述的比较关系用上面固定指标（哪怕组合 sustainedDays/risingStreak）都拼不出来时用这个，最典型的场景是“比较两个不同字段”（比如最低价和均线比较，而不是收盘价；或者当天振幅和历史振幅比较）。用法：indicator 设为 \"formula\"，condition.formula 写一个数学表达式字符串，lookbackDays/slopeWindowDays 都设为 null（窗口天数写在公式字符串内部），comparator/value/sustainedDays 用法不变——公式算出的数字按普通指标一样跟 value 比较。formula 语法：字段 close/open/high/low/volume/pe/peTtm/pb，字段名后面可以加 [-N] 表示N个交易日前（比如 close[-1] 是昨天收盘价），不能写正数偏移量（不能看未来）；函数 sma(表达式,N)/ema(表达式,N)/stdev(表达式,N)/max(表达式,N)/min(表达式,N)/sum(表达式,N)（N 是1-250的整数窗口天数）、rsi(N)、atr(N)、abs(表达式)；支持 + - * / 和括号。formula 语法里没有且/或（and/or），如果需要同时满足多个条件，拆成同一个规则块里的多条 condition（block-rules 里块内条件本来就是且的关系）。公式字符串长度不能超过200字符。示例——“最低价跌破10日均线连续3天卖出”对应 { indicator: \"formula\", formula: \"low - sma(close, 10)\", comparator: \"<\", value: 0, sustainedDays: 3, lookbackDays: null, slopeWindowDays: null }（这跟“收盘价跌破均线”不一样，收盘价跌破用 maValue 就够了，只有明确说“最低价”这种固定指标覆盖不到的字段组合才需要 formula）。对应的完整 JSON：",
+    "formula 指标——当用户描述的比较关系用上面固定指标（哪怕组合 sustainedDays/risingStreak）都拼不出来时用这个，最典型的场景是“比较两个不同字段”（比如最低价和均线比较，而不是收盘价；或者当天振幅和历史振幅比较）。用法：indicator 设为 \"formula\"，condition.formula 写一个数学表达式字符串，lookbackDays/slopeWindowDays 都设为 null（窗口天数写在公式字符串内部），comparator/value/sustainedDays 用法不变——公式算出的数字按普通指标一样跟 value 比较。formula 语法：字段 close/open/high/low/volume/pe/peTtm/pb/grossMargin/roe/revenueGrowth，字段名后面可以加 [-N] 表示N个交易日前（比如 close[-1] 是昨天收盘价），不能写正数偏移量（不能看未来）；函数 sma(表达式,N)/ema(表达式,N)/stdev(表达式,N)/max(表达式,N)/min(表达式,N)/sum(表达式,N)（N 是1-250的整数窗口天数）、rsi(N)、atr(N)、abs(表达式)；支持 + - * / 和括号。formula 语法里没有且/或（and/or），如果需要同时满足多个条件，拆成同一个规则块里的多条 condition（block-rules 里块内条件本来就是且的关系）。公式字符串长度不能超过200字符。示例——“最低价跌破10日均线连续3天卖出”对应 { indicator: \"formula\", formula: \"low - sma(close, 10)\", comparator: \"<\", value: 0, sustainedDays: 3, lookbackDays: null, slopeWindowDays: null }（这跟“收盘价跌破均线”不一样，收盘价跌破用 maValue 就够了，只有明确说“最低价”这种固定指标覆盖不到的字段组合才需要 formula）。对应的完整 JSON：",
     JSON.stringify({
       strategyType: "block-rules",
       sellBlockRules: [{
@@ -566,6 +566,18 @@ function buildPromptGuideLines(schema) {
           { indicator: "daysSinceNewHigh", lookbackDays: 750, slopeWindowDays: null, comparator: "<=", value: 3, sustainedDays: null },
           { indicator: "drawdownFromBreakoutHigh", lookbackDays: 750, slopeWindowDays: null, comparator: "<=", value: 0, sustainedDays: null },
           { indicator: "formula", formula: "peTtm", lookbackDays: null, slopeWindowDays: null, comparator: "<", value: 30, sustainedDays: null },
+        ],
+        action: { type: "targetPercent", value: 100 },
+      }],
+    }),
+    "毛利率(grossMargin)、净资产收益率(roe)、营收增长率(revenueGrowth) 这三个字段跟 pe/peTtm/pb 一样只能出现在 formula 表达式里，取值是百分比数字（比如15.2表示15.2%，不是0.152）。跟 pe/peTtm/pb 的关键区别：pe/peTtm/pb 是每天更新的，这三个是季度或年报数据，实际每隔几十到几百天才更新一次，同一份财报公布之前的每一天都会看到同一个数值（按最近一次已公布的报告向前填充）——所以它们天然适合当“质量过滤器”（长期基本面达标与否），不适合当高频触发信号，不要用它们配合很短的 sustainedDays 或者指望它们每天变化。用户描述里出现“净资产收益率”“ROE”“毛利率”“营收增长率”“收入增长率”这类词、且是跟财务/基本面相关的百分比比较（不是均线/成交量等技术指标）时才用这些字段。示例——“净资产收益率大于15%，并且距离波浪模型最近高点下跌超过20%就买入”（基本面质量过滤器 AND 技术面时机，属于同一个规则块内的两条且关系条件）：",
+    JSON.stringify({
+      strategyType: "block-rules",
+      buyBlockRules: [{
+        enabled: true,
+        conditions: [
+          { indicator: "formula", formula: "roe", lookbackDays: null, slopeWindowDays: null, comparator: ">", value: 15, sustainedDays: null },
+          { indicator: "drawdownFromWaveHigh", lookbackDays: null, comparator: ">", value: 20, slopeWindowDays: null, sustainedDays: null, waveThreshold: 13.33 },
         ],
         action: { type: "targetPercent", value: 100 },
       }],
