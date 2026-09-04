@@ -1,6 +1,6 @@
 {
   "generatedAt": "2026-08-19",
-  "notes": "CSI 300 (沪深300) constituents fetched live via AKShare index_stock_cons_csindex(symbol=\"000300\") on 2026-08-19. Nasdaq-100 (纳指100) constituents sourced from a public constituents list (~Feb 2026 snapshot) plus QQQ and NET (Cloudflare) added explicitly. Both indices rebalance periodically (CSI 300 semi-annually, Nasdaq-100 annually in December plus occasional special replacements) — re-run scripts/universe/refresh-csi300.js and refresh the Nasdaq-100 list periodically to keep this current.",
+  "notes": "CSI 300 (沪深300) constituents fetched live via AKShare index_stock_cons_csindex(symbol=\"000300\") on 2026-08-19. Nasdaq-100 (纳指100) constituents sourced from a public constituents list (~Feb 2026 snapshot) plus QQQ and NET (Cloudflare) added explicitly. Both indices rebalance periodically (CSI 300 semi-annually, Nasdaq-100 annually in December plus occasional special replacements) — re-run scripts/universe/refresh-csi300.js and refresh the Nasdaq-100 list periodically to keep this current. Hang Seng Index (恒生指数, tag \"hsi\") constituents: top 50 by weight only (of 93 total), sourced from the official Hang Seng Indexes monthly factsheet (hsi.com.hk/static/uploads/contents/en/dl_centre/factsheets/hsie.pdf, July 2026 issue) on 2026-09-04 — the remaining ~43 lower-weight constituents were not added because no equally reliable public source for the full list was found. This system has no Hong Kong market data source yet (daily_prices/fetchKlines don't support HK), so this list is a reserved-for-later addition to the AI 验证搜索 index picker, not yet usable for backtesting.",
   "symbols": [
     {
       "code": "000001",
@@ -2419,6 +2419,306 @@
       "market": "US",
       "name": "Cloudflare",
       "index": "extra"
+    },
+    {
+      "code": "0005",
+      "market": "HK",
+      "name": "HSBC Holdings",
+      "index": "hsi"
+    },
+    {
+      "code": "0700",
+      "market": "HK",
+      "name": "Tencent",
+      "index": "hsi"
+    },
+    {
+      "code": "9988",
+      "market": "HK",
+      "name": "Alibaba-W",
+      "index": "hsi"
+    },
+    {
+      "code": "0939",
+      "market": "HK",
+      "name": "CCB",
+      "index": "hsi"
+    },
+    {
+      "code": "1299",
+      "market": "HK",
+      "name": "AIA",
+      "index": "hsi"
+    },
+    {
+      "code": "1398",
+      "market": "HK",
+      "name": "ICBC",
+      "index": "hsi"
+    },
+    {
+      "code": "1810",
+      "market": "HK",
+      "name": "Xiaomi-W",
+      "index": "hsi"
+    },
+    {
+      "code": "0941",
+      "market": "HK",
+      "name": "China Mobile",
+      "index": "hsi"
+    },
+    {
+      "code": "3690",
+      "market": "HK",
+      "name": "Meituan-W",
+      "index": "hsi"
+    },
+    {
+      "code": "0388",
+      "market": "HK",
+      "name": "HKEX",
+      "index": "hsi"
+    },
+    {
+      "code": "2318",
+      "market": "HK",
+      "name": "Ping An",
+      "index": "hsi"
+    },
+    {
+      "code": "3988",
+      "market": "HK",
+      "name": "Bank of China",
+      "index": "hsi"
+    },
+    {
+      "code": "0883",
+      "market": "HK",
+      "name": "CNOOC",
+      "index": "hsi"
+    },
+    {
+      "code": "1211",
+      "market": "HK",
+      "name": "BYD Company",
+      "index": "hsi"
+    },
+    {
+      "code": "9999",
+      "market": "HK",
+      "name": "NetEase-S",
+      "index": "hsi"
+    },
+    {
+      "code": "0981",
+      "market": "HK",
+      "name": "SMIC",
+      "index": "hsi"
+    },
+    {
+      "code": "6160",
+      "market": "HK",
+      "name": "BeOne Medicines",
+      "index": "hsi"
+    },
+    {
+      "code": "2628",
+      "market": "HK",
+      "name": "China Life",
+      "index": "hsi"
+    },
+    {
+      "code": "0857",
+      "market": "HK",
+      "name": "PetroChina",
+      "index": "hsi"
+    },
+    {
+      "code": "9618",
+      "market": "HK",
+      "name": "JD-SW",
+      "index": "hsi"
+    },
+    {
+      "code": "2899",
+      "market": "HK",
+      "name": "Zijin Mining",
+      "index": "hsi"
+    },
+    {
+      "code": "0001",
+      "market": "HK",
+      "name": "CKH Holdings",
+      "index": "hsi"
+    },
+    {
+      "code": "3968",
+      "market": "HK",
+      "name": "CM Bank",
+      "index": "hsi"
+    },
+    {
+      "code": "0669",
+      "market": "HK",
+      "name": "Techtronic Ind",
+      "index": "hsi"
+    },
+    {
+      "code": "2388",
+      "market": "HK",
+      "name": "BOC Hong Kong",
+      "index": "hsi"
+    },
+    {
+      "code": "0016",
+      "market": "HK",
+      "name": "SHK Ppt",
+      "index": "hsi"
+    },
+    {
+      "code": "0992",
+      "market": "HK",
+      "name": "Lenovo Group",
+      "index": "hsi"
+    },
+    {
+      "code": "9888",
+      "market": "HK",
+      "name": "Baidu-SW",
+      "index": "hsi"
+    },
+    {
+      "code": "2269",
+      "market": "HK",
+      "name": "WuXi Bio",
+      "index": "hsi"
+    },
+    {
+      "code": "1801",
+      "market": "HK",
+      "name": "Innovent Bio",
+      "index": "hsi"
+    },
+    {
+      "code": "1088",
+      "market": "HK",
+      "name": "China Shenhua",
+      "index": "hsi"
+    },
+    {
+      "code": "1024",
+      "market": "HK",
+      "name": "Kuaishou-W",
+      "index": "hsi"
+    },
+    {
+      "code": "0002",
+      "market": "HK",
+      "name": "CLP Holdings",
+      "index": "hsi"
+    },
+    {
+      "code": "0175",
+      "market": "HK",
+      "name": "Geely Auto",
+      "index": "hsi"
+    },
+    {
+      "code": "3750",
+      "market": "HK",
+      "name": "CATL",
+      "index": "hsi"
+    },
+    {
+      "code": "9992",
+      "market": "HK",
+      "name": "Pop Mart",
+      "index": "hsi"
+    },
+    {
+      "code": "2020",
+      "market": "HK",
+      "name": "Anta Sports",
+      "index": "hsi"
+    },
+    {
+      "code": "1109",
+      "market": "HK",
+      "name": "China Res Land",
+      "index": "hsi"
+    },
+    {
+      "code": "0823",
+      "market": "HK",
+      "name": "Link REIT",
+      "index": "hsi"
+    },
+    {
+      "code": "9961",
+      "market": "HK",
+      "name": "Trip.com-S",
+      "index": "hsi"
+    },
+    {
+      "code": "0386",
+      "market": "HK",
+      "name": "Sinopec Corp",
+      "index": "hsi"
+    },
+    {
+      "code": "1113",
+      "market": "HK",
+      "name": "CK Asset",
+      "index": "hsi"
+    },
+    {
+      "code": "9633",
+      "market": "HK",
+      "name": "Nongfu Spring",
+      "index": "hsi"
+    },
+    {
+      "code": "1378",
+      "market": "HK",
+      "name": "China Hongqiao",
+      "index": "hsi"
+    },
+    {
+      "code": "0006",
+      "market": "HK",
+      "name": "Power Assets",
+      "index": "hsi"
+    },
+    {
+      "code": "0003",
+      "market": "HK",
+      "name": "HK & China Gas",
+      "index": "hsi"
+    },
+    {
+      "code": "2359",
+      "market": "HK",
+      "name": "WuXi AppTec",
+      "index": "hsi"
+    },
+    {
+      "code": "2015",
+      "market": "HK",
+      "name": "Li Auto-W",
+      "index": "hsi"
+    },
+    {
+      "code": "0267",
+      "market": "HK",
+      "name": "CITIC",
+      "index": "hsi"
+    },
+    {
+      "code": "0288",
+      "market": "HK",
+      "name": "WH Group",
+      "index": "hsi"
     }
   ]
 }

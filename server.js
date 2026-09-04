@@ -2869,8 +2869,12 @@ async function handleAdminValidatedSearchRunApi(req, res) {
         }
         symbols = resolved.rows.map((row) => String(row.code || "").trim().toUpperCase()).filter(Boolean).slice(0, 350);
       } else {
+        // Was capped at 50 (a manual hand-picked list). Raised to match the index-triggered
+        // path's 350 headroom plus margin — an admin can now also submit a large ad-hoc list
+        // built from a DB query (e.g. "every symbol with a qualified model, plus every symbol
+        // anyone has ever run 历史模拟 against"), not just a few hand-picked tickers.
         symbols = Array.isArray(payload.symbols)
-          ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 50)
+          ? payload.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean).slice(0, 800)
           : [];
       }
       if (symbols.length === 0) {

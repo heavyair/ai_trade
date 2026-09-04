@@ -61,7 +61,18 @@ const CATALOG_SEED = [
   {
     mappingId: "NASDAQ100", officialName: "Nasdaq-100 Index", shortName: "纳指100", code: "NDX",
     indexCompany: "Nasdaq", marketCoverage: "美国 Nasdaq", constituentCountHint: "100家公司*",
-    fetchSource: "static_snapshot", market: "US", available: true,
+    fetchSource: "static_snapshot", market: "US", available: true, staticTag: "ndx100",
+  },
+  // 2026-09-04：应用户要求先建好目录条目+成分股名单备用——这个系统目前完全没有港股行情
+  // 数据源（daily_prices/fetchKlines都不支持HK），所以这个 mappingId 现在选得到但用它跑
+  // 验证搜索/建盯盘会在拉K线那一步失败，故意先占位，不是这次的疏漏。成分股名单只收录了
+  // 恒生指数官方月度概览（hsi.com.hk/static/uploads/contents/en/dl_centre/factsheets/hsie.pdf，
+  // 2026年7月刊）里按权重公开披露的前50家（该月刊只公开前50家，全部93家的完整名单没有
+  // 找到同样可信的公开数据源）——权重上已覆盖指数的绝大部分，不是93家的完整名单。
+  {
+    mappingId: "HSI", officialName: "Hang Seng Index", shortName: "恒生指数", code: "HSI",
+    indexCompany: "恒生指数公司", marketCoverage: "港股主板", constituentCountHint: "前50家（按权重，官方共93家成分股）",
+    fetchSource: "static_snapshot", market: "HK", available: true, staticTag: "hsi",
   },
 ];
 
@@ -80,19 +91,21 @@ async function ensureIndexCatalogTable(pool) {
       market_coverage TEXT NOT NULL DEFAULT '',
       constituent_count_hint TEXT NOT NULL DEFAULT '',
       fetch_source TEXT NOT NULL DEFAULT 'akshare',
+      static_tag TEXT NOT NULL DEFAULT '',
       market TEXT NOT NULL DEFAULT 'CN',
       available BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(`ALTER TABLE index_catalog ADD COLUMN IF NOT EXISTS static_tag TEXT NOT NULL DEFAULT ''`);
   for (const entry of CATALOG_SEED) {
     await pool.query(`
       INSERT INTO index_catalog (
         mapping_id, official_name, short_name, code, index_company, market_coverage,
-        constituent_count_hint, fetch_source, market, available, updated_at
+        constituent_count_hint, fetch_source, static_tag, market, available, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
       ON CONFLICT (mapping_id) DO UPDATE SET
         official_name = EXCLUDED.official_name,
         short_name = EXCLUDED.short_name,
@@ -101,12 +114,13 @@ async function ensureIndexCatalogTable(pool) {
         market_coverage = EXCLUDED.market_coverage,
         constituent_count_hint = EXCLUDED.constituent_count_hint,
         fetch_source = EXCLUDED.fetch_source,
+        static_tag = EXCLUDED.static_tag,
         market = EXCLUDED.market,
         available = EXCLUDED.available,
         updated_at = NOW()
     `, [
       entry.mappingId, entry.officialName, entry.shortName, entry.code, entry.indexCompany,
-      entry.marketCoverage, entry.constituentCountHint, entry.fetchSource, entry.market, entry.available,
+      entry.marketCoverage, entry.constituentCountHint, entry.fetchSource, entry.staticTag || "", entry.market, entry.available,
     ]);
   }
 
@@ -130,6 +144,7 @@ function mapIndexCatalogRow(row) {
     marketCoverage: row.market_coverage,
     constituentCountHint: row.constituent_count_hint,
     fetchSource: row.fetch_source,
+    staticTag: row.static_tag || "",
     market: row.market,
     available: row.available,
   };
@@ -172,8 +187,12 @@ function loadStaticSnapshotConstituents(tag) {
 // fallback, and by scripts/universe/refresh-index-catalog.js's daily cron refresh.
 async function fetchIndexConstituentsFromSource(entry) {
   if (entry.fetchSource === "static_snapshot") {
-    // Only NASDAQ-100 uses this path today — symbols.json tags its entries "ndx100".
-    const rows = loadStaticSnapshotConstituents("ndx100");
+    // entry.staticTag says which symbols.json `index` tag holds this entry's hand-maintained
+    // snapshot (e.g. "ndx100" for NASDAQ100, "hsi" for HSI) — no live fetch path exists for
+    // these (no AKShare index_stock_cons-style function confirmed, or for HSI specifically, no
+    // HK market data source in this codebase at all yet).
+    if (!entry.staticTag) throw new Error(`${entry.mappingId} 没有配置静态成分股快照的 tag。`);
+    const rows = loadStaticSnapshotConstituents(entry.staticTag);
     if (rows.length === 0) throw new Error("静态成分股快照为空。");
     return rows;
   }
