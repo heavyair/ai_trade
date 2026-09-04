@@ -614,6 +614,14 @@ button:disabled {
   background: var(--low);
 }
 
+.candle-up-dot {
+  background: var(--high);
+}
+
+.candle-down-dot {
+  background: var(--low);
+}
+
 .ref-high-dot {
   background: #8a4b08;
 }
@@ -2895,6 +2903,49 @@ textarea:focus {
   fill: none;
   stroke: var(--accent);
   stroke-width: 2.5;
+}
+
+/* drawModelOrderPriceChartInto's candlesticks — colors match --high/--low, the same red/green
+   tokens .buy-dot/.sell-dot already use, so a candle's color reads consistently with the trade
+   markers drawn on top of it (red = 收盘价高于开盘价, 涨；green = 跌). */
+.candle-wick {
+  stroke-width: 1;
+}
+
+.candle-wick.candle-up {
+  stroke: var(--high);
+}
+
+.candle-wick.candle-down {
+  stroke: var(--low);
+}
+
+.candle-body.candle-up {
+  fill: var(--high);
+}
+
+.candle-body.candle-down {
+  fill: var(--low);
+}
+
+.candle-hit-area {
+  fill: transparent;
+  cursor: pointer;
+}
+
+/* A small dot above the wick instead of outlining .candle-body directly — an outline on the
+   body itself nearly blacked out the tiny 1-2px-tall body a single candle renders as at
+   default (unzoomed) chart width, hiding the very up/down color it was supposed to highlight. */
+.candle-selected-marker {
+  fill: #1f2937;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
+.candle-date-label {
+  fill: #1f2937;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .wave-line {

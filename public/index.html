@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260903-wave-high-indicator">
+    <link rel="stylesheet" href="/styles.css?v=20260904-candlestick">
   </head>
   <body>
     <main class="shell">
@@ -1354,8 +1354,14 @@
         <div class="comparison-panel full-width-panel">
           <div class="comparison-head">
             <h3>下单价格曲线</h3>
+            <div class="chart-tools" aria-label="下单价格图缩放">
+              <button id="modelTradesZoomOutButton" type="button">缩小</button>
+              <button id="modelTradesZoomResetButton" type="button">重置</button>
+              <button id="modelTradesZoomInButton" type="button">放大</button>
+            </div>
             <div class="legend">
-              <span><i class="line"></i>收盘价</span>
+              <span><i class="dot candle-up-dot"></i>阳线（涨）</span>
+              <span><i class="dot candle-down-dot"></i>阴线（跌）</span>
               <span><i class="dot buy-dot"></i>买入</span>
               <span><i class="dot sell-dot"></i>卖出</span>
               <span id="modelTradesWaveLegend" class="hidden">
@@ -1492,6 +1498,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260903-wave-high-indicator"></script>
+    <script src="/app.js?v=20260904-candlestick"></script>
   </body>
 </html>

@@ -65,6 +65,9 @@ const priceZoomInButton = document.querySelector("#priceZoomInButton");
 const tradeZoomOutButton = document.querySelector("#tradeZoomOutButton");
 const tradeZoomResetButton = document.querySelector("#tradeZoomResetButton");
 const tradeZoomInButton = document.querySelector("#tradeZoomInButton");
+const modelTradesZoomOutButton = document.querySelector("#modelTradesZoomOutButton");
+const modelTradesZoomResetButton = document.querySelector("#modelTradesZoomResetButton");
+const modelTradesZoomInButton = document.querySelector("#modelTradesZoomInButton");
 const buyRulesContainer = document.querySelector("#buyRules");
 const sellRulesContainer = document.querySelector("#sellRules");
 const initialCashInput = document.querySelector("#initialCashInput");
@@ -397,6 +400,7 @@ let comparisonResults = [];
 let hasBacktestRun = false;
 let priceChartZoom = 1;
 let tradePriceZoom = 1;
+let modelTradesChartZoom = 1;
 let generatedPresetDraft = null;
 let lastRenderedTrades = [];
 let selectedTradeForChart = null;
@@ -12875,7 +12879,7 @@ function drawModelTradesChartWithOverlays(config, rows, trades, finalState, opti
   }
   if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !lowEntry);
 
-  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries });
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries, zoom: modelTradesChartZoom });
 
   if (modelTradesRuleStats) {
     const parts = [];
@@ -13169,9 +13173,38 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   const yMin = Math.max(0, min - spread * 0.12);
   const scaleY = (value) => pad.top + ((yMax - value) / (yMax - yMin)) * innerHeight;
   const xForIndex = (index) => pointX(index, rows.length, pad.left, innerWidth);
-  const pricePath = visibleRows
-    .map((row, index) => `${index === 0 ? "M" : "L"}${xForIndex(index).toFixed(2)},${scaleY(row.close).toFixed(2)}`)
-    .join(" ");
+  // One column per row, spaced the same way xForIndex spaces everything else on this chart —
+  // body width leaves a visible gap between candles, the hit-rect spans the full column so a
+  // click anywhere near a candle (not just its thin body/wick) still resolves to that date.
+  const candleStep = rows.length > 1 ? innerWidth / (rows.length - 1) : innerWidth;
+  const candleBodyWidth = Math.max(1, Math.min(candleStep * 0.62, 26));
+  // Exactly candleStep wide (not floored to some larger minimum) so neighboring hit-rects tile
+  // edge-to-edge instead of overlapping — on a dense chart (many rows packed into a narrow
+  // width) a wider floor made adjacent rects overlap, and since later-drawn (more recent date)
+  // candles paint on top, a click aimed at one candle would silently resolve to its neighbor.
+  const candleHitWidth = Math.max(candleStep, 1);
+  const candleNodes = visibleRows
+    .map((row, index) => {
+      const x = xForIndex(index);
+      const isUp = row.close >= row.open;
+      const colorClass = isUp ? "candle-up" : "candle-down";
+      const highY = scaleY(row.high);
+      const lowY = scaleY(row.low);
+      const openY = scaleY(row.open);
+      const closeY = scaleY(row.close);
+      const bodyTop = Math.min(openY, closeY);
+      const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+      const label = `${row.date} 开${formatPrice(row.open)} 高${formatPrice(row.high)} 低${formatPrice(row.low)} 收${formatPrice(row.close)}`;
+      return `
+        <g class="candle-group" data-role="candle" data-date="${row.date}" data-x="${x.toFixed(2)}" data-high-y="${highY.toFixed(2)}">
+          <rect class="candle-hit-area" x="${(x - candleHitWidth / 2).toFixed(2)}" y="${pad.top}" width="${candleHitWidth.toFixed(2)}" height="${innerHeight}"></rect>
+          <line class="candle-wick ${colorClass}" x1="${x.toFixed(2)}" x2="${x.toFixed(2)}" y1="${highY.toFixed(2)}" y2="${lowY.toFixed(2)}"></line>
+          <rect class="candle-body ${colorClass}" x="${(x - candleBodyWidth / 2).toFixed(2)}" y="${bodyTop.toFixed(2)}" width="${candleBodyWidth.toFixed(2)}" height="${bodyHeight.toFixed(2)}"></rect>
+          <title>${escapeHtml(label)}</title>
+        </g>
+      `;
+    })
+    .join("");
   const ticks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) / 4) * index);
   const dateTickIndexes = Array.from(new Set([
     0,
@@ -13249,7 +13282,7 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
       .join("")}
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
-    <path class="price-line" d="${pricePath}"></path>
+    ${candleNodes}
     ${waveLinePath ? `<path class="wave-line" d="${waveLinePath}"></path>` : ""}
     ${lowReferencePath ? `<path class="low-reference-line" d="${lowReferencePath.trim()}"></path>` : ""}
     ${waveMarkerNodes}
@@ -13260,7 +13293,38 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
         return `<text class="tick-label" x="${x}" y="${height - 16}" text-anchor="middle">${rows[index].date.slice(5)}</text>`;
       })
       .join("")}
+    <circle class="candle-selected-marker" r="3" cx="-999" cy="-999"></circle>
+    <text class="candle-date-label" text-anchor="middle" x="-999" y="-999"></text>
   `;
+
+  // Delegated so it survives every innerHTML redraw above (candles are new DOM nodes each time,
+  // but `target` itself — the same <svg> the caller looked up — is not) without piling up one
+  // more listener per redraw; see svgEl.dataset.loaded a few hundred lines up for the same
+  // dataset-flag-on-an-<svg> pattern already used elsewhere in this file.
+  if (!target.dataset.candleClickBound) {
+    target.dataset.candleClickBound = "1";
+    target.addEventListener("click", (event) => {
+      const group = event.target.closest('[data-role="candle"]');
+      if (!group) return;
+      const label = target.querySelector(".candle-date-label");
+      const marker = target.querySelector(".candle-selected-marker");
+      const x = Number(group.dataset.x);
+      const highY = Number(group.dataset.highY);
+      // Anchored to the clicked candle itself (not a fixed corner of the full, possibly much
+      // wider-than-viewport SVG) so the label always lands inside whatever part of the chart
+      // is currently scrolled into view — a fixed-corner label went off-screen after zooming in
+      // and scrolling away from it.
+      if (marker) {
+        marker.setAttribute("cx", x.toFixed(2));
+        marker.setAttribute("cy", (highY - 10).toFixed(2));
+      }
+      if (label) {
+        label.setAttribute("x", x.toFixed(2));
+        label.setAttribute("y", Math.max(pad.top + 4, highY - 16).toFixed(2));
+        label.textContent = `选中日期：${group.dataset.date}`;
+      }
+    });
+  }
 }
 
 function renderBacktestState(state, index, total, options = {}) {
@@ -13346,6 +13410,11 @@ function setPriceChartZoom(nextZoom) {
   if (lastRows && lastSummary) {
     drawChart(lastRows, lastSummary);
   }
+}
+
+function setModelTradesChartZoom(nextZoom) {
+  modelTradesChartZoom = Math.min(12, Math.max(1, nextZoom));
+  redrawModelTradesChart();
 }
 
 function stopBacktestReplay() {
@@ -14537,6 +14606,24 @@ tradeZoomResetButton.addEventListener("click", () => {
 tradeZoomInButton.addEventListener("click", () => {
   setTradePriceZoom(tradePriceZoom + 1);
 });
+
+if (modelTradesZoomOutButton) {
+  modelTradesZoomOutButton.addEventListener("click", () => {
+    setModelTradesChartZoom(modelTradesChartZoom - 1);
+  });
+}
+
+if (modelTradesZoomResetButton) {
+  modelTradesZoomResetButton.addEventListener("click", () => {
+    setModelTradesChartZoom(1);
+  });
+}
+
+if (modelTradesZoomInButton) {
+  modelTradesZoomInButton.addEventListener("click", () => {
+    setModelTradesChartZoom(modelTradesChartZoom + 1);
+  });
+}
 
 [initialCashInput, tradeFeeInput].forEach((input) => {
   if (!input) return;
