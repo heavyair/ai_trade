@@ -9181,6 +9181,7 @@ function resolveBlockActionToTargetPercent(action, account, row, currentRatio) {
     return Math.min(100, Math.max(0, ((value * row.close) / equity) * 100));
   }
   if (type === "reducePercent") return Math.min(100, Math.max(0, currentRatio - (Number.isFinite(value) ? value : 0)));
+  if (type === "addPercent") return Math.min(100, Math.max(0, currentRatio + (Number.isFinite(value) ? value : 0)));
   if (type === "exitAll") return 0;
   return currentRatio;
 }
