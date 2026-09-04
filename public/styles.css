@@ -2955,6 +2955,14 @@ textarea:focus {
   stroke-dasharray: 5 3;
 }
 
+/* drawModelOrderPriceChartInto draws one of these per distinct MA period the model actually
+   references (maLevel/maValue/maSlope/maCompare conditions, or ma-rsi-band's fastMa/slowMa) —
+   stroke color is set inline per-line from MA_LINE_COLORS, this just supplies the shared shape. */
+.ma-line {
+  fill: none;
+  stroke-width: 1.5;
+}
+
 .wave-high-marker {
   fill: #c2413b;
   stroke: #ffffff;

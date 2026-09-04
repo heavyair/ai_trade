@@ -111,6 +111,7 @@ const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
 const modelTradesDetail = document.querySelector("#modelTradesDetail");
 const modelTradesWaveLegend = document.querySelector("#modelTradesWaveLegend");
 const modelTradesLowReferenceLegend = document.querySelector("#modelTradesLowReferenceLegend");
+const modelTradesMaLegend = document.querySelector("#modelTradesMaLegend");
 const modelTradesRuleEditorSection = document.querySelector("#modelTradesRuleEditorSection");
 const modelTradesRuleEditor = document.querySelector("#modelTradesRuleEditor");
 const modelTradesRuleStats = document.querySelector("#modelTradesRuleStats");
@@ -5373,6 +5374,43 @@ function collectStreakConditions(source) {
     });
   });
   return results;
+}
+
+// Every distinct MA period (in trading days) referenced by a maLevel/maValue/maSlope/maCompare
+// condition anywhere in buyBlockRules/sellBlockRules/scoreRules, plus ma-rsi-band's own
+// dedicated fastMa/slowMa fields (that strategyType doesn't use the generic condition array at
+// all, so it needs its own check) — same scanning shape as collectWaveConditions/
+// collectStreakConditions, but returning bare period numbers (deduped) since the chart overlay
+// only needs "which MA lines to draw", not which specific condition asked for them.
+function collectMaPeriods(config) {
+  const periods = new Set();
+  const isMaIndicator = (indicator) => indicator === "maLevel" || indicator === "maValue" || indicator === "maSlope" || indicator === "maCompare";
+  const addPeriod = (value) => {
+    const days = Math.round(Number(value));
+    if (Number.isFinite(days) && days > 0) periods.add(days);
+  };
+  const scanCondition = (condition) => {
+    if (!condition || !isMaIndicator(condition.indicator)) return;
+    addPeriod(condition.lookbackDays);
+    if (condition.indicator === "maCompare") addPeriod(condition.slopeWindowDays);
+  };
+  const scanBlocks = (blocks) => {
+    (Array.isArray(blocks) ? blocks : []).forEach((block) => {
+      (block && block.conditions || []).forEach(scanCondition);
+    });
+  };
+  if (config) {
+    scanBlocks(config.buyBlockRules);
+    scanBlocks(config.sellBlockRules);
+    (Array.isArray(config.scoreRules) ? config.scoreRules : []).forEach((rule) => {
+      (rule && rule.conditions || []).forEach(scanCondition);
+    });
+    if (config.strategyType === "ma-rsi-band" && config.maRsiBandRule) {
+      addPeriod(config.maRsiBandRule.fastMa);
+      addPeriod(config.maRsiBandRule.slowMa);
+    }
+  }
+  return Array.from(periods).sort((a, b) => a - b);
 }
 
 function setWaveVisualizerThreshold(value) {
@@ -12879,7 +12917,19 @@ function drawModelTradesChartWithOverlays(config, rows, trades, finalState, opti
   }
   if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !lowEntry);
 
-  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries, zoom: modelTradesChartZoom });
+  const maPeriods = collectMaPeriods(config);
+  const maLines = maPeriods.map((days) => ({ days, values: getMovingAverageSeries(rows, days) }));
+  if (modelTradesMaLegend) {
+    modelTradesMaLegend.classList.toggle("hidden", maLines.length === 0);
+    modelTradesMaLegend.innerHTML = maLines
+      .map((line, index) => {
+        const color = MA_LINE_COLORS[index % MA_LINE_COLORS.length];
+        return `<i class="dot" style="background:${color}"></i>${line.days}日均线`;
+      })
+      .join(" ");
+  }
+
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries, maLines, zoom: modelTradesChartZoom });
 
   if (modelTradesRuleStats) {
     const parts = [];
@@ -12942,6 +12992,7 @@ function resetModelTradesCharts() {
   if (modelTradesRuleStats) modelTradesRuleStats.textContent = "";
   if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
   if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.add("hidden");
+  if (modelTradesMaLegend) modelTradesMaLegend.classList.add("hidden");
   drawModelOrderPriceChartInto(modelOrderPriceChart, [], [], {});
 }
 
@@ -13130,6 +13181,8 @@ if (modelTradesRuleEditor) {
 // full price line with buy/sell trade dots. `options.upToIndex` lets a caller reveal
 // the line/markers progressively while keeping the axes (computed from the full `rows`)
 // stable across frames, so a partial reveal doesn't rescale/jump as more data appears.
+const MA_LINE_COLORS = ["#1d4ed8", "#be185d", "#0f766e", "#7c2d12"];
+
 function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   if (!target) return;
   const zoom = options.zoom || 1.35;
@@ -13160,11 +13213,17 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   const wavePoints = Array.isArray(options.wavePoints) ? options.wavePoints : [];
   const visibleWavePoints = wavePoints.filter((point) => Number.isInteger(point.rowIndex) && point.rowIndex <= upToIndex);
   const lowReferenceSeries = Array.isArray(options.lowReferenceSeries) ? options.lowReferenceSeries : [];
+  const maLines = Array.isArray(options.maLines) ? options.maLines : [];
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
   trades.forEach((trade) => priceValues.push(trade.price));
   wavePoints.forEach((point) => priceValues.push(point.price));
   lowReferenceSeries.forEach((value) => {
     if (Number.isFinite(value)) priceValues.push(value);
+  });
+  maLines.forEach((line) => {
+    (line.values || []).forEach((value) => {
+      if (Number.isFinite(value)) priceValues.push(value);
+    });
   });
   const max = Math.max(...priceValues);
   const min = Math.min(...priceValues);
@@ -13269,6 +13328,30 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     lowReferenceDrawing = true;
   }
 
+  // Same segmented-path approach as lowReferencePath just above — an MA series is null for its
+  // first (period-1) rows before enough closes have accumulated, so each gap starts a fresh "M".
+  // One color per distinct period from MA_LINE_COLORS, cycling if a model somehow references
+  // more periods than the palette has entries (practically never — one model rarely uses more
+  // than two MA periods at once).
+  const maLineNodes = maLines
+    .map((line, lineIndex) => {
+      const color = MA_LINE_COLORS[lineIndex % MA_LINE_COLORS.length];
+      const values = line.values || [];
+      let path = "";
+      let drawing = false;
+      for (let index = 0; index <= upToIndex; index += 1) {
+        const value = values[index];
+        if (!Number.isFinite(value)) {
+          drawing = false;
+          continue;
+        }
+        path += `${drawing ? "L" : "M"}${xForIndex(index).toFixed(2)},${scaleY(value).toFixed(2)} `;
+        drawing = true;
+      }
+      return path.trim() ? `<path class="ma-line" style="stroke:${color}" d="${path.trim()}"></path>` : "";
+    })
+    .join("");
+
   target.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" fill="#fbfcff"></rect>
     ${ticks
@@ -13283,6 +13366,7 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     <line class="axis" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}"></line>
     <line class="axis" x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}"></line>
     ${candleNodes}
+    ${maLineNodes}
     ${waveLinePath ? `<path class="wave-line" d="${waveLinePath}"></path>` : ""}
     ${lowReferencePath ? `<path class="low-reference-line" d="${lowReferencePath.trim()}"></path>` : ""}
     ${waveMarkerNodes}
