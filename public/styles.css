@@ -1905,6 +1905,14 @@ button:disabled {
   font-weight: 700;
 }
 
+.admin-ranking-table td.admin-row-actions {
+  white-space: normal;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .admin-ranking-table td.down {
   color: #c0392b;
   font-weight: 700;

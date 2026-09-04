@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260904-toplevel-wavethreshold">
+    <link rel="stylesheet" href="/styles.css?v=20260904-model-sharing">
   </head>
   <body>
     <main class="shell">
@@ -22,6 +22,8 @@
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false" data-i18n="historySimulation">历史模拟</button>
           <button id="wizardScreenButton" class="wizard-action" type="button" data-wizard-target="screen" aria-selected="false">选股</button>
           <button id="wizardWatchAlertsButton" class="wizard-action" type="button" data-wizard-target="watch-alerts" aria-selected="false">设置盯盘提醒</button>
+          <button id="wizardMyModelsButton" class="wizard-action" type="button" data-wizard-target="my-models" aria-selected="false">我的模型</button>
+          <button id="wizardPublicModelsButton" class="wizard-action" type="button" data-wizard-target="public-models" aria-selected="false">Public排行</button>
         </div>
         <div class="auth-panel" aria-live="polite">
           <div>
@@ -140,6 +142,57 @@
             <button type="button" id="watchAlertsFollowedTabButton">我关注的盯盘</button>
           </div>
           <div id="watchAlertsList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
+      <dialog id="myModelsDialog" class="param-dialog" aria-label="我的模型">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>我的模型</h2>
+              <p class="field-hint">列出你名下已经跑过至少6年（训练+验证）历史数据验证的模型——没跑过这个验证的模型仍然正常存在，只是在"历史模拟"里可以看到/编辑，不在这里出现。在"重新验证"弹窗里把训练+验证年数设到6年及以上并提交，结果会自动出现在这里。点"分享设置"可以把达标的模型公开到 Public排行。</p>
+            </div>
+            <button id="closeMyModelsButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div id="myModelsList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
+      <dialog id="publicModelsDialog" class="param-dialog" aria-label="Public排行">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>Public排行</h2>
+              <p class="field-hint">其他用户主动公开、并通过至少6年历史数据验证达标的模型。查看参数/关注（建盯盘）/复制到我的模型三个按钮是否可点，由模型 owner 各自的分享设置决定。</p>
+            </div>
+            <button id="closePublicModelsButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <div class="auth-tabs">
+            <button type="button" class="active" data-public-models-market="CN">A股</button>
+            <button type="button" data-public-models-market="US">美股</button>
+            <button type="button" data-public-models-market="HK">港股</button>
+          </div>
+          <div id="publicModelsList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
+      <dialog id="shareSettingsDialog" class="param-dialog" aria-label="分享设置">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2 id="shareSettingsTitle">分享设置</h2>
+              <p id="shareSettingsHint" class="field-hint"></p>
+            </div>
+            <button id="closeShareSettingsButton" type="button" class="ghost-button">关闭</button>
+          </div>
+          <label><input id="shareSettingsPublicInput" type="checkbox"> 公开到 Public排行</label>
+          <label><input id="shareSettingsViewParamsInput" type="checkbox"> 允许查看参数</label>
+          <label><input id="shareSettingsWatchInput" type="checkbox"> 允许关注（建盯盘）</label>
+          <label><input id="shareSettingsCopyInput" type="checkbox"> 允许复制到别人的"我的模型"</label>
+          <div class="dialog-actions">
+            <button type="button" id="shareSettingsSaveButton">保存</button>
+          </div>
+          <span id="shareSettingsStatus" class="field-hint"></span>
         </form>
       </dialog>
 
@@ -1499,6 +1552,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260904-addpercent-clientfix"></script>
+    <script src="/app.js?v=20260904-model-sharing"></script>
   </body>
 </html>

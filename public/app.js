@@ -36,6 +36,23 @@ const watchAlertsFollowButton = document.querySelector("#watchAlertsFollowButton
 const watchAlertsFollowStatus = document.querySelector("#watchAlertsFollowStatus");
 const watchAlertsOwnedTabButton = document.querySelector("#watchAlertsOwnedTabButton");
 const watchAlertsFollowedTabButton = document.querySelector("#watchAlertsFollowedTabButton");
+const myModelsDialog = document.querySelector("#myModelsDialog");
+const closeMyModelsButton = document.querySelector("#closeMyModelsButton");
+const myModelsList = document.querySelector("#myModelsList");
+const publicModelsDialog = document.querySelector("#publicModelsDialog");
+const closePublicModelsButton = document.querySelector("#closePublicModelsButton");
+const publicModelsList = document.querySelector("#publicModelsList");
+const publicModelsMarketTabs = Array.from(document.querySelectorAll("[data-public-models-market]"));
+const shareSettingsDialog = document.querySelector("#shareSettingsDialog");
+const closeShareSettingsButton = document.querySelector("#closeShareSettingsButton");
+const shareSettingsTitle = document.querySelector("#shareSettingsTitle");
+const shareSettingsHint = document.querySelector("#shareSettingsHint");
+const shareSettingsPublicInput = document.querySelector("#shareSettingsPublicInput");
+const shareSettingsViewParamsInput = document.querySelector("#shareSettingsViewParamsInput");
+const shareSettingsWatchInput = document.querySelector("#shareSettingsWatchInput");
+const shareSettingsCopyInput = document.querySelector("#shareSettingsCopyInput");
+const shareSettingsSaveButton = document.querySelector("#shareSettingsSaveButton");
+const shareSettingsStatus = document.querySelector("#shareSettingsStatus");
 const authDialog = document.querySelector("#authDialog");
 const authForm = document.querySelector("#authForm");
 const authStatusText = document.querySelector("#authStatusText");
@@ -3280,6 +3297,10 @@ if (revalidateRunButton) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // Only a real strategy_presets row (not an AI-candidate optimization_scan_results row)
+          // can own a validation snapshot — server.js re-checks ownership itself either way, so
+          // sending this whenever it might apply is safe; it's just a no-op save when it doesn't.
+          presetId: context.isAiCandidate ? null : context.id,
           symbol: context.symbol,
           strategyType: context.strategyType,
           config: context.config || {},
@@ -3293,6 +3314,9 @@ if (revalidateRunButton) {
       const payload = await readJsonResponse(response, "重新验证失败。");
       if (revalidateStatus) revalidateStatus.textContent = "已完成。";
       renderRevalidateResult(payload);
+      if (!context.isAiCandidate && trainYears + testYears >= 6) {
+        revalidateResult.insertAdjacentHTML("afterbegin", '<div class="field-hint up">已满足6年验证标准，结果已自动保存到"我的模型"。</div>');
+      }
     } catch (error) {
       if (revalidateStatus) revalidateStatus.textContent = "";
       setStatus(`重新验证失败：${error.message}`, true);
@@ -3435,15 +3459,51 @@ function renderAiGeneratedPresetRow(p, options = {}) {
   const recommendDiffCell = options.showRecommendDiff
     ? `<td>均值${formatPercent(((Number(p.testYear1AnnualizedReturn) || 0) + (Number(p.testYear2AnnualizedReturn) || 0)) / 2)} · 差异${formatPercent(Math.max(Number(p.annualizedDiffYear1) || 0, Number(p.annualizedDiffYear2) || 0))} · 交易次数差${Math.abs((Number(p.testYear1Trades) || 0) - (Number(p.testYear2Trades) || 0))}</td>`
     : "";
+  // "我的模型"：分享设置（打开四选项开关的小弹窗）+ 删除验证结果（模型本身不受影响，见
+  // handleDeleteValidationSnapshotApi 的注释）。
+  const shareSettingsCell = options.showShareSettings
+    ? `<td class="admin-row-actions">
+        <span class="field-hint">${p.sharePublic ? '<span class="up">已公开</span>' : "未公开"}</span>
+        <button type="button" class="ghost-button" data-action="share-settings" data-preset-id="${escapeHtml(p.id)}">分享设置</button>
+        <button type="button" class="ghost-button" data-action="delete-snapshot" data-preset-id="${escapeHtml(p.id)}">删除验证结果</button>
+      </td>`
+    : "";
+  // Public排行：查看参数按 shareAllowViewParams/canViewParams 置灰，关注/复制分别按
+  // shareAllowWatch/shareAllowCopy 置灰——都是"能不能点"，不是"要不要显示"，让用户看得到
+  // 这个模型开放了哪些权限。
+  const publicActionsCell = options.showPublicActions
+    ? `<td class="admin-row-actions">
+        <span class="field-hint">${escapeHtml(p.ownerEmail || "")}</span>
+        <button type="button" class="ghost-button" data-action="watch" data-preset-id="${escapeHtml(p.id)}" data-symbol="${escapeHtml(p.targetSymbol || "")}" ${p.shareAllowWatch ? "" : "disabled"}>关注（建盯盘）</button>
+        <button type="button" class="ghost-button" data-action="copy" data-preset-id="${escapeHtml(p.id)}" ${p.shareAllowCopy ? "" : "disabled"}>复制到我的模型</button>
+      </td>`
+    : "";
   return `
     <tr>
       ${statusCell}
       <td>${escapeHtml(p.targetSymbol || "")}</td>
-      <td>${formatModelNameLink({
-        id: p.id, numericId: p.numericId, label: p.label || "",
-        config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
-        reason: p.reason, isOwner: false, name: null, isAiCandidate: true,
-      })}</td>
+      <td>${
+        // Public排行 rows whose owner hasn't granted "允许查看参数" arrive with bestConfig already
+        // nulled server-side (see mapPublicPresetRow) — the generic 查看参数/重新验证/另存为模型
+        // menu operating on that empty config would look like a valid-but-trivial model rather
+        // than "no permission", so skip the clickable name-link entirely and show plain text.
+        // The dedicated 关注/复制 buttons in publicActionsCell don't depend on holding the config
+        // client-side, so they're unaffected.
+        (options.showPublicActions && !p.canViewParams)
+          ? escapeHtml(p.label || "")
+          : formatModelNameLink({
+            id: p.id, numericId: p.numericId, label: p.label || "",
+            config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
+            reason: p.reason,
+            isOwner: Boolean(options.isOwner),
+            // Only trust p.name (the real strategy_presets row key) for a row the viewer owns —
+            // this is what lets 查看参数/重命名 etc. resolve through isOwnedEditablePreset() to
+            // the real, editable preset editor instead of falling back to the read-only view.
+            name: options.isOwner ? (p.name || null) : null,
+            isAiCandidate: options.isAiCandidate !== false,
+            ownerEmail: p.ownerEmail || "",
+          })
+      }</td>
       <td>${escapeHtml(getStrategyTypeLabel(p.strategyType))}</td>
       <td class="${trainClass}">${hasTrainTest ? formatPercent(p.trainAnnualizedReturn) : "--"}</td>
       <td class="${testYear1Class}">${hasTrainTest ? formatPercent(p.testYear1AnnualizedReturn) : "--"}</td>
@@ -3456,16 +3516,18 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${escapeHtml(formatAdminDate(p.updatedAt))}</td>
       ${recheckCell}
       ${recommendDiffCell}
+      ${shareSettingsCell}
+      ${publicActionsCell}
     </tr>
   `;
 }
 
-function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus, showRecommendDiff }) {
+function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus, showRecommendDiff, showShareSettings, showPublicActions, isOwner, isAiCandidate }) {
   if (presets.length === 0) {
     return '<div class="ranking-empty">还没有相关记录。</div>';
   }
   const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection, showStatus);
-  const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus, showRecommendDiff })).join("");
+  const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus, showRecommendDiff, showShareSettings, showPublicActions, isOwner, isAiCandidate })).join("");
   let columns = showStatus
     ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
     : ADMIN_AUTO_GENERATE_COLUMNS;
@@ -3475,14 +3537,236 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
     const arrow = active ? (sortDirection === "asc" ? " ▲" : " ▼") : "";
     return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-${sortAttr}="${column.key}">${escapeHtml(column.label)}${arrow}</th>`;
   }).join("");
+  // 操作列不参与排序，故意不带 data-${sortAttr}，也不带 admin-scan-sort-header class，
+  // 这样各面板既有的、按 class+属性选择器命中的排序点击处理器不会误把它当排序表头。
+  const actionHeader = (showShareSettings || showPublicActions) ? "<th>操作</th>" : "";
   return `
     <table class="admin-ranking-table">
       <thead>
-        <tr>${headerCells}</tr>
+        <tr>${headerCells}${actionHeader}</tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+// "我的模型" — self-service list of the current user's own presets that have cleared a >=6-year
+// validation (see handleMyModelsApi). Reuses renderAiGeneratedPresetTable exactly like the admin
+// AI候选 panels, just with showShareSettings instead of showStatus/showRecommendDiff.
+let myModelsCache = [];
+
+async function loadMyModels() {
+  if (!myModelsList) return;
+  myModelsList.innerHTML = '<div class="ranking-empty">正在读取我的模型...</div>';
+  try {
+    const response = await fetch("/api/my-models", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取我的模型失败。");
+    myModelsCache = Array.isArray(payload.presets) ? payload.presets : [];
+    renderMyModelsList();
+  } catch (error) {
+    myModelsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function renderMyModelsList() {
+  if (!myModelsList) return;
+  myModelsList.innerHTML = renderAiGeneratedPresetTable(myModelsCache, {
+    sortKey: "updatedAt",
+    sortDirection: "desc",
+    sortAttr: "my-models-sort-key",
+    showShareSettings: true,
+    isOwner: true,
+    isAiCandidate: false,
+  });
+}
+
+function openMyModelsDialog() {
+  loadMyModels();
+  showDialog(myModelsDialog);
+}
+
+if (closeMyModelsButton && myModelsDialog) {
+  closeMyModelsButton.addEventListener("click", () => closeDialog(myModelsDialog));
+}
+
+if (myModelsList) {
+  myModelsList.addEventListener("click", async (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("[data-action]") : null;
+    if (!button) return;
+    const presetId = button.dataset.presetId;
+    const record = myModelsCache.find((p) => p.id === presetId);
+    if (!record) return;
+    if (button.dataset.action === "share-settings") {
+      openShareSettingsDialog(record, { onSaved: loadMyModels });
+    } else if (button.dataset.action === "delete-snapshot") {
+      if (!window.confirm(`确定删除"${record.label || ""}"的验证结果吗？模型本身不会被删除，仍可在历史模拟里看到/编辑。`)) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/presets/validation-snapshot?presetId=${encodeURIComponent(presetId)}`, { method: "DELETE" });
+        await readJsonResponse(response, "删除验证结果失败。");
+        await loadMyModels();
+      } catch (error) {
+        setStatus(`删除验证结果失败：${error.message}`, true);
+        button.disabled = false;
+      }
+    }
+  });
+}
+
+// Public排行 — anyone can view (no login required to GET); actions gated per-row by the
+// owner's own share_allow_* flags. market tab defaults to CN; HK is a known-empty placeholder
+// (see handlePublicModelsApi's comment — no Hong Kong data source exists in this codebase yet).
+let publicModelsCache = [];
+let publicModelsActiveMarket = "CN";
+
+async function loadPublicModels(market) {
+  if (!publicModelsList) return;
+  publicModelsList.innerHTML = '<div class="ranking-empty">正在读取 Public排行...</div>';
+  try {
+    const response = await fetch(`/api/public-models?market=${encodeURIComponent(market)}`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取 Public排行失败。");
+    publicModelsCache = Array.isArray(payload.presets) ? payload.presets : [];
+    renderPublicModelsList();
+  } catch (error) {
+    publicModelsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+function renderPublicModelsList() {
+  if (!publicModelsList) return;
+  if (publicModelsActiveMarket === "HK" && publicModelsCache.length === 0) {
+    publicModelsList.innerHTML = '<div class="ranking-empty">港股市场暂无数据源，这个分类先占位。</div>';
+    return;
+  }
+  publicModelsList.innerHTML = renderAiGeneratedPresetTable(publicModelsCache, {
+    sortKey: "testYear2AnnualizedReturn",
+    sortDirection: "desc",
+    sortAttr: "public-models-sort-key",
+    showPublicActions: true,
+    isOwner: false,
+    isAiCandidate: false,
+  });
+}
+
+function setPublicModelsMarket(market) {
+  publicModelsActiveMarket = market;
+  publicModelsMarketTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.publicModelsMarket === market));
+  loadPublicModels(market);
+}
+
+function openPublicModelsDialog() {
+  setPublicModelsMarket(publicModelsActiveMarket);
+  showDialog(publicModelsDialog);
+}
+
+if (closePublicModelsButton && publicModelsDialog) {
+  closePublicModelsButton.addEventListener("click", () => closeDialog(publicModelsDialog));
+}
+
+publicModelsMarketTabs.forEach((tab) => {
+  tab.addEventListener("click", () => setPublicModelsMarket(tab.dataset.publicModelsMarket));
+});
+
+if (publicModelsList) {
+  publicModelsList.addEventListener("click", async (event) => {
+    const button = event.target && event.target.closest ? event.target.closest("[data-action]") : null;
+    if (!button || button.disabled) return;
+    const presetId = button.dataset.presetId;
+    if (button.dataset.action === "watch") {
+      if (!window.confirm(`确定对"${button.dataset.symbol || ""}"关注（建立盯盘，默认每天检查一次）吗？`)) return;
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/watch-alerts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ presetId, market: publicModelsActiveMarket, symbol: button.dataset.symbol, frequencyMinutes: 1440 }),
+        });
+        await readJsonResponse(response, "关注失败。");
+        setStatus("已建立盯盘，可以在\"设置盯盘提醒\"里查看。");
+      } catch (error) {
+        setStatus(`关注失败：${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    } else if (button.dataset.action === "copy") {
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/public-models/copy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ presetId }),
+        });
+        const payload = await readJsonResponse(response, "复制失败。");
+        setStatus(`已复制为"${payload.label || ""}"，可以在"我的模型"里的"历史模拟"中查看。`);
+      } catch (error) {
+        setStatus(`复制失败：${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    }
+  });
+}
+
+// 分享设置 — one small dialog reused for every "我的模型" row (see myModelsList's click
+// delegation above). share_public can only be turned on once the model already has a
+// reached_target=true validation snapshot — server.js re-checks this too, but hinting/disabling
+// it here avoids a round-trip just to find out.
+let shareSettingsRecord = null;
+let shareSettingsOnSaved = null;
+
+function openShareSettingsDialog(record, { onSaved } = {}) {
+  shareSettingsRecord = record;
+  shareSettingsOnSaved = onSaved || null;
+  if (shareSettingsTitle) shareSettingsTitle.textContent = `分享设置：${record.label || ""}`;
+  const canGoPublic = Boolean(record.reachedTarget);
+  if (shareSettingsHint) {
+    shareSettingsHint.textContent = canGoPublic
+      ? "该模型已通过验证并达标，可以公开到 Public排行。"
+      : "该模型还没有通过至少6年历史数据验证并达标，暂时不能勾选\"公开到 Public排行\"。";
+  }
+  if (shareSettingsPublicInput) {
+    shareSettingsPublicInput.checked = Boolean(record.sharePublic);
+    shareSettingsPublicInput.disabled = !canGoPublic;
+  }
+  if (shareSettingsViewParamsInput) shareSettingsViewParamsInput.checked = Boolean(record.shareAllowViewParams);
+  if (shareSettingsWatchInput) shareSettingsWatchInput.checked = Boolean(record.shareAllowWatch);
+  if (shareSettingsCopyInput) shareSettingsCopyInput.checked = Boolean(record.shareAllowCopy);
+  if (shareSettingsStatus) shareSettingsStatus.textContent = "";
+  showDialog(shareSettingsDialog);
+}
+
+if (closeShareSettingsButton && shareSettingsDialog) {
+  closeShareSettingsButton.addEventListener("click", () => closeDialog(shareSettingsDialog));
+}
+
+if (shareSettingsSaveButton) {
+  shareSettingsSaveButton.addEventListener("click", async () => {
+    if (!shareSettingsRecord) return;
+    shareSettingsSaveButton.disabled = true;
+    if (shareSettingsStatus) shareSettingsStatus.textContent = "正在保存...";
+    try {
+      const response = await fetch("/api/presets/share-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          presetId: shareSettingsRecord.id,
+          sharePublic: Boolean(shareSettingsPublicInput && shareSettingsPublicInput.checked),
+          shareAllowViewParams: Boolean(shareSettingsViewParamsInput && shareSettingsViewParamsInput.checked),
+          shareAllowWatch: Boolean(shareSettingsWatchInput && shareSettingsWatchInput.checked),
+          shareAllowCopy: Boolean(shareSettingsCopyInput && shareSettingsCopyInput.checked),
+        }),
+      });
+      await readJsonResponse(response, "保存分享设置失败。");
+      if (shareSettingsStatus) shareSettingsStatus.textContent = "已保存。";
+      closeDialog(shareSettingsDialog);
+      if (shareSettingsOnSaved) await shareSettingsOnSaved();
+    } catch (error) {
+      if (shareSettingsStatus) shareSettingsStatus.textContent = "";
+      setStatus(`保存分享设置失败：${error.message}`, true);
+    } finally {
+      shareSettingsSaveButton.disabled = false;
+    }
+  });
 }
 
 function renderAdminAutoGenerateList(payload) {
@@ -6191,6 +6475,14 @@ function setWizardPage(pageName) {
   }
   if (pageName === "watch-alerts") {
     openWatchAlertsDialog();
+    return;
+  }
+  if (pageName === "my-models") {
+    openMyModelsDialog();
+    return;
+  }
+  if (pageName === "public-models") {
+    openPublicModelsDialog();
     return;
   }
   closeDialog(newModelDialog);
