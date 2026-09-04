@@ -2722,10 +2722,13 @@ textarea:focus {
 
 .block-rule-condition-row {
   display: grid;
-  /* 9 explicit tracks: indicator, formula, lookbackDays, comparator, value, slopeWindowDays,
-     sustainedDays, waveThreshold, delete-button(auto) — one track per direct child of
-     renderBlockConditionRow's output, in that exact order. */
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.9fr) auto;
+  /* 9 explicit tracks + delete-button(auto): indicator, formula, lookbackDays, comparator,
+     value, slopeWindowDays, sustainedDays, daysSince, daysWithout — one track per direct child
+     of renderBlockConditionRow's output, in that exact order. waveThreshold used to be one of
+     these tracks (a per-condition field) — it's model-level now (see the top-level "波浪确认
+     阈值%" field renderBlockRuleFormEditor renders instead), so this row no longer has that
+     input at all. */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 0.6fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 0.9fr) auto;
   gap: 6px;
   align-items: center;
 }

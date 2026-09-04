@@ -758,7 +758,7 @@ const blockRuleIndicators = [
 // before/after comparison can't express (it only sees the endpoints, not whether every day
 // in between moved the same direction). Applies uniformly to any indicator, not just MA.
 const blockRuleComparators = [">", ">=", "<", "<=", "==", "risingStreak", "fallingStreak"];
-const blockRuleActionTypes = ["targetPercent", "targetShares", "reducePercent", "exitAll"];
+const blockRuleActionTypes = ["targetPercent", "targetShares", "reducePercent", "addPercent", "exitAll"];
 
 const defaultBuyBlockRules = [];
 const defaultSellBlockRules = [];
@@ -9256,6 +9256,7 @@ function describeBlockAction(action) {
   if (action.type === "targetPercent") return `调仓到${formatPercent(action.value)}`;
   if (action.type === "targetShares") return `调仓到${action.value}股`;
   if (action.type === "reducePercent") return `减仓${formatPercent(action.value)}`;
+  if (action.type === "addPercent") return `加仓${formatPercent(action.value)}`;
   if (action.type === "exitAll") return "全部清仓";
   return "";
 }
@@ -9265,6 +9266,7 @@ function getBlockActionTypeLabel(type) {
     targetPercent: "调仓到目标仓位%",
     targetShares: "调仓到目标股数",
     reducePercent: "在当前仓位基础上减仓%",
+    addPercent: "在当前仓位基础上加仓%",
     exitAll: "全部清仓",
   };
   return labels[type] || type;
@@ -10199,13 +10201,12 @@ const RULE_FIELD_LABELS = {
 function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex) {
   const showSlopeWindow = condition.indicator === "maSlope";
   const showFormula = condition.indicator === "formula";
-  const showWaveThreshold = condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow" || condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh";
   // drawdownFromWaveHigh/riseFromWaveLow can ALSO optionally require "at least N days since
-  // this confirmed extreme" / "at least N days without a new low/high in this leg" — sharing
-  // this same condition's own waveThreshold instead of needing a second sibling condition with
-  // its own (easy to desync) waveThreshold. One shared pair of inputs (daysSince/daysWithout)
-  // covers both the high and low side — which field they collect into depends on `indicator`,
-  // same pattern waveThreshold already uses above.
+  // this confirmed extreme" / "at least N days without a new low/high in this leg". Both this
+  // and the drawdown/rise check itself now share ONE model-level waveThreshold (see the
+  // top-level "波浪确认阈值%" field rendered in renderBlockRuleFormEditor) — there is no more
+  // per-condition waveThreshold input here. One shared pair of inputs (daysSince/daysWithout)
+  // covers both the high and low side — which field they collect into depends on `indicator`.
   const isWaveHigh = condition.indicator === "drawdownFromWaveHigh";
   const isWaveLow = condition.indicator === "riseFromWaveLow";
   const isWaveExtreme = isWaveHigh || isWaveLow;
@@ -10225,7 +10226,6 @@ function renderBlockConditionRow(condition, sideKey, blockIndex, conditionIndex)
       <input type="number" data-role="value" value="${numOrEmpty(condition.value)}" placeholder="${isWaveExtreme ? "数值(可留空，只用右侧天数条件)" : "数值"}" step="any">
       <input type="number" data-role="slopeWindowDays" value="${numOrEmpty(condition.slopeWindowDays)}" placeholder="斜率窗口(仅均线斜率)" min="1" step="1" ${showSlopeWindow ? "" : "disabled"}>
       <input type="number" data-role="sustainedDays" value="${numOrEmpty(condition.sustainedDays)}" placeholder="连续天数(可选)" min="1" step="1">
-      <input type="number" data-role="waveThreshold" value="${numOrEmpty(condition.waveThreshold)}" placeholder="波浪确认阈值%(留空=回撤目标的2/3)" min="1" step="any" ${showWaveThreshold ? "" : "disabled"}>
       <input type="number" data-role="daysSince" value="${numOrEmpty(daysSinceValue)}" placeholder="${isWaveHigh ? "距高点至少N天(可选)" : "距低点至少N天(可选)"}" min="1" step="1" ${isWaveExtreme ? "" : "disabled"}>
       <input type="number" data-role="daysWithout" value="${numOrEmpty(daysWithoutValue)}" placeholder="${isWaveHigh ? "这段跌势未创新低至少N天(可选)" : "这段涨势未创新高至少N天(可选)"}" min="1" step="1" ${isWaveExtreme ? "" : "disabled"}>
       <button type="button" class="ghost-button block-rule-remove-condition" data-side="${sideKey}" data-block-index="${blockIndex}" data-condition-index="${conditionIndex}">删除条件</button>
@@ -10270,7 +10270,21 @@ function renderBlockRuleFormEditor() {
   const sellBlocks = Array.isArray(blockRuleFormState.sellBlockRules) ? blockRuleFormState.sellBlockRules : [];
   const buyHtml = buyBlocks.map((b, i) => renderBlockRuleBlock(b, "buyBlockRules", i)).join("") || `<div class="ranking-empty">还没有买入规则块。</div>`;
   const sellHtml = sellBlocks.map((b, i) => renderBlockRuleBlock(b, "sellBlockRules", i)).join("") || `<div class="ranking-empty">还没有卖出规则块。</div>`;
+  // waveThreshold is model-level (shared by every drawdownFromWaveHigh/riseFromWaveLow/
+  // daysSinceNewWaveLow/daysSinceNewWaveHigh condition in the model, see
+  // resolveConditionWaveThreshold) — only worth showing an editor for when the model actually
+  // uses one of those indicators; there is no more per-condition waveThreshold input to remove
+  // it from (renderBlockConditionRow dropped that field entirely).
+  const usesWaveTracker = [...buyBlocks, ...sellBlocks].some((block) =>
+    (block && block.conditions || []).some((condition) => WAVE_TRACKER_INDICATORS.has(condition && condition.indicator)));
+  const waveThresholdHtml = usesWaveTracker ? `
+    <label class="flat-rule-field">
+      <span>波浪确认阈值%（本模型所有波浪相关条件共用）</span>
+      <input type="number" step="any" min="0.1" data-role="block-wave-threshold" value="${Math.max(0.1, Number(blockRuleFormState.waveThreshold) || 20)}">
+    </label>
+  ` : "";
   blockRuleFormEditor.innerHTML = `
+    ${waveThresholdHtml}
     <div class="block-rule-side">
       <h4>买入规则块（块内条件“且”，块间“或”）</h4>
       <div class="block-rule-list">${buyHtml}</div>
@@ -10306,7 +10320,6 @@ function collectBlockRuleFormState() {
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
-        const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
         const daysSinceRaw = rowEl.querySelector('[data-role="daysSince"]').value;
         const daysWithoutRaw = rowEl.querySelector('[data-role="daysWithout"]').value;
         const daysSince = daysSinceRaw === "" ? null : Math.max(1, Math.round(Number(daysSinceRaw) || 1));
@@ -10319,7 +10332,9 @@ function collectBlockRuleFormState() {
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
-          waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow" && indicator !== "daysSinceNewWaveLow" && indicator !== "daysSinceNewWaveHigh") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          // waveThreshold is a model-level field now (see the top-level "波浪确认阈值%" input),
+          // no longer per-condition.
+          waveThreshold: null,
           daysSinceHigh: isWaveHigh ? daysSince : null,
           daysWithoutNewLow: isWaveHigh ? daysWithout : null,
           daysSinceLow: isWaveLow ? daysSince : null,
@@ -10334,10 +10349,16 @@ function collectBlockRuleFormState() {
       return { enabled, conditions, action };
     });
   };
-  return {
-    buyBlockRules: collectSide("buyBlockRules"),
-    sellBlockRules: collectSide("sellBlockRules"),
-  };
+  const buyBlockRules = collectSide("buyBlockRules");
+  const sellBlockRules = collectSide("sellBlockRules");
+  // Top-level waveThreshold input only renders when the model actually uses a wave-tracker
+  // indicator (see renderBlockRuleFormEditor) — absent otherwise, so fall back to whatever the
+  // form state already had (set when the dialog opened) rather than losing it.
+  const waveThresholdInput = blockRuleFormEditor.querySelector('[data-role="block-wave-threshold"]');
+  const waveThreshold = waveThresholdInput
+    ? Math.max(0.1, Number(waveThresholdInput.value) || 20)
+    : (blockRuleFormState && Number(blockRuleFormState.waveThreshold)) || 20;
+  return { buyBlockRules, sellBlockRules, waveThreshold };
 }
 
 function syncBlockRuleFormToEditor() {
@@ -10351,6 +10372,7 @@ function syncBlockRuleFormToEditor() {
   }
   base.buyBlockRules = blockRuleFormState.buyBlockRules;
   base.sellBlockRules = blockRuleFormState.sellBlockRules;
+  base.waveThreshold = blockRuleFormState.waveThreshold;
   presetParamEditor.value = JSON.stringify(base, null, 2);
 }
 
@@ -10377,6 +10399,7 @@ function refreshBlockRuleFormFromJson() {
   blockRuleFormState = {
     buyBlockRules: cloneRuleBlocks(parsed.buyBlockRules, defaultBuyBlockRules),
     sellBlockRules: cloneRuleBlocks(parsed.sellBlockRules, defaultSellBlockRules),
+    waveThreshold: Math.max(0.1, Number(parsed.waveThreshold) || 20),
   };
   renderBlockRuleFormEditor();
 }
@@ -10586,8 +10609,6 @@ if (blockRuleFormEditor) {
       if (formulaInput) formulaInput.disabled = !isFormula;
       const lookbackInput = row && row.querySelector('[data-role="lookbackDays"]');
       if (lookbackInput) lookbackInput.disabled = isFormula;
-      const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
-      if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh" && target.value !== "riseFromWaveLow" && target.value !== "daysSinceNewWaveLow" && target.value !== "daysSinceNewWaveHigh";
       const isWaveExtreme = target.value === "drawdownFromWaveHigh" || target.value === "riseFromWaveLow";
       const daysSinceInput = row && row.querySelector('[data-role="daysSince"]');
       if (daysSinceInput) daysSinceInput.disabled = !isWaveExtreme;
@@ -10739,6 +10760,7 @@ function openPresetParamEditor(presetName, options = {}) {
       blockRuleFormState = {
         buyBlockRules: cloneRuleBlocks(editorPreset.buyBlockRules, defaultBuyBlockRules),
         sellBlockRules: cloneRuleBlocks(editorPreset.sellBlockRules, defaultSellBlockRules),
+        waveThreshold: Math.max(0.1, Number(editorPreset.waveThreshold) || 20),
       };
       blockRuleFormEditor.classList.remove("hidden");
       renderBlockRuleFormEditor();
@@ -11218,7 +11240,7 @@ const WAVE_TRACKER_INDICATORS = new Set(["drawdownFromWaveHigh", "riseFromWaveLo
 
 function discoverBlockRuleParameters(preset) {
   const descriptors = [];
-  const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
+  const percentActionTypes = new Set(["targetPercent", "reducePercent", "addPercent"]);
   let usesWaveTracker = false;
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
@@ -13215,7 +13237,6 @@ function collectModelTradesRuleFormState() {
         const lookbackRaw = rowEl.querySelector('[data-role="lookbackDays"]').value;
         const slopeRaw = rowEl.querySelector('[data-role="slopeWindowDays"]').value;
         const sustainRaw = rowEl.querySelector('[data-role="sustainedDays"]').value;
-        const waveThresholdRaw = rowEl.querySelector('[data-role="waveThreshold"]').value;
         const daysSinceRaw = rowEl.querySelector('[data-role="daysSince"]').value;
         const daysWithoutRaw = rowEl.querySelector('[data-role="daysWithout"]').value;
         const daysSince = daysSinceRaw === "" ? null : Math.max(1, Math.round(Number(daysSinceRaw) || 1));
@@ -13228,7 +13249,9 @@ function collectModelTradesRuleFormState() {
           lookbackDays: indicator === "formula" || lookbackRaw === "" ? null : Math.max(1, Math.round(Number(lookbackRaw) || 1)),
           slopeWindowDays: slopeRaw === "" ? null : Math.max(1, Math.round(Number(slopeRaw) || 1)),
           sustainedDays: sustainRaw === "" ? null : Math.max(1, Math.round(Number(sustainRaw) || 1)),
-          waveThreshold: (indicator !== "drawdownFromWaveHigh" && indicator !== "riseFromWaveLow" && indicator !== "daysSinceNewWaveLow" && indicator !== "daysSinceNewWaveHigh") || waveThresholdRaw === "" ? null : Math.max(1, Number(waveThresholdRaw) || 1),
+          // waveThreshold is a model-level field now (see the top-level "波浪确认阈值%" input),
+          // no longer per-condition.
+          waveThreshold: null,
           daysSinceHigh: isWaveHigh ? daysSince : null,
           daysWithoutNewLow: isWaveHigh ? daysWithout : null,
           daysSinceLow: isWaveLow ? daysSince : null,
@@ -13285,8 +13308,6 @@ if (modelTradesRuleEditor) {
       if (formulaInput) formulaInput.disabled = !isFormula;
       const lookbackInput = row && row.querySelector('[data-role="lookbackDays"]');
       if (lookbackInput) lookbackInput.disabled = isFormula;
-      const waveInput = row && row.querySelector('[data-role="waveThreshold"]');
-      if (waveInput) waveInput.disabled = target.value !== "drawdownFromWaveHigh" && target.value !== "riseFromWaveLow" && target.value !== "daysSinceNewWaveLow" && target.value !== "daysSinceNewWaveHigh";
       const isWaveExtreme = target.value === "drawdownFromWaveHigh" || target.value === "riseFromWaveLow";
       const daysSinceInput = row && row.querySelector('[data-role="daysSince"]');
       if (daysSinceInput) daysSinceInput.disabled = !isWaveExtreme;

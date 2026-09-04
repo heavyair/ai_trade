@@ -2090,6 +2090,13 @@ function resolveBlockActionToTargetPercent(action, account, row, currentRatio) {
     return Math.min(100, Math.max(0, ((value * row.close) / equity) * 100));
   }
   if (type === "reducePercent") return Math.min(100, Math.max(0, currentRatio - (Number.isFinite(value) ? value : 0)));
+  // Symmetric counterpart to reducePercent — "增加仓位N%", relative to whatever the account's
+  // current position ratio is today, not an absolute target (that's what targetPercent is for).
+  // Reuses the exact same rebalanceToTarget path as every other action: if there isn't enough
+  // cash to reach the computed target, it silently buys as many whole lots as cash allows, or
+  // skips the trade entirely (no partial-lot buy) if cash can't cover even one lot — same "give
+  // up when there's no cash" behavior every buy action already has, nothing special-cased here.
+  if (type === "addPercent") return Math.min(100, Math.max(0, currentRatio + (Number.isFinite(value) ? value : 0)));
   if (type === "exitAll") return 0;
   return currentRatio;
 }
@@ -2169,6 +2176,7 @@ function describeBlockAction(action) {
   if (action.type === "targetPercent") return `调仓到${formatPercent(action.value)}`;
   if (action.type === "targetShares") return `调仓到${action.value}股`;
   if (action.type === "reducePercent") return `减仓${formatPercent(action.value)}`;
+  if (action.type === "addPercent") return `加仓${formatPercent(action.value)}`;
   if (action.type === "exitAll") return "全部清仓";
   return "";
 }
@@ -2571,7 +2579,7 @@ const WAVE_TRACKER_INDICATORS = new Set(["drawdownFromWaveHigh", "riseFromWaveLo
 
 function discoverBlockRuleParameters(preset) {
   const descriptors = [];
-  const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
+  const percentActionTypes = new Set(["targetPercent", "reducePercent", "addPercent"]);
   let usesWaveTracker = false;
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
