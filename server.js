@@ -151,6 +151,45 @@ async function initializeDatabase() {
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS model_text TEXT NOT NULL DEFAULT '';
     ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
 
+    -- Model-sharing permissions (see handlePresetShareSettingsApi) — share_public gates whether
+    -- a preset shows up on the public ranking at all; the other three are independent per-viewer
+    -- permissions that only matter once share_public is true (查看参数/建盯盘("follow")/复制).
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS share_public BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS share_allow_view_params BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS share_allow_watch BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE strategy_presets ADD COLUMN IF NOT EXISTS share_allow_copy BOOLEAN NOT NULL DEFAULT FALSE;
+
+    -- One row per preset that has been through a >=6-year "重新验证" run (handlePresetRevalidateApi
+    -- upserts this when trainYears+testYears>=6 and the caller owns the preset) — presence of a
+    -- row here is what makes a preset show up in "我的模型" (handleMyModelsApi requires an INNER
+    -- JOIN), independent of whether it reached_target. Column names deliberately mirror
+    -- optimization_scan_results' equivalents (scripts/shared/optimization-results.js) so both can
+    -- grow new columns in lockstep and the client can render both through the same table component.
+    CREATE TABLE IF NOT EXISTS preset_validation_snapshots (
+      preset_id TEXT PRIMARY KEY REFERENCES strategy_presets(id) ON DELETE CASCADE,
+      train_years INTEGER NOT NULL,
+      test_years INTEGER NOT NULL,
+      train_annualized_return DOUBLE PRECISION,
+      train_start_date DATE,
+      train_end_date DATE,
+      test_year1_annualized_return DOUBLE PRECISION,
+      test_year1_return_rate DOUBLE PRECISION,
+      test_year1_max_drawdown DOUBLE PRECISION,
+      test_year1_trades INTEGER,
+      test_year1_start_date DATE,
+      test_year1_end_date DATE,
+      test_year2_annualized_return DOUBLE PRECISION,
+      test_year2_return_rate DOUBLE PRECISION,
+      test_year2_max_drawdown DOUBLE PRECISION,
+      test_year2_trades INTEGER,
+      test_year2_start_date DATE,
+      test_year2_end_date DATE,
+      annualized_diff_year1 DOUBLE PRECISION,
+      annualized_diff_year2 DOUBLE PRECISION,
+      reached_target BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     -- name/label are just display text now, not identity — id (an opaque randomId("preset"),
     -- never recomputed from owner+name) is the only thing that has to stay unique. Dropped in
     -- favor of allowing legitimate repeats (e.g. two different symbols' AI search results
@@ -3314,14 +3353,19 @@ async function handleWatchAlertsApi(req, res) {
       }
 
       const presetResult = await dbQuery(`
-        SELECT id, label, owner_user_id, strategy_type, config FROM strategy_presets WHERE id = $1
+        SELECT id, label, owner_user_id, strategy_type, config, share_public, share_allow_watch
+        FROM strategy_presets WHERE id = $1
       `, [presetId]);
       if (presetResult.rows.length === 0) {
         sendJson(res, 404, { error: "模型不存在。" });
         return;
       }
       const presetRow = presetResult.rows[0];
-      if (presetRow.owner_user_id && presetRow.owner_user_id !== ownerUserId) {
+      // Owning the preset always works; otherwise it has to be a model its owner explicitly
+      // published with "允许设置盯盘" (Public排行页面的"关注"按钮走的就是这条路).
+      const isOwnPreset = !presetRow.owner_user_id || presetRow.owner_user_id === ownerUserId;
+      const isSharedForWatch = presetRow.share_public && presetRow.share_allow_watch;
+      if (!isOwnPreset && !isSharedForWatch) {
         sendJson(res, 403, { error: "无权使用该模型。" });
         return;
       }
@@ -4943,13 +4987,17 @@ const REVALIDATE_MIN_UPSIDE_GATE_ROWS = 30;
 // the other actions already reachable from the unified model-action popup.
 async function handlePresetRevalidateApi(req, res) {
   try {
-    await requireCurrentUser(req);
+    const currentUser = await requireCurrentUser(req);
     if (req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
     const body = await readRequestBody(req);
     const payload = body ? JSON.parse(body) : {};
+    // Only present when revalidating an already-saved preset the caller owns (as opposed to an
+    // ad-hoc config the wizard is previewing before saving) — see the snapshot-upsert block near
+    // the end of this function, which only fires when this is set AND ownership checks out.
+    const presetId = payload.presetId ? String(payload.presetId).slice(0, 200) : null;
 
     const symbol = normalizeCode(payload.symbol);
     const strategyType = String(payload.strategyType || "wave");
@@ -5110,6 +5158,60 @@ async function handlePresetRevalidateApi(req, res) {
       && passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2
       && passesTrainDrawdownGate && passesDrawdownYear1 && passesDrawdownYear2;
 
+    // "我的模型" (handleMyModelsApi) only lists presets that have been through a >=6-year
+    // validation — this is what marks one as having done so. Silently skipped (not an error) for
+    // ad-hoc previews with no presetId, presets the caller doesn't own, or shorter windows; the
+    // response above is unaffected either way.
+    if (presetId && trainYears + testYears >= 6) {
+      const ownerCheck = await dbPool.query(`SELECT owner_user_id FROM strategy_presets WHERE id = $1`, [presetId]);
+      const ownerRow = ownerCheck.rows[0];
+      // getCurrentUser()/requireCurrentUser() return the session's email-keyed profile, not a raw
+      // users.id — userIdForEmail derives the same stable id strategy_presets.owner_user_id
+      // stores (see how registration inserts users.id in the first place).
+      if (ownerRow && ownerRow.owner_user_id === userIdForEmail(currentUser.email)) {
+        const annualizedDiffYear1 = trainAnnualizedReturn - testYear1AnnualizedReturn;
+        const annualizedDiffYear2 = trainAnnualizedReturn - testYear2AnnualizedReturn;
+        await dbPool.query(`
+          INSERT INTO preset_validation_snapshots (
+            preset_id, train_years, test_years,
+            train_annualized_return, train_start_date, train_end_date,
+            test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
+            test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
+            annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+          )
+          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, NOW())
+          ON CONFLICT (preset_id) DO UPDATE SET
+            train_years = EXCLUDED.train_years,
+            test_years = EXCLUDED.test_years,
+            train_annualized_return = EXCLUDED.train_annualized_return,
+            train_start_date = EXCLUDED.train_start_date,
+            train_end_date = EXCLUDED.train_end_date,
+            test_year1_annualized_return = EXCLUDED.test_year1_annualized_return,
+            test_year1_return_rate = EXCLUDED.test_year1_return_rate,
+            test_year1_max_drawdown = EXCLUDED.test_year1_max_drawdown,
+            test_year1_trades = EXCLUDED.test_year1_trades,
+            test_year1_start_date = EXCLUDED.test_year1_start_date,
+            test_year1_end_date = EXCLUDED.test_year1_end_date,
+            test_year2_annualized_return = EXCLUDED.test_year2_annualized_return,
+            test_year2_return_rate = EXCLUDED.test_year2_return_rate,
+            test_year2_max_drawdown = EXCLUDED.test_year2_max_drawdown,
+            test_year2_trades = EXCLUDED.test_year2_trades,
+            test_year2_start_date = EXCLUDED.test_year2_start_date,
+            test_year2_end_date = EXCLUDED.test_year2_end_date,
+            annualized_diff_year1 = EXCLUDED.annualized_diff_year1,
+            annualized_diff_year2 = EXCLUDED.annualized_diff_year2,
+            reached_target = EXCLUDED.reached_target,
+            updated_at = NOW()
+        `, [
+          presetId, trainYears, testYears,
+          trainAnnualizedReturn, trainStartDate, trainEndDate,
+          testYear1AnnualizedReturn, scoredYear1.returnRate, scoredYear1.maxDrawdown, scoredYear1.trades.length, testWindows[0].startDate, testWindows[0].endDate,
+          testYear2AnnualizedReturn, scoredYear2.returnRate, scoredYear2.maxDrawdown, scoredYear2.trades.length, testWindows[1].startDate, testWindows[1].endDate,
+          annualizedDiffYear1, annualizedDiffYear2, reachedTarget,
+        ]);
+      }
+    }
+
     sendJson(res, 200, {
       symbol,
       trainYears,
@@ -5153,6 +5255,291 @@ async function handlePresetRevalidateApi(req, res) {
     });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "重新验证失败。" });
+  }
+}
+
+// Shared row-mapper for "我的模型" (handleMyModelsApi) and "Public排行" (handlePublicModelsApi) —
+// both list real owned strategy_presets JOINed against their preset_validation_snapshots row,
+// mapped into the SAME field names queryAiGeneratedPresets uses (see that function above) so the
+// client can render both through the existing renderAiGeneratedPresetTable component instead of a
+// parallel one.
+function mapPresetValidationRow(row) {
+  const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+  return {
+    id: row.id,
+    numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+    name: row.name || null,
+    label: row.label,
+    strategyType: row.strategy_type,
+    bestConfig: row.config && typeof row.config === "object" ? row.config : {},
+    targetSymbol: meta.targetSymbol || "",
+    reason: meta.reason || "",
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updatedAt: row.snapshot_updated_at ? new Date(row.snapshot_updated_at).toISOString() : "",
+    trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+    trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+    trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
+    testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
+    testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+    testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+    testYear1Trades: row.test_year1_trades || 0,
+    testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
+    testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+    testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+    testYear2Trades: row.test_year2_trades || 0,
+    annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
+    annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
+    bestTrades: Math.max(row.test_year1_trades || 0, row.test_year2_trades || 0),
+    testedCandidates: 0,
+    reachedTarget: Boolean(row.reached_target),
+    lastRecheckedAt: row.snapshot_updated_at ? new Date(row.snapshot_updated_at).toISOString() : "",
+    recheckStillQualifies: null,
+    recheckYear1AnnualizedReturn: null,
+    recheckYear2AnnualizedReturn: null,
+    recheckTargetPercent: null,
+    recheckError: "",
+  };
+}
+
+// "我的模型" — self-service only (no admin cross-user browsing yet, by explicit user request).
+// Only presets that have been through a >=6-year revalidation show up here (INNER JOIN); a
+// preset with no snapshot still exists and is fully usable from "历史模拟", it just doesn't
+// appear in this list until the owner revalidates it with trainYears+testYears>=6.
+async function handleMyModelsApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbPool.query(`
+      SELECT sp.id, sp.numeric_id, sp.name, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at,
+        sp.share_public, sp.share_allow_view_params, sp.share_allow_watch, sp.share_allow_copy,
+        pvs.train_years, pvs.test_years, pvs.train_annualized_return, pvs.train_start_date, pvs.train_end_date,
+        pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
+        pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
+        pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.updated_at AS snapshot_updated_at
+      FROM strategy_presets sp
+      INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL
+      ORDER BY pvs.updated_at DESC
+    `, [userIdForEmail(currentUser.email)]);
+    const presets = result.rows.map((row) => ({
+      ...mapPresetValidationRow(row),
+      sharePublic: Boolean(row.share_public),
+      shareAllowViewParams: Boolean(row.share_allow_view_params),
+      shareAllowWatch: Boolean(row.share_allow_watch),
+      shareAllowCopy: Boolean(row.share_allow_copy),
+    }));
+    sendJson(res, 200, { presets });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取我的模型失败。" });
+  }
+}
+
+// Owner-only. share_public can only be turned on once the preset has an existing
+// preset_validation_snapshots row with reached_target=true — a model that hasn't cleared the
+// 6-year bar (or was never revalidated at all) cannot be published to the public ranking. The
+// other three permissions are independent booleans that simply have no visible effect anywhere
+// while share_public is false.
+async function handlePresetShareSettingsApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const presetId = String(payload.presetId || "").slice(0, 200);
+    if (!presetId) {
+      sendJson(res, 400, { error: "缺少 presetId。" });
+      return;
+    }
+    const sharePublic = Boolean(payload.sharePublic);
+    const shareAllowViewParams = Boolean(payload.shareAllowViewParams);
+    const shareAllowWatch = Boolean(payload.shareAllowWatch);
+    const shareAllowCopy = Boolean(payload.shareAllowCopy);
+
+    const ownerCheck = await dbPool.query(`SELECT owner_user_id FROM strategy_presets WHERE id = $1`, [presetId]);
+    const ownerRow = ownerCheck.rows[0];
+    if (!ownerRow || ownerRow.owner_user_id !== userIdForEmail(currentUser.email)) {
+      sendJson(res, 403, { error: "只能设置自己拥有的模型。" });
+      return;
+    }
+    if (sharePublic) {
+      const snapshotCheck = await dbPool.query(
+        `SELECT reached_target FROM preset_validation_snapshots WHERE preset_id = $1`, [presetId]
+      );
+      const snapshotRow = snapshotCheck.rows[0];
+      if (!snapshotRow || !snapshotRow.reached_target) {
+        sendJson(res, 400, { error: "该模型还没有通过至少6年（训练+验证）的历史数据验证并达标，暂时不能公开分享。" });
+        return;
+      }
+    }
+    await dbPool.query(`
+      UPDATE strategy_presets
+      SET share_public = $2, share_allow_view_params = $3, share_allow_watch = $4, share_allow_copy = $5, updated_at = NOW()
+      WHERE id = $1
+    `, [presetId, sharePublic, shareAllowViewParams, shareAllowWatch, shareAllowCopy]);
+    sendJson(res, 200, {
+      presetId, sharePublic, shareAllowViewParams, shareAllowWatch, shareAllowCopy,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "保存分享设置失败。" });
+  }
+}
+
+// Owner-only. Removing the snapshot just drops the preset out of "我的模型" and (since
+// share_public requires a reached_target snapshot) out of the public ranking too — the
+// strategy_presets row itself is untouched and stays fully usable from "历史模拟".
+async function handleDeleteValidationSnapshotApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "DELETE") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    let presetId = requestUrl.searchParams.get("presetId");
+    if (!presetId) {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      presetId = payload.presetId;
+    }
+    presetId = String(presetId || "").slice(0, 200);
+    if (!presetId) {
+      sendJson(res, 400, { error: "缺少 presetId。" });
+      return;
+    }
+    const ownerCheck = await dbPool.query(`SELECT owner_user_id FROM strategy_presets WHERE id = $1`, [presetId]);
+    const ownerRow = ownerCheck.rows[0];
+    if (!ownerRow || ownerRow.owner_user_id !== userIdForEmail(currentUser.email)) {
+      sendJson(res, 403, { error: "只能删除自己拥有的模型的验证结果。" });
+      return;
+    }
+    await dbPool.query(`DELETE FROM preset_validation_snapshots WHERE preset_id = $1`, [presetId]);
+    // A snapshot going away also un-qualifies share_public — leaving it TRUE with no snapshot
+    // would let handlePublicModelsApi's INNER JOIN silently exclude it anyway, but resetting it
+    // here keeps strategy_presets itself consistent with "no longer eligible to be public".
+    await dbPool.query(`UPDATE strategy_presets SET share_public = FALSE WHERE id = $1`, [presetId]);
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "删除验证结果失败。" });
+  }
+}
+
+// role: "owner" sees everything (own row on "我的模型"); role: "viewer" (everyone else on the
+// public ranking) gets config/originalText/modelText nulled out unless share_allow_view_params
+// is set — same masking pattern as mapWatchAlertRow's follower view above.
+function mapPublicPresetRow(row, { viewerIsOwner = false } = {}) {
+  const mapped = mapPresetValidationRow(row);
+  const canViewParams = viewerIsOwner || Boolean(row.share_allow_view_params);
+  if (!canViewParams) {
+    mapped.bestConfig = {};
+  }
+  return {
+    ...mapped,
+    ownerEmail: row.owner_email || "",
+    shareAllowViewParams: Boolean(row.share_allow_view_params),
+    shareAllowWatch: Boolean(row.share_allow_watch),
+    shareAllowCopy: Boolean(row.share_allow_copy),
+    canViewParams,
+  };
+}
+
+// Public, no login required. market=HK always returns an empty list for now — this codebase has
+// no Hong Kong data source at all, so the tab exists as a placeholder rather than pretending to
+// filter data that doesn't exist.
+async function handlePublicModelsApi(req, res) {
+  try {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const market = String(requestUrl.searchParams.get("market") || "CN").toUpperCase();
+    if (market === "HK") {
+      sendJson(res, 200, { presets: [] });
+      return;
+    }
+    const currentUser = await getCurrentUser(req);
+    const result = await dbPool.query(`
+      SELECT sp.id, sp.numeric_id, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at, sp.owner_user_id,
+        sp.share_allow_view_params, sp.share_allow_watch, sp.share_allow_copy,
+        u.email AS owner_email,
+        pvs.train_years, pvs.test_years, pvs.train_annualized_return, pvs.train_start_date, pvs.train_end_date,
+        pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
+        pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
+        pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.updated_at AS snapshot_updated_at
+      FROM strategy_presets sp
+      INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      LEFT JOIN users u ON u.id = sp.owner_user_id
+      WHERE sp.share_public = TRUE AND sp.hidden_at IS NULL
+      ORDER BY LEAST(pvs.test_year1_annualized_return, pvs.test_year2_annualized_return) DESC NULLS LAST
+    `);
+    const filtered = result.rows.filter((row) => {
+      const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+      const symbol = String(meta.targetSymbol || "");
+      const rowMarket = isChinaCode(symbol) ? "CN" : "US";
+      return rowMarket === market;
+    });
+    const viewerUserId = currentUser ? userIdForEmail(currentUser.email) : null;
+    const presets = filtered.map((row) => mapPublicPresetRow(row, {
+      viewerIsOwner: Boolean(viewerUserId && row.owner_user_id === viewerUserId),
+    }));
+    sendJson(res, 200, { presets });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取公开模型排行失败。" });
+  }
+}
+
+// Clones a public, share_allow_copy=true preset's config into a brand-new strategy_presets row
+// owned by the caller — same "另存为模型" convention (new id, label + "副本" suffix). The copy
+// starts fully private: none of the four share_* flags carry over, matching saveAsNewPresetButton's
+// existing behavior of never silently re-sharing a cloned model.
+async function handleCopyPublicModelApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const presetId = String(payload.presetId || "").slice(0, 200);
+    if (!presetId) {
+      sendJson(res, 400, { error: "缺少 presetId。" });
+      return;
+    }
+    const sourceResult = await dbPool.query(`
+      SELECT label, strategy_type, config, meta, share_public, share_allow_copy
+      FROM strategy_presets WHERE id = $1 AND hidden_at IS NULL
+    `, [presetId]);
+    const source = sourceResult.rows[0];
+    if (!source || !source.share_public || !source.share_allow_copy) {
+      sendJson(res, 403, { error: "该模型不允许被复制。" });
+      return;
+    }
+    const config = source.config && typeof source.config === "object" ? source.config : {};
+    const meta = source.meta && typeof source.meta === "object" ? source.meta : {};
+    const newId = randomId("preset");
+    const newLabel = `${source.label || "模型"}副本`;
+    const newName = normalizePresetKey(`${newId}`);
+    await dbPool.query(`
+      INSERT INTO strategy_presets (
+        id, owner_user_id, name, label, strategy_type, config, meta, original_text, model_text, is_legacy, original_model_id, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, '', '', FALSE, '0', NOW(), NOW())
+    `, [
+      newId, userIdForEmail(currentUser.email), newName, newLabel, source.strategy_type,
+      JSON.stringify(config), JSON.stringify(meta),
+    ]);
+    sendJson(res, 200, { id: newId, label: newLabel });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "复制模型失败。" });
   }
 }
 
@@ -5462,6 +5849,31 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/presets/revalidate") {
     handlePresetRevalidateApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/my-models") {
+    handleMyModelsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/presets/share-settings") {
+    handlePresetShareSettingsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/presets/validation-snapshot") {
+    handleDeleteValidationSnapshotApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/public-models") {
+    handlePublicModelsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/public-models/copy") {
+    handleCopyPublicModelApi(req, res);
     return;
   }
 
