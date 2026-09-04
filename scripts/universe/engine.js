@@ -1873,59 +1873,30 @@ function buildPeVolumeBacktestStates(rows, config, accountStartIndex = 0) {
 // interchangeable anymore and must not share a cache slot. Only conditions with neither an
 // explicit waveThreshold nor a usable value (falling all the way back to the model-level
 // config.waveThreshold) still share the old "shared" key.
+// waveThreshold is a model-level setting (config.waveThreshold, default 20%) as of this
+// version — every drawdownFromWaveHigh/riseFromWaveLow/daysSinceNewWaveLow/daysSinceNewWaveHigh
+// condition in a model shares the exact same wave-confirmation sensitivity, so they all share
+// one cache slot per indicator (no more per-condition disambiguation — a per-condition
+// waveThreshold no longer exists as a real concept, see resolveConditionWaveThreshold).
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
-  // riseFromWaveLow shares this exact same value-scaled-waveThreshold keying need as
-  // drawdownFromWaveHigh (same reasoning below) — kept as one branch, not two copies, since the
-  // logic is identical either way and each branch is already prefixed with its own indicator
-  // name, so a drawdownFromWaveHigh condition and a riseFromWaveLow condition with the same
-  // threshold/value still never collide (they compute different series off different sides of
-  // the wave tracker, even at the same threshold).
-  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
-    const explicit = Number(condition && condition.waveThreshold);
-    if (Number.isFinite(explicit) && explicit > 0) return `${condition.indicator}:${explicit}`;
-    const targetValue = Number(condition && condition.value);
-    return Number.isFinite(targetValue) && targetValue > 0
-      ? `${condition.indicator}:default:${targetValue}`
-      : `${condition.indicator}:shared`;
-  }
-  // daysSinceNewWaveLow's own `value` is a day count, not a percentage drawdown/rise target, so
-  // (unlike the two above) it can't be scaled into a sane default waveThreshold — see
-  // resolveConditionWaveThreshold — meaning every no-override condition here really does resolve
-  // to the same flat default regardless of its own value, and can safely share one cache slot.
-  if (condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh") {
-    const explicit = Number(condition && condition.waveThreshold);
-    return Number.isFinite(explicit) && explicit > 0 ? `${condition.indicator}:${explicit}` : `${condition.indicator}:shared`;
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow"
+    || condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh") {
+    return condition.indicator;
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
 
-// condition.waveThreshold (per-condition override) beats the shared config-level
-// fallbackWaveThreshold when it's a real positive number; existing saved models never have
-// this field set (it didn't exist before), so they fall through to the value-scaled default
-// below. When no explicit override is set, the default is 2/3 of the condition's own drawdown
-// target (value) rather than a flat number — a wave confirmation threshold should scale with
-// how big a drawdown you're screening for (a 3% target and a 30% target shouldn't share the
-// same confirmation sensitivity). The ceiling is the condition's own drawdown target (value) —
-// a wave confirmation threshold at or above the drawdown you're screening for defeats the point
-// (the "peak" wouldn't even get confirmed until price already fell that far) — falling back to
-// a flat 30 only when value itself isn't a usable positive number.
+// waveThreshold is now purely a model-level setting — condition.waveThreshold (an older
+// per-condition override, and the value-scaled 2/3-of-drawdown-target default that used to
+// compute it) is ignored entirely. Every wave-tracker-driven condition in a model always uses
+// the same confirmation sensitivity, config.waveThreshold, defaulting to 20 when the model
+// doesn't set a usable one — this removes the whole class of bugs where two conditions meant to
+// reference the same wave high/low ended up on different confirmation thresholds (via manual
+// edits, AI generation, or brute-force optimization each independently drifting a per-condition
+// field with nothing keeping them in sync).
 function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
-  const explicit = Number(condition && condition.waveThreshold);
-  // daysSinceNewWaveLow's `value` is a day count (e.g. "5 days"), not a percentage drawdown/rise
-  // target — it can't be scaled into a sane waveThreshold the way drawdownFromWaveHigh/
-  // riseFromWaveLow's value can (there's no meaningful relationship between "5 days" and "a %
-  // move that confirms a turning point"), so this skips straight to the flat model-level
-  // fallback instead of the value-scaled default below.
-  if (condition && (condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh")) {
-    if (Number.isFinite(explicit) && explicit > 0) return Math.min(30, Math.max(1, explicit));
-    return Number(fallbackWaveThreshold) || 5;
-  }
-  const targetValue = Number(condition && condition.value);
-  const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
-  if (Number.isFinite(explicit) && explicit > 0) return Math.min(ceiling, Math.max(1, explicit));
-  if (Number.isFinite(targetValue) && targetValue > 0) return Math.min(ceiling, Math.max(1, (targetValue * 2) / 3));
-  return Number(fallbackWaveThreshold) || 5;
+  return Number(fallbackWaveThreshold) || 20;
 }
 
 
@@ -2567,7 +2538,10 @@ const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
   (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
     const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
-    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
+    // waveThreshold used to be walked here too (each condition its own tunable parameter) —
+    // now that it's a model-level setting (see resolveConditionWaveThreshold), it's exposed once
+    // at the model level instead (discoverBlockRuleParameters' own "waveThreshold" descriptor).
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
       const raw = condition[field];
       if (raw === null || raw === undefined || raw === "") return;
       const current = Number(raw);
@@ -2577,25 +2551,7 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
       const isStreakDayCount = field === "value" && CONDITION_STREAK_COMPARATORS.has(condition.comparator);
       const isInteger = CONDITION_INTEGER_FIELDS.has(field) || isStreakDayCount || (field === "value" && CONDITION_DAY_COUNT_INDICATORS.has(condition.indicator));
       const isPercent = !isStreakDayCount && field === "value" && CONDITION_PERCENT_INDICATORS.has(condition.indicator);
-      // waveThreshold gets its own bounded range instead of the generic {1,100} percent range
-      // (way too wide — nobody wants the optimizer wasting candidates near 100%) or the
-      // generic value-scaled range (wrong scale for this field). Ceiling is this condition's
-      // own drawdown target (value) — same "wave threshold should stay below the drawdown
-      // you're screening for" principle as resolveConditionWaveThreshold in
-      // buildBlockRuleSeriesCache — falling back to 30 only when value isn't a usable positive
-      // number. Floor of 1 rules out the near-zero noise-chasing values seen from ungrounded
-      // AI generation (e.g. 0.1) before this field had explicit guidance.
-      // daysSinceNewWaveLow/daysSinceNewWaveHigh's value is a day count, not a %, so its
-      // waveThreshold can't use that value as a ceiling either (see resolveConditionWaveThreshold)
-      // — falls back to the flat 30 ceiling unconditionally, same as when value isn't a usable
-      // positive number below.
-      const isDayCountWaveIndicator = condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh";
-      const waveThresholdCeiling = !isDayCountWaveIndicator && Number(condition.value) > 0
-        ? Number(condition.value)
-        : 30;
-      const range = field === "waveThreshold"
-        ? { min: 1, max: waveThresholdCeiling, pointCount: optimizationPointCountOverride > 0 ? optimizationPointCountOverride : DEFAULT_OPTIMIZATION_POINT_COUNT }
-        : computeDefaultParamRange(current, isInteger, isPercent);
+      const range = computeDefaultParamRange(current, isInteger, isPercent);
       const fieldLabel = isStreakDayCount ? "连续天数" : CONDITION_FIELD_LABELS[field];
       descriptors.push({
         path: `${pathPrefix}.conditions[${conditionIndex}].${field}`,
@@ -2611,12 +2567,18 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
   });
 }
 
+const WAVE_TRACKER_INDICATORS = new Set(["drawdownFromWaveHigh", "riseFromWaveLow", "daysSinceNewWaveLow", "daysSinceNewWaveHigh"]);
+
 function discoverBlockRuleParameters(preset) {
   const descriptors = [];
   const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
+  let usesWaveTracker = false;
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       const blockLabel = `${sideLabel}规则${blockIndex + 1}`;
+      (block && block.conditions || []).forEach((condition) => {
+        if (WAVE_TRACKER_INDICATORS.has(condition && condition.indicator)) usesWaveTracker = true;
+      });
       pushConditionParamDescriptors(descriptors, block && block.conditions, blockLabel, `${sideKey}[${blockIndex}]`);
       if (block && block.action && block.action.type !== "exitAll") {
         const raw = block.action.value;
@@ -2643,13 +2605,36 @@ function discoverBlockRuleParameters(preset) {
   };
   walkBlocks(preset && preset.buyBlockRules, "买入", "buyBlockRules");
   walkBlocks(preset && preset.sellBlockRules, "卖出", "sellBlockRules");
+  // waveThreshold is a model-level setting (config.waveThreshold) shared by every
+  // drawdownFromWaveHigh/riseFromWaveLow/daysSinceNewWaveLow/daysSinceNewWaveHigh condition in
+  // this model — only worth exposing as a tunable parameter (once, at the model level, same
+  // "波浪确认阈值%" descriptor discoverWaveParameters already uses for the "wave" strategyType)
+  // when the model actually uses one of those indicators.
+  if (usesWaveTracker) {
+    const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
+    const wtRange = computeDefaultParamRange(waveThreshold, false, true);
+    descriptors.push({
+      path: "waveThreshold",
+      label: "波浪确认阈值%",
+      currentValue: waveThreshold,
+      isInteger: false,
+      locked: false,
+      min: wtRange.min,
+      max: wtRange.max,
+      pointCount: wtRange.pointCount,
+    });
+  }
   return descriptors;
 }
 
 function discoverScoreRuleParameters(preset) {
   const descriptors = [];
+  let usesWaveTracker = false;
   (Array.isArray(preset && preset.scoreRules) ? preset.scoreRules : []).forEach((rule, ruleIndex) => {
     const ruleLabel = `打分规则${ruleIndex + 1}`;
+    (rule && rule.conditions || []).forEach((condition) => {
+      if (WAVE_TRACKER_INDICATORS.has(condition && condition.indicator)) usesWaveTracker = true;
+    });
     pushConditionParamDescriptors(descriptors, rule && rule.conditions, ruleLabel, `scoreRules[${ruleIndex}]`);
     const points = Number(rule && rule.points);
     if (Number.isFinite(points)) {
@@ -2697,6 +2682,20 @@ function discoverScoreRuleParameters(preset) {
       });
     }
   });
+  if (usesWaveTracker) {
+    const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
+    const wtRange = computeDefaultParamRange(waveThreshold, false, true);
+    descriptors.push({
+      path: "waveThreshold",
+      label: "波浪确认阈值%",
+      currentValue: waveThreshold,
+      isInteger: false,
+      locked: false,
+      min: wtRange.min,
+      max: wtRange.max,
+      pointCount: wtRange.pointCount,
+    });
+  }
   return descriptors;
 }
 
@@ -2779,7 +2778,7 @@ const OPTIMIZATION_TYPE_CONFIG = {
 
 function discoverWaveParameters(preset) {
   const descriptors = [];
-  const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 5);
+  const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
   const wtRange = computeDefaultParamRange(waveThreshold, false, true);
   descriptors.push({
     path: "waveThreshold",
@@ -2892,7 +2891,7 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
   const sellRules = cloneRules(sourcePreset.sellRules, defaultSellRules)
     .filter((rule) => rule.enabled !== false)
     .map((rule) => ({ ...rule }));
-  const root = { waveThreshold: Math.max(0.1, Number(sourcePreset.waveThreshold) || 5), buyRules, sellRules };
+  const root = { waveThreshold: Math.max(0.1, Number(sourcePreset.waveThreshold) || 20), buyRules, sellRules };
   descriptors.forEach((descriptor, index) => {
     setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
   });

@@ -978,7 +978,7 @@ function sanitizeStoredPreset(name, preset) {
     id: preset.id ? String(preset.id).slice(0, 200) : undefined,
     label: String(preset.label || name).slice(0, 80),
     strategyType,
-    waveThreshold: Math.max(0.1, Number(preset.waveThreshold || 5)),
+    waveThreshold: Math.max(0.1, Number(preset.waveThreshold || 20)),
     buyRules: cloneRules(preset.buyRules, defaultBuyRules),
     sellRules: cloneRules(preset.sellRules, defaultSellRules),
     noNewHighExitRule: {
@@ -5476,7 +5476,7 @@ if (waveVisualizerLoadPresetButton) {
     }
     if (waveVisualizerConditionRow) waveVisualizerConditionRow.classList.add("hidden");
     if (preset.strategyType === "wave") {
-      const threshold = Math.max(0.1, Number(preset.waveThreshold) || 5);
+      const threshold = Math.max(0.1, Number(preset.waveThreshold) || 20);
       setWaveVisualizerThreshold(threshold);
       setStatus(`已加载模型「${preset.label}」的波浪阈值（wave 策略自身用的那个）：${threshold}%`);
       redrawWaveVisualizer();
@@ -6945,7 +6945,7 @@ function fillStrategyPresetControls(presetName) {
   if (indicatorModelSelect) indicatorModelSelect.value = strategyType;
   if (strategyPresetSelect) renderStrategyPresetOptions(strategyType, presetName);
   waveThresholdInput.value = preset.waveThreshold;
-  currentModelTopLevelWaveThreshold = Number(preset.waveThreshold) || 5;
+  currentModelTopLevelWaveThreshold = Number(preset.waveThreshold) || 20;
   renderRuleInputs(presetName);
   applyLocalLadderRule(preset.localLadderRule || defaultLocalLadderRule);
   applyMaRsiBandRule(preset.maRsiBandRule || defaultMaRsiBandRule);
@@ -7122,7 +7122,7 @@ function getWaveTurningPoints(rows, waveThreshold) {
 }
 
 function getWaveThreshold() {
-  return Math.max(0.1, Number(waveThresholdInput.value) || 5);
+  return Math.max(0.1, Number(waveThresholdInput.value) || 20);
 }
 
 function calculateWavePoints(rows, threshold) {
@@ -8997,47 +8997,19 @@ function buildPeVolumeBacktestStates(rows, config) {
 // indicator name, so a drawdownFromWaveHigh condition and a riseFromWaveLow condition never
 // collide even at the same threshold/value — they compute different series off different sides
 // of the wave tracker.
+// waveThreshold is a model-level setting (config.waveThreshold, default 20%) — see engine.js's
+// copy of these two functions for the full explanation.
 function getConditionCacheKey(condition) {
   if (condition.indicator === "formula") return `formula:${condition.formula}`;
-  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow") {
-    const explicit = Number(condition && condition.waveThreshold);
-    if (Number.isFinite(explicit) && explicit > 0) return `${condition.indicator}:${explicit}`;
-    const targetValue = Number(condition && condition.value);
-    return Number.isFinite(targetValue) && targetValue > 0
-      ? `${condition.indicator}:default:${targetValue}`
-      : `${condition.indicator}:shared`;
-  }
-  // daysSinceNewWaveLow's own `value` is a day count, not a %, so (unlike the two above) it
-  // can't be scaled into a sane default waveThreshold — every no-override condition here
-  // resolves to the same flat default regardless of its own value, so they share one cache slot.
-  if (condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh") {
-    const explicit = Number(condition && condition.waveThreshold);
-    return Number.isFinite(explicit) && explicit > 0 ? `${condition.indicator}:${explicit}` : `${condition.indicator}:shared`;
+  if (condition.indicator === "drawdownFromWaveHigh" || condition.indicator === "riseFromWaveLow"
+    || condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh") {
+    return condition.indicator;
   }
   return `${condition.indicator}:${condition.lookbackDays || 0}:${condition.slopeWindowDays || 1}`;
 }
 
-// condition.waveThreshold (per-condition override) beats the shared config-level
-// fallbackWaveThreshold when it's a real positive number; existing saved models never have
-// this field set, so they fall through to the value-scaled default below. When no explicit
-// override is set, the default is 2/3 of the condition's own drawdown target (value) rather
-// than a flat number — the confirmation sensitivity should scale with how big a drawdown is
-// being screened for. Ceiling is the condition's own drawdown target (value) — a confirmation
-// threshold at or above the drawdown being screened for defeats the point — falling back to 30
-// only when value isn't a usable positive number.
 function resolveConditionWaveThreshold(condition, fallbackWaveThreshold) {
-  const explicit = Number(condition && condition.waveThreshold);
-  // daysSinceNewWaveLow's `value` is a day count, not a %, so it skips the value-scaled default
-  // below entirely — see engine.js's copy of this function for the full explanation.
-  if (condition && (condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh")) {
-    if (Number.isFinite(explicit) && explicit > 0) return Math.min(30, Math.max(1, explicit));
-    return Number(fallbackWaveThreshold) || 5;
-  }
-  const targetValue = Number(condition && condition.value);
-  const ceiling = Number.isFinite(targetValue) && targetValue > 0 ? targetValue : 30;
-  if (Number.isFinite(explicit) && explicit > 0) return Math.min(ceiling, Math.max(1, explicit));
-  if (Number.isFinite(targetValue) && targetValue > 0) return Math.min(ceiling, Math.max(1, (targetValue * 2) / 3));
-  return Number(fallbackWaveThreshold) || 5;
+  return Number(fallbackWaveThreshold) || 20;
 }
 
 // See engine.js's copy for the full explanation of why drawdownFromWaveHigh/riseFromWaveLow
@@ -10153,7 +10125,7 @@ function summarizePresetParameters(preset) {
     .filter((rule) => rule.enabled !== false)
     .map((rule) => `涨${rule.rise}%卖${rule.reduce}%`)
     .join(" / ") || "无卖出规则";
-  return `波动阈值${preset.waveThreshold || 5}%；${buyText}；${sellText}`;
+  return `波动阈值${preset.waveThreshold || 20}%；${buyText}；${sellText}`;
 }
 
 function isUserEditablePreset(name) {
@@ -10174,7 +10146,7 @@ function isOwnedEditablePreset(name) {
 function getSerializablePreset(preset) {
   return {
     strategyType: preset.strategyType || "wave",
-    waveThreshold: preset.waveThreshold || 5,
+    waveThreshold: preset.waveThreshold || 20,
     localLadderRule: preset.localLadderRule || undefined,
     maRsiBandRule: preset.maRsiBandRule || undefined,
     orderGridRule: preset.orderGridRule || undefined,
@@ -10537,7 +10509,7 @@ function renderWaveRuleFormEditor(config) {
 function collectWaveRuleFormState() {
   if (!blockRuleFormEditor) return { waveThreshold: 5, buyRules: [], sellRules: [], noNewHighExitRule: { ...defaultNoNewHighExitRule, enabled: false } };
   const thresholdInput = blockRuleFormEditor.querySelector('[data-role="wave-threshold"]');
-  const waveThreshold = thresholdInput ? Number(thresholdInput.value) || 5 : 5;
+  const waveThreshold = thresholdInput ? Number(thresholdInput.value) || 20 : 20;
   const collectSide = (sideKey, fieldA, fieldB) => {
     const blockEls = blockRuleFormEditor.querySelectorAll(`.block-rule-block[data-wave-side="${sideKey}"]`);
     return Array.from(blockEls).map((el) => {
@@ -10773,7 +10745,7 @@ function openPresetParamEditor(presetName, options = {}) {
     } else if (isWave) {
       blockRuleFormEditor.classList.remove("hidden");
       renderWaveRuleFormEditor({
-        waveThreshold: Math.max(0.1, Number(editorPreset.waveThreshold) || 5),
+        waveThreshold: Math.max(0.1, Number(editorPreset.waveThreshold) || 20),
         buyRules: cloneRules(editorPreset.buyRules, defaultBuyRules),
         sellRules: cloneRules(editorPreset.sellRules, defaultSellRules),
         noNewHighExitRule: {
@@ -11214,7 +11186,9 @@ const CONDITION_STREAK_COMPARATORS = new Set(["risingStreak", "fallingStreak"]);
 function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix, pathPrefix) {
   (Array.isArray(conditions) ? conditions : []).forEach((condition, conditionIndex) => {
     const condLabel = `${condLabelPrefix}·条件${conditionIndex + 1}`;
-    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "waveThreshold", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
+    // waveThreshold is a model-level setting now (see resolveConditionWaveThreshold) — exposed
+    // once at the model level instead of per-condition, see discoverBlockRuleParameters.
+    ["lookbackDays", "slopeWindowDays", "sustainedDays", "value", "daysSinceHigh", "daysWithoutNewLow", "daysSinceLow", "daysWithoutNewHigh"].forEach((field) => {
       const raw = condition[field];
       if (raw === null || raw === undefined || raw === "") return;
       const current = Number(raw);
@@ -11224,17 +11198,7 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
       const isStreakDayCount = field === "value" && CONDITION_STREAK_COMPARATORS.has(condition.comparator);
       const isInteger = CONDITION_INTEGER_FIELDS.has(field) || isStreakDayCount || (field === "value" && CONDITION_DAY_COUNT_INDICATORS.has(condition.indicator));
       const isPercent = !isStreakDayCount && field === "value" && CONDITION_PERCENT_INDICATORS.has(condition.indicator);
-      // Bounded range instead of the generic {1,100} percent range or the generic
-      // value-scaled range — see engine.js's pushConditionParamDescriptors for the same logic.
-      // daysSinceNewWaveLow/daysSinceNewWaveHigh's value is a day count, not a %, so it can't
-      // use it as a ceiling either — falls back to the flat 30 ceiling unconditionally.
-      const isDayCountWaveIndicator = condition.indicator === "daysSinceNewWaveLow" || condition.indicator === "daysSinceNewWaveHigh";
-      const waveThresholdCeiling = !isDayCountWaveIndicator && Number(condition.value) > 0
-        ? Number(condition.value)
-        : 30;
-      const range = field === "waveThreshold"
-        ? { min: 1, max: waveThresholdCeiling, pointCount: DEFAULT_OPTIMIZATION_POINT_COUNT }
-        : computeDefaultParamRange(current, isInteger, isPercent);
+      const range = computeDefaultParamRange(current, isInteger, isPercent);
       const fieldLabel = isStreakDayCount ? "连续天数" : CONDITION_FIELD_LABELS[field];
       descriptors.push({
         path: `${pathPrefix}.conditions[${conditionIndex}].${field}`,
@@ -11250,12 +11214,18 @@ function pushConditionParamDescriptors(descriptors, conditions, condLabelPrefix,
   });
 }
 
+const WAVE_TRACKER_INDICATORS = new Set(["drawdownFromWaveHigh", "riseFromWaveLow", "daysSinceNewWaveLow", "daysSinceNewWaveHigh"]);
+
 function discoverBlockRuleParameters(preset) {
   const descriptors = [];
   const percentActionTypes = new Set(["targetPercent", "reducePercent"]);
+  let usesWaveTracker = false;
   const walkBlocks = (blocks, sideLabel, sideKey) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       const blockLabel = `${sideLabel}规则${blockIndex + 1}`;
+      (block && block.conditions || []).forEach((condition) => {
+        if (WAVE_TRACKER_INDICATORS.has(condition && condition.indicator)) usesWaveTracker = true;
+      });
       pushConditionParamDescriptors(descriptors, block && block.conditions, blockLabel, `${sideKey}[${blockIndex}]`);
       if (block && block.action && block.action.type !== "exitAll") {
         const raw = block.action.value;
@@ -11282,13 +11252,31 @@ function discoverBlockRuleParameters(preset) {
   };
   walkBlocks(preset && preset.buyBlockRules, "买入", "buyBlockRules");
   walkBlocks(preset && preset.sellBlockRules, "卖出", "sellBlockRules");
+  if (usesWaveTracker) {
+    const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
+    const wtRange = computeDefaultParamRange(waveThreshold, false, true);
+    descriptors.push({
+      path: "waveThreshold",
+      label: "波浪确认阈值%",
+      currentValue: waveThreshold,
+      isInteger: false,
+      locked: false,
+      min: wtRange.min,
+      max: wtRange.max,
+      pointCount: wtRange.pointCount,
+    });
+  }
   return descriptors;
 }
 
 function discoverScoreRuleParameters(preset) {
   const descriptors = [];
+  let usesWaveTracker = false;
   (Array.isArray(preset && preset.scoreRules) ? preset.scoreRules : []).forEach((rule, ruleIndex) => {
     const ruleLabel = `打分规则${ruleIndex + 1}`;
+    (rule && rule.conditions || []).forEach((condition) => {
+      if (WAVE_TRACKER_INDICATORS.has(condition && condition.indicator)) usesWaveTracker = true;
+    });
     pushConditionParamDescriptors(descriptors, rule && rule.conditions, ruleLabel, `scoreRules[${ruleIndex}]`);
     const points = Number(rule && rule.points);
     if (Number.isFinite(points)) {
@@ -11336,6 +11324,20 @@ function discoverScoreRuleParameters(preset) {
       });
     }
   });
+  if (usesWaveTracker) {
+    const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
+    const wtRange = computeDefaultParamRange(waveThreshold, false, true);
+    descriptors.push({
+      path: "waveThreshold",
+      label: "波浪确认阈值%",
+      currentValue: waveThreshold,
+      isInteger: false,
+      locked: false,
+      min: wtRange.min,
+      max: wtRange.max,
+      pointCount: wtRange.pointCount,
+    });
+  }
   return descriptors;
 }
 
@@ -11416,7 +11418,7 @@ const OPTIMIZATION_TYPE_CONFIG = {
 
 function discoverWaveParameters(preset) {
   const descriptors = [];
-  const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 5);
+  const waveThreshold = Math.max(0.1, Number(preset && preset.waveThreshold) || 20);
   const wtRange = computeDefaultParamRange(waveThreshold, false, true);
   descriptors.push({
     path: "waveThreshold",
@@ -11527,7 +11529,7 @@ function buildConfigFromDescriptorCombo(base, sourcePreset, strategyType, descri
   const sellRules = cloneRules(sourcePreset.sellRules, defaultSellRules)
     .filter((rule) => rule.enabled !== false)
     .map((rule) => ({ ...rule }));
-  const root = { waveThreshold: Math.max(0.1, Number(sourcePreset.waveThreshold) || 5), buyRules, sellRules };
+  const root = { waveThreshold: Math.max(0.1, Number(sourcePreset.waveThreshold) || 20), buyRules, sellRules };
   descriptors.forEach((descriptor, index) => {
     setBlockRuleValueAtPath(root, descriptor.path, combo[index]);
   });
@@ -14757,7 +14759,7 @@ waveThresholdInput.addEventListener("input", () => {
     // Directly mutates the condition object living inside currentBlockRules/currentScoreRules
     // (collectWaveConditions returned a reference, not a copy) — the next readBacktestConfig()/
     // backtest run picks this up automatically, no separate save step.
-    currentWaveConditionRef.waveThreshold = Math.max(0.1, Number(waveThresholdInput.value) || 5);
+    currentWaveConditionRef.waveThreshold = Math.max(0.1, Number(waveThresholdInput.value) || 20);
   }
   triggerWaveThresholdRedraw();
 });
