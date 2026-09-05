@@ -1874,6 +1874,10 @@ function renderAdminScanList() {
         <td>${formatModelNameLink({
           id: record.presetId, numericId: record.presetNumericId, label: record.presetLabel || "",
           config: record.bestConfig, strategyType: record.strategyType, symbol: record.symbol,
+          testYear1AnnualizedReturn: record.testYear1AnnualizedReturn,
+          testYear1Trades: record.testYear1Trades,
+          testYear2AnnualizedReturn: record.testYear2AnnualizedReturn,
+          testYear2Trades: record.testYear2Trades,
           isOwner: false, name: null,
         })}</td>
         <td>${escapeHtml(getStrategyTypeLabel(record.strategyType || "wave"))}</td>
@@ -1933,17 +1937,45 @@ async function loadAdminScanResults() {
   }
 }
 
-// Shared default-naming rule for "另存为模型" across 后台模型排行 and AI自动生成: 股票代码
-// + 验证期年化收益 + 验证期交易次数 + 原模型名缩写(前6字符) — the caller passes in the WORSE
-// of the two validation years (not train, and not the better year) since that's the
-// out-of-sample figure that actually reflects whether the model held up, consistent with
-// reachedTarget requiring both years to clear the target.
-function buildAutoSaveLabel({ symbol, annualizedReturn, trades, modelLabel }) {
+// Shared default-naming rule for "另存为模型" across 后台模型排行 and AI自动生成.
+function buildAutoSaveLabel({
+  symbol,
+  testYear1AnnualizedReturn,
+  testYear1Trades,
+  testYear2AnnualizedReturn,
+  testYear2Trades,
+  annualizedReturn,
+  trades,
+}) {
   const symbolPart = String(symbol || "").trim();
-  const returnPart = Number.isFinite(annualizedReturn) ? `${annualizedReturn >= 0 ? "+" : ""}${annualizedReturn.toFixed(1)}%` : "";
-  const tradesPart = Number.isFinite(trades) ? `${trades}笔` : "";
-  const modelPart = String(modelLabel || "").trim().slice(0, 6);
-  return [symbolPart, returnPart, tradesPart, modelPart].filter(Boolean).join(" ").slice(0, 60);
+  if (!symbolPart) return "";
+  const y1Return = Number.isFinite(testYear1AnnualizedReturn) ? testYear1AnnualizedReturn : annualizedReturn;
+  const y1Trades = Number.isFinite(testYear1Trades) ? testYear1Trades : trades;
+  const y2Return = Number.isFinite(testYear2AnnualizedReturn) ? testYear2AnnualizedReturn : annualizedReturn;
+  const y2Trades = Number.isFinite(testYear2Trades) ? testYear2Trades : trades;
+  const formatReturn = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(1)}%` : "--";
+  const formatTrades = (value) => Number.isFinite(value) ? `${Math.max(0, Math.round(value))}笔` : "--";
+  return [
+    "AI",
+    symbolPart,
+    "验证1年",
+    formatReturn(y1Return),
+    formatTrades(y1Trades),
+    "验证2年",
+    formatReturn(y2Return),
+    formatTrades(y2Trades),
+  ].filter(Boolean).join(" ").slice(0, 80);
+}
+
+function buildAutoSaveLabelFromContext(context) {
+  if (!context) return "";
+  return buildAutoSaveLabel({
+    symbol: context.symbol,
+    testYear1AnnualizedReturn: context.testYear1AnnualizedReturn,
+    testYear1Trades: context.testYear1Trades,
+    testYear2AnnualizedReturn: context.testYear2AnnualizedReturn,
+    testYear2Trades: context.testYear2Trades,
+  }) || String(context.label || "模型").slice(0, 80);
 }
 
 function openAdminScanParamViewer(scanId) {
@@ -1962,10 +1994,12 @@ function openAdminScanParamViewer(scanId) {
     subtitle: `优化后收益率 ${formatPercent(record.bestReturnRate)} · 最大回撤 ${formatPercent(record.bestMaxDrawdown)} · 只读`,
     saveDefaultLabel: buildAutoSaveLabel({
       symbol: record.symbol,
-      annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
-      trades: record.testYear2Trades,
-      modelLabel: record.presetLabel,
+      testYear1AnnualizedReturn: record.testYear1AnnualizedReturn,
+      testYear1Trades: record.testYear1Trades,
+      testYear2AnnualizedReturn: record.testYear2AnnualizedReturn,
+      testYear2Trades: record.testYear2Trades,
     }),
+    saveDefaultLabelFinal: true,
   });
 }
 
@@ -1974,9 +2008,10 @@ async function saveAdminScanRecordAsPreset(scanId) {
   if (!record) return;
   const defaultLabel = buildAutoSaveLabel({
     symbol: record.symbol,
-    annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
-    trades: record.testYear2Trades,
-    modelLabel: record.presetLabel,
+    testYear1AnnualizedReturn: record.testYear1AnnualizedReturn,
+    testYear1Trades: record.testYear1Trades,
+    testYear2AnnualizedReturn: record.testYear2AnnualizedReturn,
+    testYear2Trades: record.testYear2Trades,
   });
   const label = window.prompt("输入新模型名称：", defaultLabel);
   if (label === null) return;
@@ -2885,10 +2920,12 @@ function openAiGeneratedParamViewer(presetId, record, sourceLabel) {
     subtitle: `训练期年化收益率 ${formatPercent(record.trainAnnualizedReturn)} · 验证期年化收益率(第1年) ${formatPercent(record.testYear1AnnualizedReturn)} · 验证期年化收益率(第2年) ${formatPercent(record.testYear2AnnualizedReturn)} · 只读`,
     saveDefaultLabel: buildAutoSaveLabel({
       symbol: record.targetSymbol,
-      annualizedReturn: Math.min(record.testYear1AnnualizedReturn, record.testYear2AnnualizedReturn),
-      trades: record.testYear2Trades,
-      modelLabel: record.label,
+      testYear1AnnualizedReturn: record.testYear1AnnualizedReturn,
+      testYear1Trades: record.testYear1Trades,
+      testYear2AnnualizedReturn: record.testYear2AnnualizedReturn,
+      testYear2Trades: record.testYear2Trades,
     }),
+    saveDefaultLabelFinal: true,
   });
 }
 
@@ -2999,7 +3036,8 @@ if (modelActionViewParamsButton) {
       readonly: true,
       title: `查看参数：${context.label}`,
       subtitle: context.ownerEmail ? `Owner: ${context.ownerEmail} · 只读` : "只读",
-      saveDefaultLabel: `${context.label} 副本`.slice(0, 60),
+      saveDefaultLabel: context.isAiCandidate ? buildAutoSaveLabelFromContext(context) : `${context.label} 副本`.slice(0, 60),
+      saveDefaultLabelFinal: Boolean(context.isAiCandidate),
     });
   });
 }
@@ -3037,7 +3075,9 @@ if (modelActionSaveAsButton) {
   modelActionSaveAsButton.addEventListener("click", async () => {
     const context = modelActionContext;
     if (!context) return;
-    const defaultLabel = `${context.label} 副本`.slice(0, 60);
+    const defaultLabel = context.isAiCandidate
+      ? buildAutoSaveLabelFromContext(context)
+      : `${context.label} 副本`.slice(0, 60);
     const label = window.prompt("输入新模型名称：", defaultLabel);
     if (label === null) return;
     const trimmed = label.trim().slice(0, 80);
@@ -3105,7 +3145,7 @@ async function resolveRealPresetIdForContext(context, actionLabel) {
   if (!context.isAiCandidate) {
     return { id: context.id, label: context.label, numericId: context.numericId };
   }
-  const defaultLabel = `${context.label} 副本`.slice(0, 60);
+  const defaultLabel = buildAutoSaveLabelFromContext(context);
   const label = window.prompt(`这是AI候选模型，${actionLabel}前需要先另存为正式模型。输入新模型名称：`, defaultLabel);
   if (label === null) return null;
   const trimmed = label.trim().slice(0, 80);
@@ -3526,6 +3566,10 @@ function renderAiGeneratedPresetRow(p, options = {}) {
             id: p.id, numericId: p.numericId, label: p.label || "",
             config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
             reason: p.reason,
+            testYear1AnnualizedReturn: p.testYear1AnnualizedReturn,
+            testYear1Trades: p.testYear1Trades,
+            testYear2AnnualizedReturn: p.testYear2AnnualizedReturn,
+            testYear2Trades: p.testYear2Trades,
             isOwner: Boolean(options.isOwner),
             // Only trust p.name (the real strategy_presets row key) for a row the viewer owns —
             // this is what lets 查看参数/重命名 etc. resolve through isOwnedEditablePreset() to
@@ -11168,6 +11212,7 @@ function openPresetParamEditor(presetName, options = {}) {
     config: editorPreset,
     targetSymbol: (preset.meta && preset.meta.targetSymbol) || normalizeSymbolInput(codeInput.value) || "通用",
     defaultLabel: options.saveDefaultLabel || preset.label || presetName || "模型",
+    defaultLabelFinal: Boolean(options.saveDefaultLabelFinal),
     originalText: (preset.meta && (preset.meta.originalText || preset.meta.modelText)) || "",
     originalModelId: presetName || (preset.meta && preset.meta.originalModelId) || "0",
     originalModelLabel: (preset.meta && preset.meta.originalModelLabel) || preset.label || "",
@@ -15029,7 +15074,9 @@ if (saveAsNewPresetButton) {
   saveAsNewPresetButton.addEventListener("click", async () => {
     if (!presetParamViewerSaveSource) return;
     const source = presetParamViewerSaveSource;
-    const defaultLabel = `${source.defaultLabel} 副本`.slice(0, 60);
+    const defaultLabel = source.defaultLabelFinal
+      ? String(source.defaultLabel || "模型").slice(0, 80)
+      : `${source.defaultLabel} 副本`.slice(0, 60);
     const label = window.prompt("输入新模型名称：", defaultLabel);
     if (label === null) return;
     const trimmed = label.trim().slice(0, 80);
