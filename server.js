@@ -2723,6 +2723,7 @@ async function queryAiGeneratedPresets({ source }) {
       test_year1_annualized_return, test_year1_start_date, test_year1_end_date, test_year1_trades,
       test_year2_annualized_return, test_year2_start_date, test_year2_end_date, test_year2_trades,
       annualized_diff_year1, annualized_diff_year2,
+      test_year1_upside_deviation, test_year2_upside_deviation,
       best_trades, tested_candidates, reached_target, scanned_at,
       last_rechecked_at, recheck_still_qualifies, recheck_year1_annualized_return,
       recheck_year2_annualized_return, recheck_target_percent, recheck_error
@@ -2755,6 +2756,8 @@ async function queryAiGeneratedPresets({ source }) {
     testYear2Trades: row.test_year2_trades || 0,
     annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
     annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
+    testYear1UpsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
+    testYear2UpsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
     reachedTarget: Boolean(row.reached_target),
@@ -4375,7 +4378,15 @@ function getJson(url, headers = {}) {
       });
     });
 
-    req.setTimeout(8000, () => {
+    // 2026-09-05: found via 139.177.195.223's "加载历史" hanging past the client's 30s abort —
+    // EastMoney's klines endpoint has 2 URL candidates (buildEastMoneyUrls: https+http), so a
+    // fully-timed-out attempt burns 2× this value before falling through to AKShare (which has
+    // its own, separately-configured ~18s timeout, scripts/shared/akshare-client.js) and then
+    // Yahoo. At the old 8000ms that's already 16s before AKShare even starts — left AKShare's
+    // budget untouched (batch/cron callers of that same shared bridge legitimately need it) and
+    // shrank this one instead, so the full fallback chain reliably finishes with room to spare
+    // before the client gives up.
+    req.setTimeout(3500, () => {
       req.destroy(new Error("行情服务请求超时。"));
     });
     req.on("error", reject);
@@ -4940,13 +4951,24 @@ async function fetchKlines({ code, start, end }) {
   }
   let rows = mergeValuationsIntoRows(result.rows, valuations);
   try {
-    await ensureFreshFundamentals(code, market);
     const fundamentalsRows = await fetchStoredFundamentals({ code, market, end });
     rows = mergeFundamentalsIntoRows(rows, fundamentalsRows);
   } catch (fundamentalsError) {
     console.warn(`Fundamentals merge skipped for ${code}: ${fundamentalsError.message}`);
     rows = rows.map((row) => ({ ...row, grossMargin: null, roe: null, revenueGrowth: null }));
   }
+  // 2026-09-05: used to `await ensureFreshFundamentals` here, ahead of the DB read above — on a
+  // symbol with no/stale cached fundamentals that meant every "加载历史" blocked on a whole
+  // extra AKShare subprocess call (scripts/shared/akshare-client.js's ~18s AKSHARE_TIMEOUT_MS)
+  // on top of the klines fallback chain above, which alone can already approach the client's
+  // load timeout — found via 139.177.195.223 taking ~50s to load a symbol with stale
+  // fundamentals. This is explicitly a best-effort enrichment (the catch above already falls
+  // back to nulls), so it has no business blocking the response at all: merge whatever's
+  // already cached right now, and let a fresh fetch update the cache in the background for
+  // NEXT time instead.
+  ensureFreshFundamentals(code, market).catch((error) => {
+    console.warn(`Fundamentals background refresh skipped for ${code}: ${error.message}`);
+  });
   const source = `${result.source}${valuationSource}`;
   const info = {
     code,

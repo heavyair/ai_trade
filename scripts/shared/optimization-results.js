@@ -115,6 +115,17 @@ async function ensureResultsTable(pool) {
     -- required the model to clear, recorded alongside recheck_target_percent for the same
     -- "what standard was this judged against" transparency.
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS recheck_upside_threshold_percent DOUBLE PRECISION;
+
+    -- Each validation year's own annualized upside deviation (scripts/shared/volatility.js) —
+    -- search-validated-best.js already computes this to judge the upside-deviation gate but
+    -- never persisted it; the admin "验证搜索"/"AI自动生成" lists want to show each year's
+    -- return÷upside-deviation ratio (not just the gate's pass/fail outcome), which needs the raw
+    -- denominator on the row itself. Nullable, not NOT NULL DEFAULT 0 — a real 0 upside deviation
+    -- would be indistinguishable from "not computed" otherwise, and run-auto-generate.js's rows
+    -- never populate these at all (that script has no upside-deviation gate), so NULL genuinely
+    -- means "not applicable" for that source.
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_upside_deviation DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_upside_deviation DOUBLE PRECISION;
   `);
 }
 
@@ -163,6 +174,7 @@ async function saveOptimizationResult(pool, row) {
       test_year2_return_rate, test_year2_max_drawdown, test_year2_annualized_return,
       test_year2_trades, test_year2_rows_tested, test_year2_start_date, test_year2_end_date,
       annualized_diff_year1, annualized_diff_year2,
+      test_year1_upside_deviation, test_year2_upside_deviation,
       reached_target, source, model_reason, used_prior_examples, scanned_at
     )
     VALUES (
@@ -171,7 +183,8 @@ async function saveOptimizationResult(pool, row) {
       $22,$23,$24,$25,$26,$27,$28,
       $29,$30,$31,$32,$33,$34,$35,
       $36,$37,
-      $38,$39,$40,$41,NOW()
+      $38,$39,
+      $40,$41,$42,$43,NOW()
     )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
@@ -207,6 +220,8 @@ async function saveOptimizationResult(pool, row) {
       test_year2_end_date = EXCLUDED.test_year2_end_date,
       annualized_diff_year1 = EXCLUDED.annualized_diff_year1,
       annualized_diff_year2 = EXCLUDED.annualized_diff_year2,
+      test_year1_upside_deviation = EXCLUDED.test_year1_upside_deviation,
+      test_year2_upside_deviation = EXCLUDED.test_year2_upside_deviation,
       reached_target = EXCLUDED.reached_target,
       source = EXCLUDED.source,
       model_reason = EXCLUDED.model_reason,
@@ -223,6 +238,8 @@ async function saveOptimizationResult(pool, row) {
     row.testYear2ReturnRate, row.testYear2MaxDrawdown, row.testYear2AnnualizedReturn,
     row.testYear2Trades, row.testYear2RowsTested, row.testYear2StartDate, row.testYear2EndDate,
     row.annualizedDiffYear1, row.annualizedDiffYear2,
+    row.testYear1UpsideDeviation === undefined || row.testYear1UpsideDeviation === null ? null : Number(row.testYear1UpsideDeviation),
+    row.testYear2UpsideDeviation === undefined || row.testYear2UpsideDeviation === null ? null : Number(row.testYear2UpsideDeviation),
     Boolean(row.reachedTarget), row.source || "", row.modelReason || "", Boolean(row.usedPriorExamples),
   ]);
 }

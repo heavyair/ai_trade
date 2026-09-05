@@ -499,6 +499,8 @@ async function main() {
               testYear2EndDate: testWindows[1].endDate,
               annualizedDiffYear1: Math.abs(entry.year1Annualized - entry.trainAnnualized),
               annualizedDiffYear2: Math.abs(entry.year2Annualized - entry.trainAnnualized),
+              testYear1UpsideDeviation: testUpsideDev[0],
+              testYear2UpsideDeviation: testUpsideDev[1],
               trainStartDate,
               trainEndDate,
               reachedTarget: entry.reachedTarget,

@@ -8,7 +8,11 @@ const statusBand = document.querySelector(".status-band");
 const statusText = document.querySelector("#statusText");
 const loadingOverlay = document.querySelector("#loadingOverlay");
 const loadingOverlayText = document.querySelector("#loadingOverlayText");
-const LOAD_DATA_TIMEOUT_MS = 30000;
+// 2026-09-05: raised from 30000 — /api/klines' EastMoney→AKShare→Yahoo Finance fallback chain
+// (server.js's fetchKlines) can legitimately take a while when the primary sources are slow to
+// reject a request rather than failing fast, and 30s left too little margin (see server.js's
+// getJson timeout comment for the accompanying server-side fix).
+const LOAD_DATA_TIMEOUT_MS = 45000;
 const wizardButtons = Array.from(document.querySelectorAll("[data-wizard-target]"));
 const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
 const simulationProgressButtons = Array.from(document.querySelectorAll("[data-simulation-step]"));
@@ -3346,6 +3350,10 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "testYear2AnnualizedReturn", label: "验证期年化收益率(第2年)" },
   { key: "annualizedDiffYear1", label: "年化差异(第1年)" },
   { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
+  { key: "testYear1Trades", label: "验证期交易数(第1年)" },
+  { key: "testYear2Trades", label: "验证期交易数(第2年)" },
+  { key: "testYear1UpsideRatio", label: "回报/上行标准差(第1年)" },
+  { key: "testYear2UpsideRatio", label: "回报/上行标准差(第2年)" },
   { key: "bestTrades", label: "交易次数" },
   { key: "testedCandidates", label: "测试组合数" },
   { key: "reason", label: "AI 生成理由" },
@@ -3368,7 +3376,30 @@ function getAdminAutoGenerateSortValue(record, key) {
   // 两年交易次数差得越多，说明这个模型在两年里的实际交易行为越不一致（比如一年几乎没动，
   // 另一年频繁交易）——"推荐盯盘筛选"排序链最后一层的并列判据，越小越好。
   if (key === "tradeCountDiff") return Math.abs((Number(record.testYear1Trades) || 0) - (Number(record.testYear2Trades) || 0));
+  if (key === "testYear1UpsideRatio") return getTestYearUpsideRatio(record, 1) ?? 0;
+  if (key === "testYear2UpsideRatio") return getTestYearUpsideRatio(record, 2) ?? 0;
   return Number(record[key]) || 0;
+}
+
+// 年化回报÷当年上行标准差——不是门槛判定本身（那个只在search-validated-best.js跑的时候
+// 算出通过/不通过），这里只是把用来判断门槛的那个比值本身亮出来，方便直观看出"超过门槛多少"
+// 而不是只看一个二元的通过/不通过。run-auto-generate.js的行没有这个门槛概念，上行标准差字段
+// 是null，这里统一返回null（调用方各自决定null时显示什么，不是0）。
+function getTestYearUpsideRatio(record, yearNum) {
+  const upsideDev = yearNum === 1 ? record.testYear1UpsideDeviation : record.testYear2UpsideDeviation;
+  const annualizedReturn = yearNum === 1 ? record.testYear1AnnualizedReturn : record.testYear2AnnualizedReturn;
+  if (upsideDev === null || upsideDev === undefined || !(upsideDev > 0)) return null;
+  return (Number(annualizedReturn) || 0) / upsideDev;
+}
+
+// "N.NNx" — a ratio ≥1 means that year's return cleared its own upside deviation outright, not
+// just the (lower, e.g. 30%) fraction search-validated-best.js's gate actually requires. "—" for
+// rows with no upside-deviation gate at all (run-auto-generate.js candidates, or a year whose
+// deviation couldn't be computed from too little price history).
+function formatUpsideRatioCell(p, yearNum) {
+  const ratio = getTestYearUpsideRatio(p, yearNum);
+  if (ratio === null) return "--";
+  return `${ratio.toFixed(2)}x`;
 }
 
 // "推荐盯盘"筛选：两年验证期都要有真实交易（排除0笔交易的买入持有假象），并且如果已经复查过
@@ -3510,6 +3541,10 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td class="${testYear2Class}">${hasTrainTest ? formatPercent(p.testYear2AnnualizedReturn) : "--"}</td>
       <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear1) : "--"}</td>
       <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear2) : "--"}</td>
+      <td>${hasTrainTest ? (p.testYear1Trades || 0) : "--"}</td>
+      <td>${hasTrainTest ? (p.testYear2Trades || 0) : "--"}</td>
+      <td>${formatUpsideRatioCell(p, 1)}</td>
+      <td>${formatUpsideRatioCell(p, 2)}</td>
       <td>${p.bestTrades || 0}</td>
       <td>${p.testedCandidates || 0}</td>
       <td>${escapeHtml(formatAdminAutoGenerateReason(p.reason))}</td>
@@ -10071,6 +10106,104 @@ function annualizeReturnByTradingDays(returnRate, tradingDays) {
   return annualizeReturn(returnRate, tradingDays / 252);
 }
 
+// Client mirror of scripts/shared/volatility.js's annualizedUpsideDeviation — "参数优化"
+// (grid-search over a single arbitrary date window, entirely client-side, no server round-trip)
+// needs this to report each calendar year's return÷upside-deviation ratio the same way the
+// server-side 重新验证/AI搜索 flows already do, but this feature has never needed volatility
+// math before, so there was nothing to reuse.
+function annualizedUpsideDeviation(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return null;
+  const dailyReturns = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const prevClose = rows[i - 1].close;
+    if (!(prevClose > 0)) continue;
+    dailyReturns.push((rows[i].close - prevClose) / prevClose);
+  }
+  if (dailyReturns.length === 0) return null;
+  const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+  const upsideVariance = dailyReturns.reduce(
+    (acc, r) => acc + (r > mean ? (r - mean) * (r - mean) : 0),
+    0
+  ) / dailyReturns.length;
+  return Math.sqrt(upsideVariance) * Math.sqrt(252) * 100;
+}
+
+// Same 30-row floor as server.js's REVALIDATE_MIN_UPSIDE_GATE_ROWS — a year with too little
+// price history makes the upside-deviation number too noisy to report.
+const OPTIMIZATION_MIN_UPSIDE_GATE_ROWS = 30;
+
+// Splits the optimization window (rows/states, one full backtest run for a single config) into
+// calendar years anchored on the window's OWN start date (not "today" — unlike 重新验证/AI搜索,
+// this window can be any arbitrary historical range the user picked in 历史模拟), mirroring
+// handlePresetRevalidateApi's trainYearBreakdown loop (server.js) baseline/end-index technique
+// so the two features compute "this year's annualized return/trades" identically. The final
+// bucket is very likely a partial year (the window rarely ends on an exact anniversary of its
+// own start) — shown as-is with its own real (shorter) date range rather than padded or dropped.
+function computeOptimizationYearlyBreakdown(rows, states) {
+  if (!rows || rows.length === 0 || !states || states.length === 0) return [];
+  const windowEndDate = rows[rows.length - 1].date;
+  const breakdown = [];
+  for (let y = 0; ; y += 1) {
+    const yearStart = formatDate(shiftYears(new Date(rows[0].date), y));
+    if (yearStart > windowEndDate) break;
+    const yearEnd = formatDate(shiftYears(new Date(rows[0].date), y + 1));
+    const yearRows = rows.filter((row) => row.date >= yearStart && row.date < yearEnd);
+    if (yearRows.length === 0) break;
+    let baselineIndex = -1;
+    let endIndex = -1;
+    for (let i = 0; i < states.length; i += 1) {
+      const date = states[i].row.date;
+      if (date < yearStart) baselineIndex = i;
+      if (date < yearEnd) endIndex = i;
+    }
+    if (endIndex < 0) continue;
+    const baselineEquity = baselineIndex >= 0 ? states[baselineIndex].equity : states[0].equity;
+    const rowsInWindow = endIndex - baselineIndex;
+    if (rowsInWindow <= 0 || !(baselineEquity > 0)) continue;
+    const yearReturn = annualizeReturnByTradingDays(((states[endIndex].equity - baselineEquity) / baselineEquity) * 100, rowsInWindow);
+    const baselineTrades = baselineIndex >= 0 ? states[baselineIndex].trades.length : 0;
+    const yearTrades = states[endIndex].trades.length - baselineTrades;
+    const upsideDeviation = yearRows.length >= OPTIMIZATION_MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(yearRows) : null;
+    breakdown.push({ start: yearStart, end: yearEnd, annualizedReturn: yearReturn, trades: yearTrades, upsideDeviation });
+  }
+  return breakdown;
+}
+
+function renderOptimizationYearlyTable(title, breakdown) {
+  if (!breakdown || breakdown.length === 0) return "";
+  const rows = breakdown.map((year, index) => {
+    const ratio = year.upsideDeviation && year.upsideDeviation > 0 ? year.annualizedReturn / year.upsideDeviation : null;
+    return `
+      <tr>
+        <td>第${index + 1}年</td>
+        <td>${escapeHtml(year.start)} ~ ${escapeHtml(year.end)}</td>
+        <td>${formatPercent(year.annualizedReturn)}</td>
+        <td>${year.trades}</td>
+        <td>${year.upsideDeviation === null ? "--" : formatPercent(year.upsideDeviation)}</td>
+        <td>${ratio === null ? "--" : `${ratio.toFixed(2)}x`}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="admin-ranking-list">
+      <p class="field-hint">${escapeHtml(title)}</p>
+      <table class="admin-ranking-table">
+        <thead>
+          <tr>
+            <th>年份</th>
+            <th>区间</th>
+            <th>年化回报</th>
+            <th>交易数</th>
+            <th>上行标准差</th>
+            <th>回报/上行标准差</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function buildRankingPresetSnapshot(preset, config) {
   return {
     ...stripPresetDisplayFields(getSerializablePreset(preset)),
@@ -12573,7 +12706,7 @@ function renderSelectedModelDetail(result) {
   }
 }
 
-function renderOptimizationReport(sourcePresetName, baseResult, bestResult, testedCount) {
+function renderOptimizationReport(sourcePresetName, baseResult, bestResult, testedCount, rowsForTest) {
   if (!optimizationReport || !optimizationParamPreview) return;
   const sourcePreset = strategyPresets[sourcePresetName] || {};
   const improvement = bestResult.finalState.returnRate - baseResult.finalState.returnRate;
@@ -12609,6 +12742,15 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
       <p>负数表示最大回撤降低。</p>
     </article>
   `;
+  if (Array.isArray(rowsForTest) && rowsForTest.length > 0) {
+    const baseBreakdown = computeOptimizationYearlyBreakdown(rowsForTest, baseResult.states);
+    const bestBreakdown = computeOptimizationYearlyBreakdown(rowsForTest, bestResult.states);
+    optimizationReport.insertAdjacentHTML(
+      "beforeend",
+      renderOptimizationYearlyTable("原参数·逐年回报/上行标准差/交易数", baseBreakdown)
+      + renderOptimizationYearlyTable("最佳参数·逐年回报/上行标准差/交易数", bestBreakdown)
+    );
+  }
   renderOptimizationNarrative(bestResult.config);
   optimizationParamPreview.textContent = JSON.stringify(getSerializablePreset(optimizationPresetDraft), null, 2);
   if (saveOptimizationButton) saveOptimizationButton.disabled = false;
@@ -12796,7 +12938,7 @@ function optimizePresetParameters(presetName, paramDescriptors, maxCombinations)
     }
 
     optimizationPresetDraft = buildOptimizationPreset(presetName, best.config, rowsForTest);
-    renderOptimizationReport(presetName, baseResult, best, candidates.length);
+    renderOptimizationReport(presetName, baseResult, best, candidates.length, rowsForTest);
     setStatus(`优化完成：${preset.label}；最佳收益 ${formatPercent(best.finalState.returnRate)}，最大回撤 ${formatPercent(best.finalState.maxDrawdown)}。`);
   };
 
