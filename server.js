@@ -5428,6 +5428,168 @@ function mapPresetValidationRow(row) {
   };
 }
 
+function mapModelListValidation(row, overrides = {}) {
+  if (!row.snapshot_updated_at) return null;
+  return mapPresetValidationRow({
+    ...row,
+    id: overrides.id || row.id,
+    numeric_id: overrides.numericId !== undefined ? overrides.numericId : row.numeric_id,
+    name: overrides.name !== undefined ? overrides.name : row.name,
+    label: overrides.label || row.label,
+    strategy_type: overrides.strategyType || row.strategy_type,
+    config: overrides.config || row.config,
+    meta: overrides.meta || row.meta,
+    created_at: overrides.createdAt || row.created_at,
+  });
+}
+
+function mapModelListPresetRow(row, watches = [], options = {}) {
+  const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
+  return {
+    id: row.id,
+    numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+    name: row.name || null,
+    label: row.label || row.name || "模型",
+    strategyType: row.strategy_type || "wave",
+    bestConfig: row.config && typeof row.config === "object" ? row.config : {},
+    targetSymbol: meta.targetSymbol || "",
+    reason: meta.reason || meta.originalText || "",
+    ownerEmail: options.ownerEmail || row.owner_email || "",
+    canSimulate: Boolean(row.config && typeof row.config === "object"),
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+    sharePublic: Boolean(row.share_public),
+    shareAllowViewParams: Boolean(row.share_allow_view_params),
+    shareAllowWatch: Boolean(row.share_allow_watch),
+    shareAllowCopy: Boolean(row.share_allow_copy),
+    validation: mapModelListValidation(row),
+    watches,
+  };
+}
+
+function mapFollowedModelListRow(row, watches = []) {
+  const sourceMeta = row.source_meta && typeof row.source_meta === "object" ? row.source_meta : {};
+  const config = row.source_config && typeof row.source_config === "object"
+    ? row.source_config
+    : (row.frozen_config && typeof row.frozen_config === "object" ? row.frozen_config : {});
+  const strategyType = row.source_strategy_type || row.frozen_strategy_type || row.preset_strategy_type || "wave";
+  const label = row.source_label || row.preset_current_label || row.preset_label || "跟盘模型";
+  const presetId = row.source_preset_id || row.preset_id;
+  const numericId = row.source_numeric_id !== null && row.source_numeric_id !== undefined
+    ? Number(row.source_numeric_id)
+    : (row.preset_numeric_id !== null && row.preset_numeric_id !== undefined ? Number(row.preset_numeric_id) : null);
+  return {
+    id: presetId || row.id,
+    numericId,
+    name: row.source_name || null,
+    label,
+    strategyType,
+    bestConfig: config,
+    targetSymbol: sourceMeta.targetSymbol || row.symbol || "",
+    reason: sourceMeta.reason || sourceMeta.originalText || "",
+    ownerEmail: row.owner_email || "",
+    canSimulate: Boolean(Object.keys(config).length),
+    createdAt: row.source_created_at ? new Date(row.source_created_at).toISOString() : "",
+    updatedAt: row.source_updated_at ? new Date(row.source_updated_at).toISOString() : "",
+    validation: mapModelListValidation(row, {
+      id: presetId,
+      numericId,
+      name: row.source_name || null,
+      label,
+      strategyType,
+      config,
+      meta: sourceMeta.targetSymbol ? sourceMeta : { ...sourceMeta, targetSymbol: row.symbol || "" },
+      createdAt: row.source_created_at,
+    }),
+    watches,
+  };
+}
+
+// Read-only model list for the main "模型列表" page. It groups the current user's owned
+// presets and followed watches, attaching one validation snapshot (when one exists) plus the
+// current watch-account simulation state for each model.
+async function handleModelListApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ownerUserId = userIdForEmail(currentUser.email);
+
+    const ownWatchesResult = await dbPool.query(`
+      SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+        sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
+      FROM watch_alerts
+      LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+      WHERE watch_alerts.owner_user_id = $1
+      ORDER BY watch_alerts.created_at DESC
+    `, [ownerUserId]);
+    const ownedWatchesByPreset = new Map();
+    for (const row of ownWatchesResult.rows) {
+      const watch = mapWatchAlertRow(row, { role: "owner" });
+      const key = watch.presetId || "";
+      const list = ownedWatchesByPreset.get(key) || [];
+      list.push(watch);
+      ownedWatchesByPreset.set(key, list);
+    }
+
+    const ownModelsResult = await dbPool.query(`
+      SELECT sp.id, sp.numeric_id, sp.name, sp.label, sp.strategy_type, sp.config, sp.meta,
+        sp.created_at, sp.updated_at, sp.share_public, sp.share_allow_view_params,
+        sp.share_allow_watch, sp.share_allow_copy,
+        pvs.train_years, pvs.test_years, pvs.train_annualized_return, pvs.train_start_date, pvs.train_end_date,
+        pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
+        pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
+        pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.updated_at AS snapshot_updated_at
+      FROM strategy_presets sp
+      LEFT JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL
+      ORDER BY COALESCE(pvs.updated_at, sp.updated_at, sp.created_at) DESC
+    `, [ownerUserId]);
+    const ownModels = ownModelsResult.rows.map((row) => (
+      mapModelListPresetRow(row, ownedWatchesByPreset.get(row.id) || [], { ownerEmail: currentUser.email })
+    ));
+
+    const followedResult = await dbPool.query(`
+      SELECT watch_alerts.*, sp.id AS source_preset_id, sp.numeric_id AS source_numeric_id,
+        sp.name AS source_name, sp.label AS source_label, sp.strategy_type AS source_strategy_type,
+        sp.config AS source_config, sp.meta AS source_meta, sp.created_at AS source_created_at,
+        sp.updated_at AS source_updated_at, sp.owner_user_id AS preset_owner_user_id,
+        sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+        sp.config AS preset_config, sp.strategy_type AS preset_strategy_type,
+        u.email AS owner_email,
+        pvs.train_years, pvs.test_years, pvs.train_annualized_return, pvs.train_start_date, pvs.train_end_date,
+        pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
+        pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
+        pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.updated_at AS snapshot_updated_at
+      FROM watch_alert_followers waf
+      JOIN watch_alerts ON watch_alerts.id = waf.watch_id
+      LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+      LEFT JOIN users u ON u.id = watch_alerts.owner_user_id
+      LEFT JOIN preset_validation_snapshots pvs ON pvs.preset_id = watch_alerts.preset_id
+      WHERE waf.follower_user_id = $1
+      ORDER BY waf.created_at DESC
+    `, [ownerUserId]);
+    const followedByPreset = new Map();
+    for (const row of followedResult.rows) {
+      const key = row.source_preset_id || row.preset_id || row.id;
+      const existing = followedByPreset.get(key) || { row, watches: [] };
+      existing.watches.push(mapWatchAlertRow(row, { role: "follower" }));
+      followedByPreset.set(key, existing);
+    }
+    const followedModels = [...followedByPreset.values()].map((entry) => (
+      mapFollowedModelListRow(entry.row, entry.watches)
+    ));
+
+    sendJson(res, 200, { ownModels, followedModels });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取模型列表失败。" });
+  }
+}
+
 // "我的模型" — self-service only (no admin cross-user browsing yet, by explicit user request).
 // Only presets that have been through a >=6-year revalidation show up here (INNER JOIN); a
 // preset with no snapshot still exists and is fully usable from "历史模拟", it just doesn't
@@ -5981,6 +6143,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/my-models") {
     handleMyModelsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/model-list") {
+    handleModelListApi(req, res);
     return;
   }
 

@@ -790,6 +790,155 @@ button:disabled {
   border-color: var(--accent-dark);
 }
 
+.model-list-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.model-list-section {
+  display: grid;
+  gap: 10px;
+}
+
+.model-list-section + .model-list-section {
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.model-list-section h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.model-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.model-list-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e5ebf3;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.model-list-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.model-list-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.model-list-title strong,
+.model-list-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-list-title small,
+.model-list-meta,
+.model-list-muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.model-list-action-button,
+.model-list-delete-button {
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.model-list-delete-button {
+  border-color: #f0c7c3;
+  color: #a83a32;
+  background: #fff7f6;
+}
+
+.model-list-delete-button:hover {
+  color: #fff;
+  background: #c94b40;
+  border-color: #c94b40;
+}
+
+.model-list-meta,
+.model-list-validation,
+.model-list-watch-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.model-list-validation span,
+.model-list-watch-stats span {
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #f4f7fb;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-list-watch-list {
+  display: grid;
+  gap: 8px;
+}
+
+.model-list-watch {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid #edf1f6;
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.model-list-watch strong,
+.model-list-watch small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-list-watch small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .model-list-grid,
+  .model-list-card-head {
+    grid-template-columns: 1fr;
+  }
+
+  .model-list-actions {
+    justify-content: flex-start;
+  }
+}
+
 .ranking-table-section {
   display: grid;
   gap: 8px;

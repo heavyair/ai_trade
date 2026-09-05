@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260904-model-sharing">
+    <link rel="stylesheet" href="/styles.css?v=20260905-model-list">
   </head>
   <body>
     <main class="shell">
@@ -13,11 +13,11 @@
           <span class="mark" aria-hidden="true"></span>
           <div>
             <h1 data-i18n="appTitle">AI Trade 策略研究向导</h1>
-            <p data-i18n="appSubtitle">选择一个功能开始：先看模型排行、创建模型，或进入历史模拟。</p>
+            <p data-i18n="appSubtitle">选择一个功能开始：先看模型列表、创建模型，或进入历史模拟。</p>
           </div>
         </div>
         <div class="wizard-actions" role="tablist" aria-label="功能入口">
-          <button id="wizardRankButton" class="wizard-action" type="button" data-wizard-target="ranking" aria-selected="false" data-i18n="rankModels">模型排行</button>
+          <button id="wizardRankButton" class="wizard-action" type="button" data-wizard-target="ranking" aria-selected="false" data-i18n="rankModels">模型列表</button>
           <button id="wizardNewModelButton" class="wizard-action" type="button" data-wizard-target="new-model" aria-selected="false" data-i18n="newModel">新建模型</button>
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false" data-i18n="historySimulation">历史模拟</button>
           <button id="wizardScreenButton" class="wizard-action" type="button" data-wizard-target="screen" aria-selected="false">选股</button>
@@ -41,12 +41,12 @@
         </div>
       </section>
 
-      <section id="rankingPage" class="wizard-page" data-wizard-page="ranking" aria-label="模型排行">
+      <section id="rankingPage" class="wizard-page" data-wizard-page="ranking" aria-label="模型列表">
         <div class="research-panel" aria-label="模型研究工作台">
           <div class="research-head">
             <div>
-              <h2 data-i18n="rankModels">模型排行</h2>
-              <p data-i18n="rankingSubtitle">分为 Public 模型排行（公共模型）和个人模型排行（当前账户自己保存的模型），按 1 年、3 年、5 年区间分别记录表现。</p>
+              <h2 data-i18n="rankModels">模型列表</h2>
+              <p data-i18n="rankingSubtitle">分为我的模型和跟盘模型；每个模型显示一条验证记录和当前盯盘模拟交易状态。</p>
             </div>
           </div>
           <div id="rankingPresetList" class="ranking-list"></div>
@@ -1552,6 +1552,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260905-load-timeout-fix"></script>
+    <script src="/app.js?v=20260905-model-list"></script>
   </body>
 </html>

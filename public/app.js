@@ -456,12 +456,13 @@ let symbolHistoryCache = [];
 let rankingRecords = [];
 let publicRankingRecords = [];
 let rankingPageByPeriod = {};
+let modelListCache = { ownModels: [], followedModels: [] };
 
 const i18n = {
   zh: {
     appTitle: "AI Trade 策略研究向导",
-    appSubtitle: "选择一个功能开始：先看模型排行、创建模型，或进入历史模拟。",
-    rankModels: "模型排行",
+    appSubtitle: "选择一个功能开始：先看模型列表、创建模型，或进入历史模拟。",
+    rankModels: "模型列表",
     newModel: "新建模型",
     historySimulation: "历史模拟",
     account: "账户",
@@ -470,7 +471,7 @@ const i18n = {
     switchAccount: "切换账户",
     resendVerification: "重发验证邮件",
     logout: "退出",
-    rankingSubtitle: "分为 Public 模型排行（公共模型）和个人模型排行（当前账户自己保存的模型），按 1 年、3 年、5 年区间分别记录表现。",
+    rankingSubtitle: "分为我的模型和跟盘模型；每个模型显示一条验证记录和当前盯盘模拟交易状态。",
     backToNav: "返回功能导航",
     newModelSubtitle: "用文字描述买卖规则，AI 会理解并生成受限的客户端模型预设。",
     newModelAuthNote: "保存新模型需要免费注册、登录并验证电子邮件。模型会按电子邮件账户保存到服务器端。",
@@ -543,8 +544,8 @@ const i18n = {
   },
   en: {
     appTitle: "AI Trade Strategy Research",
-    appSubtitle: "Choose a workflow: rank models, create a model, or run a historical simulation.",
-    rankModels: "Model Ranking",
+    appSubtitle: "Choose a workflow: review the model list, create a model, or run a historical simulation.",
+    rankModels: "Model List",
     newModel: "New Model",
     historySimulation: "Historical Simulation",
     account: "Account",
@@ -553,7 +554,7 @@ const i18n = {
     switchAccount: "Switch Account",
     resendVerification: "Resend Email",
     logout: "Sign Out",
-    rankingSubtitle: "Split into Public model ranking and Personal model ranking (models owned by the current account), each ranked by 1-year, 3-year, and 5-year windows.",
+    rankingSubtitle: "Split into My Models and Followed Models. Each model shows one validation record and its watch-account simulation status.",
     backToNav: "Back to Navigation",
     newModelSubtitle: "Describe trading rules in plain language. AI will convert them into a restricted client-side preset.",
     newModelAuthNote: "Saving a new model requires a free account, sign-in, and email verification. Models are stored on the server by email account.",
@@ -1164,7 +1165,7 @@ async function initializeServerCustomPresets() {
     }
 
     renderModelCompareOptions();
-    renderModelRanking();
+    await loadModelList({ silent: true });
     const selectedPreset = strategyPresetSelect ? strategyPresetSelect.value : "";
     const selectedType = indicatorModelSelect ? indicatorModelSelect.value : "wave";
     renderStrategyPresetOptions(selectedType, selectedPreset);
@@ -3641,13 +3642,13 @@ async function loadMyModels() {
     const response = await fetch("/api/my-models", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取我的模型失败。");
     myModelsCache = Array.isArray(payload.presets) ? payload.presets : [];
-    renderMyModelsList();
+    renderMyModelsDialogList();
   } catch (error) {
     myModelsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
   }
 }
 
-function renderMyModelsList() {
+function renderMyModelsDialogList() {
   if (!myModelsList) return;
   myModelsList.innerHTML = renderAiGeneratedPresetTable(myModelsCache, {
     sortKey: "updatedAt",
@@ -6119,7 +6120,7 @@ async function hideOwnedPreset(name, label) {
     renderModelComparisonTable(comparisonResults);
 
     renderModelCompareOptions();
-    renderModelRanking();
+    await loadModelList({ silent: true });
     setStatus(`已删除模型：${label || name}。`);
   } catch (error) {
     const message = `删除模型失败：${error.message}`;
@@ -6576,7 +6577,7 @@ function setWizardPage(pageName) {
   });
 
   if (nextPage === "ranking") {
-    renderModelRanking();
+    loadModelList();
   }
   if (nextPage === "simulation") {
     renderSimulationOverview();
@@ -10471,36 +10472,6 @@ function renderRankingSection(sectionKey, records, options = {}) {
     .join("");
 }
 
-function renderMyModelsList() {
-  if (!currentUser) return "";
-  const myModels = Object.entries(strategyPresets).filter(([name]) => isOwnedEditablePreset(name));
-  if (myModels.length === 0) {
-    return '<div class="ranking-empty">还没有创建自己的模型。</div>';
-  }
-  return `
-    <div class="my-models-list">
-      ${myModels.map(([name, preset]) => `
-        <div class="my-model-row" data-preset-name="${escapeHtml(name)}">
-          <div class="my-model-info">
-            <strong>${formatModelNameLink({
-              id: preset.id, numericId: preset.numericId, label: preset.label || name,
-              config: preset, strategyType: preset.strategyType,
-              symbol: preset.meta && preset.meta.targetSymbol && preset.meta.targetSymbol !== "通用" ? preset.meta.targetSymbol : "",
-              isOwner: true, name,
-            })}</strong>
-            <small>${escapeHtml(getStrategyTypeLabel(preset.strategyType || "wave"))}</small>
-          </div>
-          <div class="my-model-actions">
-            <button class="my-model-rename-button" type="button" data-preset-name="${escapeHtml(name)}">重命名</button>
-            <button class="preset-param-button" type="button" data-preset-name="${escapeHtml(name)}">参数</button>
-            <button class="model-hide-button" type="button" data-preset-name="${escapeHtml(name)}" data-preset-label="${escapeHtml(preset.label || name)}">删除</button>
-          </div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-}
-
 async function renameOwnedPreset(name) {
   const preset = strategyPresets[name];
   if (!preset || !isOwnedEditablePreset(name)) return;
@@ -10523,38 +10494,290 @@ async function renameOwnedPreset(name) {
   const saved = await saveCustomStrategyPresets();
   if (!saved) return;
   renderModelCompareOptions();
-  renderModelRanking();
+  await loadModelList({ silent: true });
   setStatus(`已重命名为：${trimmed}。`);
+}
+
+async function loadModelList(options = {}) {
+  if (!rankingPresetList || !currentUser) {
+    modelListCache = { ownModels: [], followedModels: [] };
+    renderModelRanking();
+    return;
+  }
+  if (!options.silent) {
+    rankingPresetList.innerHTML = '<div class="ranking-empty">正在读取模型列表...</div>';
+  }
+  try {
+    const response = await fetch("/api/model-list", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取模型列表失败。");
+    modelListCache = {
+      ownModels: Array.isArray(payload.ownModels) ? payload.ownModels : [],
+      followedModels: Array.isArray(payload.followedModels) ? payload.followedModels : [],
+    };
+    renderModelRanking();
+  } catch (error) {
+    try {
+      modelListCache = await fetchModelListFallback();
+      renderModelRanking();
+    } catch (fallbackError) {
+      rankingPresetList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || fallbackError.message || "读取模型列表失败。")}</div>`;
+    }
+  }
+}
+
+async function fetchModelListFallback() {
+  const [modelsResponse, watchesResponse] = await Promise.all([
+    fetch("/api/my-models", { cache: "no-store" }),
+    fetch("/api/watch-alerts", { cache: "no-store" }),
+  ]);
+  const modelsPayload = await readJsonResponse(modelsResponse, "读取我的模型失败。");
+  const watchesPayload = await readJsonResponse(watchesResponse, "读取盯盘提醒失败。");
+  const watches = Array.isArray(watchesPayload.watches) ? watchesPayload.watches : [];
+  const ownedWatchesByPreset = new Map();
+  const followedByPreset = new Map();
+  watches.forEach((watch) => {
+    const key = watch.presetId || watch.id;
+    if ((watch.role || "owner") === "follower") {
+      const existing = followedByPreset.get(key) || {
+        id: key,
+        numericId: watch.presetNumericId || null,
+        name: null,
+        label: watch.presetLabel || "跟盘模型",
+        strategyType: watch.presetStrategyType || "wave",
+        bestConfig: watch.presetConfig || {},
+        targetSymbol: watch.symbol || "",
+        ownerEmail: watch.ownerEmail || "",
+        updatedAt: watch.updatedAt || watch.createdAt || "",
+        validation: null,
+        watches: [],
+      };
+      existing.watches.push(watch);
+      followedByPreset.set(key, existing);
+      return;
+    }
+    const list = ownedWatchesByPreset.get(key) || [];
+    list.push(watch);
+    ownedWatchesByPreset.set(key, list);
+  });
+  const ownModels = (Array.isArray(modelsPayload.presets) ? modelsPayload.presets : []).map((preset) => ({
+    ...preset,
+    validation: preset,
+    watches: ownedWatchesByPreset.get(preset.id) || [],
+  }));
+  return { ownModels, followedModels: [...followedByPreset.values()] };
+}
+
+function getModelListPrimarySymbol(model) {
+  const direct = String(model && model.targetSymbol || "").trim();
+  if (direct && direct !== "通用") return direct.toUpperCase();
+  const watches = Array.isArray(model && model.watches) ? model.watches : [];
+  const watch = watches.find((item) => item && item.symbol);
+  return watch ? String(watch.symbol).trim().toUpperCase() : "";
+}
+
+function findModelListModel(role, id) {
+  const list = role === "followed" ? modelListCache.followedModels : modelListCache.ownModels;
+  return (Array.isArray(list) ? list : []).find((model) => String(model.id || "") === String(id || ""));
+}
+
+function renderModelListValidation(model) {
+  const validation = model && model.validation;
+  if (!validation) {
+    return '<div class="model-list-validation model-list-muted">暂无验证记录。</div>';
+  }
+  const year1Class = validation.testYear1AnnualizedReturn >= 0 ? "up" : "down";
+  const year2Class = validation.testYear2AnnualizedReturn >= 0 ? "up" : "down";
+  const trainClass = validation.trainAnnualizedReturn >= 0 ? "up" : "down";
+  return `
+    <div class="model-list-validation">
+      <span>验证记录 ${escapeHtml(formatAdminDate(validation.updatedAt || validation.lastRecheckedAt))}</span>
+      <span class="${trainClass}">训练年化 ${formatPercent(validation.trainAnnualizedReturn)}</span>
+      <span class="${year1Class}">验证1年 ${formatPercent(validation.testYear1AnnualizedReturn)} / ${Number(validation.testYear1Trades) || 0} 次</span>
+      <span class="${year2Class}">验证2年 ${formatPercent(validation.testYear2AnnualizedReturn)} / ${Number(validation.testYear2Trades) || 0} 次</span>
+    </div>
+  `;
+}
+
+function renderModelListWatchState(watches) {
+  const visible = Array.isArray(watches) ? watches : [];
+  if (visible.length === 0) {
+    return '<div class="model-list-watch model-list-muted">暂无盯盘模拟交易状态。</div>';
+  }
+  return `
+    <div class="model-list-watch-list">
+      ${visible.map((watch) => {
+        const isIndexWatch = Boolean(watch.indexCode);
+        const returnClass = Number(watch.accountReturnRate) >= 0 ? "up" : "down";
+        const target = isIndexWatch
+          ? `${escapeHtml(watch.indexName || watch.indexCode)}（全指数）`
+          : `${escapeHtml(watch.symbolName || watch.symbol)}（${escapeHtml(watch.symbol || "")}）`;
+        const status = [
+          watch.enabled ? "运行中" : "已停用",
+          watch.lastSignalDate ? `${watch.lastSignalAction === "buy" ? "买入" : "卖出"} ${watch.lastSignalDate}` : "暂无信号",
+          watch.isInvalid ? "模型已失效" : "",
+          watch.consecutiveFailures > 0 ? `失败 ${watch.consecutiveFailures} 次` : "",
+        ].filter(Boolean).join(" · ");
+        const accountPart = isIndexWatch
+          ? '<span class="model-list-muted">指数盯盘不模拟单一账户。</span>'
+          : (watch.accountEquity === null || watch.accountEquity === undefined || watch.accountRowsScored <= 0
+            ? '<span class="model-list-muted">账户数据尚未计算。</span>'
+            : `
+              <span>权益 ${formatMoney(watch.accountEquity)}</span>
+              <span class="${returnClass}">回报 ${formatPercent(watch.accountReturnRate)}</span>
+              <span>持仓 ${formatPercent(watch.accountPositionRatio)}</span>
+              <span>最大回撤 ${formatPercent(watch.accountMaxDrawdown)}</span>
+              <span>交易 ${Array.isArray(watch.accountTrades) ? watch.accountTrades.length : 0} 次</span>
+            `);
+        return `
+          <div class="model-list-watch">
+            <div><strong>${target}</strong><small>${escapeHtml(status)}</small></div>
+            <div class="model-list-watch-stats">${accountPart}</div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderModelListSection(title, models, role) {
+  if (!Array.isArray(models) || models.length === 0) {
+    return `
+      <section class="model-list-section">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="ranking-empty">${role === "followed" ? "还没有跟盘模型。" : "还没有自己的模型。"}</div>
+      </section>
+    `;
+  }
+  return `
+    <section class="model-list-section">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="model-list-grid">
+        ${models.map((model) => {
+          const symbol = getModelListPrimarySymbol(model);
+          const localPreset = model.name && strategyPresets[model.name] ? strategyPresets[model.name] : null;
+          const modelLink = localPreset
+            ? formatModelNameLink({
+                id: model.id, numericId: model.numericId, label: model.label,
+                config: localPreset, strategyType: model.strategyType,
+                symbol, isOwner: role === "own", name: model.name,
+              })
+            : escapeHtml(model.label || "模型");
+          const ownerPart = role === "followed" && model.ownerEmail
+            ? `<span>创建者 ${escapeHtml(model.ownerEmail)}</span>`
+            : "";
+          const watchForUnfollow = Array.isArray(model.watches) ? model.watches.find((watch) => watch && watch.role === "follower") : null;
+          const ownActions = `
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="rename" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">重命名</button>
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="watch" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">设置盯盘</button>
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="simulate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">历史模拟</button>
+            <button class="ghost-button model-list-delete-button" type="button" data-model-list-action="delete" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">删除</button>
+          `;
+          const followedActions = `
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="simulate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">历史模拟</button>
+            <button class="ghost-button model-list-delete-button" type="button" data-model-list-action="unfollow" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}" data-watch-id="${escapeHtml(watchForUnfollow && watchForUnfollow.id || "")}">取消跟盘</button>
+          `;
+          return `
+            <article class="model-list-card" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">
+              <div class="model-list-card-head">
+                <div class="model-list-title">
+                  <strong>${modelLink}</strong>
+                  <small>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}${symbol ? ` · ${escapeHtml(symbol)}` : ""}${model.numericId ? ` · #${escapeHtml(model.numericId)}` : ""}</small>
+                </div>
+                <div class="model-list-actions">${role === "followed" ? followedActions : ownActions}</div>
+              </div>
+              <div class="model-list-meta">
+                ${ownerPart}
+                <span>更新 ${escapeHtml(formatAdminDate(model.updatedAt || model.createdAt))}</span>
+              </div>
+              ${renderModelListValidation(model)}
+              ${renderModelListWatchState(model.watches)}
+            </article>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function renderModelRanking() {
   if (!rankingPresetList) return;
-
-  const publicHtml = renderRankingSection("public", publicRankingRecords, {
-    showActions: false,
-    emptyMessage: "暂无公共模型排行。",
-  });
-  const ownHtml = currentUser
-    ? renderRankingSection("own", rankingRecords, {
-        showActions: true,
-        emptyMessage: "暂无你的模型排行。保存自己的模型，然后进入历史模拟生成 1 年、3 年、5 年成绩。",
-      })
-    : '<div class="ranking-empty">登录后可以查看和管理你自己的模型排行。</div>';
-  const myModelsHtml = currentUser
-    ? `<h3 class="ranking-subgroup-title">我的模型</h3>${renderMyModelsList()}`
-    : "";
-
+  if (!currentUser) {
+    rankingPresetList.innerHTML = '<div class="ranking-empty">登录后可以查看我的模型和跟盘模型。</div>';
+    return;
+  }
   rankingPresetList.innerHTML = `
-    <div class="ranking-group">
-      <h2 class="ranking-group-title">Public 模型排行</h2>
-      ${publicHtml}
-    </div>
-    <div class="ranking-group">
-      <h2 class="ranking-group-title">个人模型排行</h2>
-      ${myModelsHtml}
-      ${ownHtml}
+    <div class="model-list-sections">
+      ${renderModelListSection("我的模型", modelListCache.ownModels, "own")}
+      ${renderModelListSection("跟盘模型", modelListCache.followedModels, "followed")}
     </div>
   `;
+}
+
+async function createWatchFromModelList(model) {
+  if (!model || !model.id) return;
+  if (!requireSignedInForSave()) return;
+  let symbol = getModelListPrimarySymbol(model);
+  if (!symbol) {
+    const input = window.prompt("输入要盯盘的股票代码：", "");
+    if (input === null) return;
+    symbol = input.trim().toUpperCase();
+  }
+  if (!symbol) {
+    setStatus("股票代码不能为空。", true);
+    return;
+  }
+  const market = inferMarketFromSymbol(symbol);
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presetId: model.id, market, symbol, frequencyMinutes: 60 }),
+    });
+    await readJsonResponse(response, "添加盯盘提醒失败。");
+    setStatus(`已为「${model.label || "模型"}」在 ${symbol} 建立盯盘。`);
+    await loadModelList({ silent: true });
+    await loadMyWatchAlerts();
+  } catch (error) {
+    setStatus(`建立盯盘失败：${error.message}`, true);
+  }
+}
+
+async function runModelListSimulation(model, role) {
+  if (!model) return;
+  const symbol = getModelListPrimarySymbol(model);
+  if (!symbol) {
+    setStatus("这个模型没有可用于历史模拟的股票代码。", true);
+    return;
+  }
+  let presetName = model.name && strategyPresets[model.name] ? model.name : "";
+  if (!presetName) {
+    const config = model.bestConfig && typeof model.bestConfig === "object" ? model.bestConfig : {};
+    if (Object.keys(config).length === 0) {
+      setStatus("这个模型没有可用于历史模拟的参数。", true);
+      return;
+    }
+    const safeId = String(model.id || model.numericId || Date.now()).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
+    presetName = `__model_list_${role}_${safeId}`;
+    strategyPresets[presetName] = sanitizeStoredPreset(presetName, {
+      ...config,
+      label: model.label || "模型",
+      strategyType: model.strategyType || config.strategyType || "wave",
+      meta: {
+        targetSymbol: symbol,
+        originalText: model.reason || "",
+        sourceModelId: model.id || "",
+      },
+    });
+  }
+  setWizardPage("simulation");
+  if (codeInput) codeInput.value = symbol;
+  if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
+  if (endInput) endInput.value = todayText();
+  renderModelCompareOptions();
+  document.querySelectorAll(".model-compare-enabled").forEach((input) => {
+    input.checked = input.value === presetName;
+  });
+  await loadData();
 }
 
 function summarizePresetParameters(preset) {
@@ -14940,7 +15163,48 @@ if (forgotPasswordButton) {
 }
 
 if (rankingPresetList) {
-  rankingPresetList.addEventListener("click", (event) => {
+  rankingPresetList.addEventListener("click", async (event) => {
+    const modelListButton = event.target && event.target.closest ? event.target.closest("[data-model-list-action]") : null;
+    if (modelListButton) {
+      const role = modelListButton.dataset.modelRole || "own";
+      const model = findModelListModel(role, modelListButton.dataset.modelId);
+      const action = modelListButton.dataset.modelListAction;
+      if (!model) return;
+      if (action === "rename") {
+        if (!model.name) {
+          setStatus("这个模型暂时不能重命名。", true);
+          return;
+        }
+        await renameOwnedPreset(model.name);
+        return;
+      }
+      if (action === "delete") {
+        if (!model.name) {
+          setStatus("这个模型暂时不能删除。", true);
+          return;
+        }
+        await hideOwnedPreset(model.name, model.label);
+        return;
+      }
+      if (action === "watch") {
+        await createWatchFromModelList(model);
+        return;
+      }
+      if (action === "simulate") {
+        await runModelListSimulation(model, role);
+        return;
+      }
+      if (action === "unfollow") {
+        const watchId = modelListButton.dataset.watchId || (Array.isArray(model.watches) && model.watches[0] && model.watches[0].id);
+        if (watchId) {
+          await unfollowWatchAlert(watchId);
+          await loadModelList({ silent: true });
+        } else {
+          setStatus("没有找到可取消的跟盘记录。", true);
+        }
+        return;
+      }
+    }
     const pageButton = event.target && event.target.closest ? event.target.closest(".ranking-page-button") : null;
     if (pageButton) {
       rankingPageByPeriod[pageButton.dataset.rankingPageKey] = Math.max(0, Number(pageButton.dataset.rankingPage) || 0);
