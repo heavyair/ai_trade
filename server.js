@@ -4908,8 +4908,109 @@ async function fetchStoredUsValuations({ code, market, start, end }) {
   }
 }
 
+// Days of staleness tolerated before a request whose `end` reaches "now" is considered too old
+// to serve straight from the cache — same tolerance handlePresetRevalidateApi already uses for
+// its own "is daily_prices fresh enough" check.
+const KLINES_CACHE_STALE_TOLERANCE_DAYS = 4;
+
+// Skips the entire EastMoney→AKShare→Yahoo fallback cascade (and the fundamentals/valuation
+// fetches below it) when daily_prices already has everything this request needs — 2026-09-05:
+// added after finding /api/klines was doing a full live re-fetch on EVERY call, even for a
+// symbol the huge batch validated-search scan running concurrently had JUST written fresh rows
+// for minutes earlier (queried by the user: "数据不是已经在数据库中了吗？" — a fair question,
+// the answer was "yes, but this endpoint never checked"). Returns null (falls through to the
+// live-fetch path below) when the symbol has never been fetched at all, or the cached range
+// doesn't actually cover what's being asked for (missing older history, or not fresh enough
+// when `end` is close to today).
+async function tryLoadCachedKlines({ code, market, start, end }) {
+  const rangeResult = await dbPool.query(
+    `SELECT MIN(trade_date) AS first_date, MAX(trade_date) AS last_date FROM daily_prices WHERE symbol = $1 AND market = $2`,
+    [code, market]
+  );
+  const range = rangeResult.rows[0];
+  if (!range || !range.first_date || !range.last_date) return null;
+  const firstDate = new Date(range.first_date).toISOString().slice(0, 10);
+  const lastDate = new Date(range.last_date).toISOString().slice(0, 10);
+  if (firstDate > start) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  const effectiveEnd = end < today ? end : today;
+  if (lastDate < effectiveEnd) {
+    const daysSinceLast = Math.round((new Date(today) - new Date(lastDate)) / 86400000);
+    if (daysSinceLast > KLINES_CACHE_STALE_TOLERANCE_DAYS) return null;
+  }
+
+  const symbolResult = await dbPool.query(`SELECT name, source, info FROM symbols WHERE symbol = $1 AND market = $2`, [code, market]);
+  const symbolRow = symbolResult.rows[0];
+  if (!symbolRow) return null;
+
+  const rowsResult = await dbPool.query(`
+    SELECT dp.trade_date, dp.open, dp.high, dp.low, dp.close, dp.volume, dp.amount, dp.amplitude,
+      dp.change_percent, dp.change_value, dp.turnover,
+      dv.pe, dv.pe_ttm, dv.pb,
+      sf.gross_margin, sf.roe, sf.revenue_growth
+    FROM daily_prices dp
+    LEFT JOIN LATERAL (
+      SELECT pe, pe_ttm, pb FROM daily_valuations
+      WHERE symbol = dp.symbol AND market = dp.market
+        AND trade_date <= dp.trade_date AND trade_date >= dp.trade_date - INTERVAL '10 days'
+      ORDER BY trade_date DESC LIMIT 1
+    ) dv ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT gross_margin, roe, revenue_growth FROM stock_fundamentals
+      WHERE symbol = dp.symbol AND market = dp.market
+        AND report_date <= dp.trade_date AND report_date >= dp.trade_date - INTERVAL '400 days'
+      ORDER BY report_date DESC LIMIT 1
+    ) sf ON TRUE
+    WHERE dp.symbol = $1 AND dp.market = $2 AND dp.trade_date >= $3::date AND dp.trade_date <= $4::date
+    ORDER BY dp.trade_date ASC
+  `, [code, market, start, end]);
+
+  const rows = rowsResult.rows
+    .map((row) => ({
+      date: new Date(row.trade_date).toISOString().slice(0, 10),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume),
+      amount: Number(row.amount),
+      amplitude: Number(row.amplitude),
+      changePercent: Number(row.change_percent),
+      change: Number(row.change_value),
+      turnover: Number(row.turnover),
+      pe: toValidNumberOrNull(row.pe),
+      peTtm: toValidNumberOrNull(row.pe_ttm),
+      pb: toValidNumberOrNull(row.pb),
+      grossMargin: row.gross_margin !== null ? Number(row.gross_margin) : null,
+      roe: row.roe !== null ? Number(row.roe) : null,
+      revenueGrowth: row.revenue_growth !== null ? Number(row.revenue_growth) : null,
+    }))
+    .filter(isValidKlineRow);
+  if (rows.length === 0) return null;
+
+  const name = symbolRow.name || code;
+  const source = symbolRow.source || "cached";
+  const info = { code, name, market, marketName: getMarketName(code, market), ...(symbolRow.info || {}) };
+  return {
+    source,
+    code,
+    market,
+    name,
+    info,
+    summary: summarize({ code, market, name }, name, rows),
+    rows,
+  };
+}
+
 async function fetchKlines({ code, start, end }) {
   const market = isChinaCode(code) ? inferMarket(code) : "US";
+
+  const cached = await tryLoadCachedKlines({ code, market, start, end }).catch((error) => {
+    console.warn(`Klines cache check skipped for ${code}: ${error.message}`);
+    return null;
+  });
+  if (cached) return cached;
+
   let result;
 
   if (market === "US") {
