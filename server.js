@@ -504,10 +504,11 @@ async function initializeDatabase() {
     WHERE sp.id = wa.preset_id AND wa.frozen_config IS NULL;
 
     -- Ongoing validity: run-watch-alerts.js re-checks the frozen strategy against a trailing
-    -- window of freshly-arrived data every cycle. is_invalid flips on once it stops beating
-    -- buy-and-hold; last_invalid_warning_date dedups the recurring warning email to once/day
-    -- (frequency_minutes can be as low as 30, so without a dedup this would spam) for as long
-    -- as a position is still open. invalid_since is purely informational (first-detected time).
+    -- window of freshly-arrived data every cycle. is_invalid flips on once it fails the current
+    -- upside/drawdown gates; last_invalid_warning_date dedups the recurring warning email to
+    -- once/day (frequency_minutes can be as low as 30, so without a dedup this would spam) for
+    -- as long as a position is still open. invalid_since is purely informational
+    -- (first-detected time).
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS is_invalid BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_reason TEXT NOT NULL DEFAULT '';
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_since TIMESTAMPTZ;
@@ -3249,11 +3250,11 @@ function mapWatchAlertRow(row, { role = "owner", inviteToken = null, followers =
     accountRowsScored: row.account_rows_scored || 0,
     accountTrades: isFollowerView ? rawTrades.map((trade) => ({ ...trade, reason: "" })) : rawTrades,
     accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
-    // Whether the FROZEN strategy (see the schema comment on frozen_config) still beats
-    // buy-and-hold on a trailing window of recent data — set by run-watch-alerts.js, not
-    // recomputed here. See that script's header comment for exactly what "invalid" means.
-    // (invalid_reason is aggregate performance vs buy-hold, not a specific rule threshold, so
-    // it's shown to followers same as owners.)
+    // Whether the FROZEN strategy (see the schema comment on frozen_config) still clears the
+    // current trailing-year upside/drawdown gates — set by run-watch-alerts.js, not recomputed
+    // here. See that script's header comment for exactly what "invalid" means.
+    // (invalid_reason is aggregate performance metadata, not a specific rule threshold, so it's
+    // shown to followers same as owners.)
     isInvalid: Boolean(row.is_invalid),
     invalidReason: row.invalid_reason || "",
     invalidSince: row.invalid_since ? new Date(row.invalid_since).toISOString() : "",

@@ -236,3 +236,132 @@ Notes:
 - This was a local deployment only.
 - No deploy/restart was done on `172.105.9.107`.
 - No deploy/restart was done on `139.177.195.223`.
+
+## Server Deployment Attempt - Commit ed101f9
+
+The user asked to push the model-list change to both servers.
+
+Local git:
+
+- Committed and pushed to GitHub:
+  - `ed101f9 调整模型列表页面`
+- Files in the commit:
+  - `.claude/CODEX_HANDOFF_2026-09-05.md`
+  - `public/app.js`
+  - `public/index.html`
+  - `public/styles.css`
+  - `server.js`
+
+`172.105.9.107`:
+
+1. Checked status.
+   - Docker container `ai_trade` was running.
+   - No `search-validated-best.js` batch process was visible on the host at deploy time.
+2. Backed up current container files to:
+   - `/tmp/ai_trade_backup_before_ed101f9`
+3. Copied updated files to:
+   - `/tmp/ai_trade_deploy_ed101f9`
+4. Validated inside container with:
+   - `node --check /tmp/server.js`
+   - `node --check /tmp/app.js`
+5. Copied updated files into the running container:
+   - `/app/server.js`
+   - `/app/public/app.js`
+   - `/app/public/index.html`
+   - `/app/public/styles.css`
+6. Validated deployed files inside container:
+   - `node --check /app/server.js`
+   - `node --check /app/public/app.js`
+7. Restarted only the `ai_trade` container.
+8. Verified:
+   - `http://127.0.0.1/` returned `200`
+   - `http://127.0.0.1/api/model-list` returned `401`
+   - `/app/server.js` contains `/api/model-list`
+   - `/app/public/index.html` contains `20260905-model-list`
+   - `/app/public/app.js` contains `fetchModelListFallback`
+
+`139.177.195.223`:
+
+- Deployment was not completed because SSH on port 22 timed out repeatedly.
+- Confirmed:
+  - Ping succeeds.
+  - HTTP `http://139.177.195.223/` returns `200`.
+  - HTTP `http://139.177.195.223/api/model-list` returns `404`, so it is still on old backend code.
+  - TCP test for port 22 fails.
+  - SSH from this machine fails.
+  - SSH from `172.105.9.107` to `139.177.195.223` also fails.
+- Next step when SSH is restored: deploy the same four files and restart only the `ai_trade` container/service on 139.
+
+## Watch Create UX Update
+
+The user asked: when adding a watch, first check whether that watch already exists. If it exists, open the watch dialog and show the existing watch detail. If not, create it and then open the new watch detail.
+
+Local changes:
+
+- `public/app.js`
+  - `loadMyWatchAlerts()` now can return the current watch cache without rendering.
+  - Added `prepareWatchAlertsDialog()`.
+  - Added `revealWatchAlertDetails()` to open the watch dialog, switch to the owned tab, expand the matching `<details>` row, scroll it into view, and load the chart if available.
+  - Added `createOrOpenWatchAlert()`:
+    - Reads existing `/api/watch-alerts`.
+    - Matches by current owner + `presetId` + symbol/market or index code.
+    - Existing match: does not POST; opens the existing detail row.
+    - No match: POSTs `/api/watch-alerts`, reloads watches, opens the created detail row.
+  - Rewired these entry points to use the helper:
+    - model action menu `建立盯盘`
+    - watch dialog create button
+    - Public model `关注/建立盯盘`
+    - model list `设置盯盘`
+- `public/index.html`
+  - JS asset query string bumped to `20260905-watch-detail`.
+
+Verification:
+
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
+
+Operational notes:
+
+- No local scan process was stopped or restarted for this update.
+- No server deployment was performed for this update yet.
+
+## Watch Validity Logic Update
+
+The user asked to remove this model-validity rule:
+
+- `模型最近一年收益率必须高于同期买入持有收益率`
+
+Local changes:
+
+- `scripts/universe/run-watch-alerts.js`
+  - Removed `beatsReturn` from `evaluateModelValidity()`.
+  - Removed the invalid reason text `实际年化收益 ... 未跑赢同期买入持有 ...`.
+  - A watch is now invalid only when it fails one of the remaining gates:
+    - trailing-year annualized return must clear `30%` of that symbol's upside deviation
+    - trailing-year max drawdown must stay below buy-and-hold max drawdown * `1.05`
+  - Buy-and-hold is still calculated for the drawdown gate.
+- `server.js`
+  - Updated comments describing `is_invalid`.
+- `public/app.js`
+  - Updated the watch-list explanation comment for invalid watches.
+
+Verification:
+
+- `node --check scripts/universe/run-watch-alerts.js` passed.
+- `node --check server.js` passed.
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
+- Recomputed local watch `watch_20d00957b54003372c46ecd57de723e5` (`002463`) with the new rule:
+  - model return/annualized: `62.394%`
+  - buy-hold return: `100.429%`
+  - required annualized by upside gate: `15.141%`
+  - passes upside gate: `true`
+  - model max drawdown: `37.679%`
+  - allowed drawdown: `39.591%`
+  - passes drawdown gate: `true`
+  - `invalidByNewLogic=false`
+
+Operational notes:
+
+- No local scan process was stopped or restarted for this update.
+- No deployment was performed for this update yet.

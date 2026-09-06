@@ -21,10 +21,10 @@
 // taken once at watch creation and never re-read from strategy_presets afterward, for both
 // modes — editing/re-optimizing the source preset later has zero effect on an already-running
 // watch. Instead, every check cycle re-validates the frozen strategy against a trailing year of
-// freshly-arrived data (evaluateModelValidity, symbol watches only): once it stops beating
-// buy-and-hold, a warning email goes out; if no position is open it auto-disables immediately,
-// if a position IS open it keeps running and re-warns once/day until that position closes on
-// the model's own exit rule, then auto-disables on the next cycle.
+// freshly-arrived data (evaluateModelValidity, symbol watches only): once it fails the current
+// upside/drawdown gates, a warning email goes out; if no position is open it auto-disables
+// immediately, if a position IS open it keeps running and re-warns once/day until that position
+// closes on the model's own exit rule, then auto-disables on the next cycle.
 //
 // This is a lightweight per-watch job (seconds per symbol-mode row, longer for index-mode rows
 // since those scan every constituent), not a full-universe batch scan, so it deliberately does
@@ -293,10 +293,10 @@ const DRAWDOWN_TOLERANCE_PERCENT = 5;
 const MIN_UPSIDE_GATE_ROWS = 30;
 
 // Checks the watch's FROZEN strategy (see server.js's schema comment on frozen_config) against
-// the most recent ~1 year of freshly-fetched data: does it still beat buy-and-hold? rows is the
-// same SIMULATION_WINDOW_ROWS (~2yr) slice processSymbolWatch already loaded, used here purely
-// as indicator warmup so the trailing-year score isn't computed on cold indicators — same
-// reasoning as buildScoredBacktestStates' own doc comment. Returns { checked: false } when
+// the most recent ~1 year of freshly-fetched data. rows is the same SIMULATION_WINDOW_ROWS
+// (~2yr) slice processSymbolWatch already loaded, used here purely as indicator warmup so the
+// trailing-year score isn't computed on cold indicators — same reasoning as
+// buildScoredBacktestStates' own doc comment. Returns { checked: false } when
 // there isn't yet a full trailing year of data (a young listing), rather than flagging invalid
 // on too little evidence.
 // A 盯盘's own paper account must do the OPPOSITE of what buildScoredBacktestStates does for
@@ -363,7 +363,6 @@ function evaluateModelValidity(rows, baseConfig) {
   const scored = engine.buildScoredBacktestStates(rows, baseConfig, validityStartDate);
   const buyHoldStates = engine.buildBuyHoldStates(validityRows, INITIAL_CASH, TRADE_FEE);
   const buyHold = buyHoldStates[buyHoldStates.length - 1];
-  const beatsReturn = scored.returnRate > buyHold.returnRate;
 
   // Upside-deviation gate (see scripts/shared/volatility.js): the model's annualized return over
   // this trailing year must also clear UPSIDE_THRESHOLD_PERCENT of the stock's OWN upside
@@ -380,11 +379,8 @@ function evaluateModelValidity(rows, baseConfig) {
   const allowedDrawdown = buyHold.maxDrawdown * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
   const passesDrawdownGate = scored.maxDrawdown < allowedDrawdown;
 
-  const isInvalid = !(beatsReturn && passesUpsideGate && passesDrawdownGate);
+  const isInvalid = !(passesUpsideGate && passesDrawdownGate);
   const reasonParts = [];
-  if (!beatsReturn) {
-    reasonParts.push(`实际年化收益 ${scored.returnRate.toFixed(1)}% 未跑赢同期买入持有 ${buyHold.returnRate.toFixed(1)}%`);
-  }
   if (!passesUpsideGate) {
     reasonParts.push(`年化收益 ${annualizedReturn.toFixed(1)}% 未达到当年上行标准差${upsideDev.toFixed(1)}%的${UPSIDE_THRESHOLD_PERCENT}%（需≥${requiredReturn.toFixed(1)}%）`);
   }
@@ -436,7 +432,7 @@ function buildModelInvalidStoppedEmail(watch, reason) {
       <p>当前没有模拟持仓，为避免继续用一个已经失效的模型开新仓，这个盯盘已自动停用。可以到"设置盯盘提醒"里用"重新验证"看看调整参数后是否还能用，或者换一个新模型重新建立盯盘。</p>
       <hr style="border:none;border-top:1px solid #d9e0ea;margin:20px 0">
       <h2>Watch auto-disabled: ${escapeHtml(symbolLabel)}</h2>
-      <p>${escapeHtml(reason)} No position is currently open, so this watch has been auto-disabled rather than let a model that's stopped beating buy-and-hold open new positions. Re-validate with adjusted parameters, or set up a new watch with a different model.</p>
+      <p>${escapeHtml(reason)} No position is currently open, so this watch has been auto-disabled rather than let a model that failed the current upside/drawdown gates open new positions. Re-validate with adjusted parameters, or set up a new watch with a different model.</p>
     </div>
   `;
   const text = `盯盘已自动停止：${symbolLabel}\n${reason}\n当前没有持仓，已自动停用，避免用失效模型开新仓。`;
@@ -607,11 +603,12 @@ async function processSymbolWatch(watch) {
     ];
 
     // As new trading days arrive, re-check whether the FROZEN strategy (untouched since watch
-    // creation) still beats buy-and-hold on a trailing year — a model can go stale even though
-    // nobody edited anything, just because the market it's tuned for moved on. hasPosition uses
-    // scoredAccount (already reflects any trade executed today) as the single source of truth
-    // for "is there something to protect by staying on," matching this file's existing
-    // no-incremental-state philosophy instead of tracking a separate position flag.
+    // creation) still clears the current upside/drawdown gates on a trailing year — a model can
+    // go stale even though nobody edited anything, just because the market it's tuned for moved
+    // on. hasPosition uses scoredAccount (already reflects any trade executed today) as the
+    // single source of truth for "is there something to protect by staying on," matching this
+    // file's existing no-incremental-state philosophy instead of tracking a separate position
+    // flag.
     const validity = evaluateModelValidity(rows, baseConfig);
     const nowInvalid = Boolean(validity.checked && validity.isInvalid);
     const hasPosition = Math.abs(Number(scoredAccount.shares) || 0) > 1e-6;

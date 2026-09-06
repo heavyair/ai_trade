@@ -3185,14 +3185,14 @@ if (modelActionCreateWatchButton) {
     if (!resolved) return;
     const market = inferMarketFromSymbol(context.symbol);
     try {
-      const response = await fetch("/api/watch-alerts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presetId: resolved.id, market, symbol: context.symbol, frequencyMinutes: 60 }),
+      await createOrOpenWatchAlert({
+        presetId: resolved.id, market, symbol: context.symbol, frequencyMinutes: 60,
+      }, {
+        label: resolved.label,
+        errorMessage: "添加盯盘提醒失败。",
+        createdMessage: `已为「${resolved.label}」在 ${context.symbol} 建立盯盘（默认每小时检查一次）。`,
       });
-      await readJsonResponse(response, "添加盯盘提醒失败。");
-      setStatus(`已为「${resolved.label}」在 ${context.symbol} 建立盯盘（默认每小时检查一次，可以在"设置盯盘提醒"里改）。`);
-      await loadMyWatchAlerts();
+      await loadModelList({ silent: true });
     } catch (error) {
       setStatus(`建立盯盘失败：${error.message}`, true);
     }
@@ -3753,16 +3753,19 @@ if (publicModelsList) {
     if (!button || button.disabled) return;
     const presetId = button.dataset.presetId;
     if (button.dataset.action === "watch") {
-      if (!window.confirm(`确定对"${button.dataset.symbol || ""}"关注（建立盯盘，默认每天检查一次）吗？`)) return;
       button.disabled = true;
       try {
-        const response = await fetch("/api/watch-alerts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ presetId, market: publicModelsActiveMarket, symbol: button.dataset.symbol, frequencyMinutes: 1440 }),
+        await createOrOpenWatchAlert({
+          presetId,
+          market: publicModelsActiveMarket,
+          symbol: button.dataset.symbol,
+          frequencyMinutes: 1440,
+        }, {
+          label: button.dataset.label || "模型",
+          errorMessage: "关注失败。",
+          confirmCreateMessage: `确定对"${button.dataset.symbol || ""}"关注（建立盯盘，默认每天检查一次）吗？`,
+          createdMessage: `已建立盯盘，可以在"设置盯盘提醒"里查看。`,
         });
-        await readJsonResponse(response, "关注失败。");
-        setStatus("已建立盯盘，可以在\"设置盯盘提醒\"里查看。");
       } catch (error) {
         setStatus(`关注失败：${error.message}`, true);
       } finally {
@@ -4947,7 +4950,7 @@ function renderWatchAlertEntry(watch, options = {}) {
   const ownerPart = options.showOwner ? `${escapeHtml(watch.ownerEmail || "")} · ` : "";
   const statusPart = !watch.enabled ? ' · <span class="down">已停用</span>' : "";
   // 模型冻结在创建盯盘那一刻，不会被后台的重新优化悄悄改变；这里的"已失效"是指冻结的这套
-  // 参数在最近一年的新数据上已经跑不赢买入持有了（见 run-watch-alerts.js 的 evaluateModelValidity）。
+  // 参数在最近一年的新数据上没有通过当前上行/回撤门槛（见 run-watch-alerts.js）。
   const invalidPart = watch.isInvalid
     ? ` · <span class="down" title="${escapeHtml(watch.invalidReason || "")}">⚠ 模型已失效${watch.enabled ? "（仍有持仓，继续跟踪）" : ""}</span>`
     : "";
@@ -5092,27 +5095,106 @@ if (watchAlertsList) {
   watchAlertsList.addEventListener("toggle", (event) => handleWatchAlertsToggle(event, watchAlertsCache), true);
 }
 
-async function loadMyWatchAlerts() {
-  if (!watchAlertsList) return;
-  if (!watchAlertsList.innerHTML.trim()) {
+async function loadMyWatchAlerts(options = {}) {
+  if (!watchAlertsList) return [];
+  const shouldRender = options.render !== false;
+  if (shouldRender && !watchAlertsList.innerHTML.trim()) {
     watchAlertsList.innerHTML = '<div class="ranking-empty">正在读取盯盘提醒...</div>';
   }
   try {
     const response = await fetch("/api/watch-alerts", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
     watchAlertsCache = Array.isArray(payload.watches) ? payload.watches : [];
-    renderWatchAlertsList();
+    if (shouldRender) renderWatchAlertsList();
+    return watchAlertsCache;
   } catch (error) {
-    watchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+    if (shouldRender) {
+      watchAlertsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+    }
+    if (options.throwOnError) throw error;
+    return watchAlertsCache;
   }
 }
 
-function openWatchAlertsDialog() {
+function prepareWatchAlertsDialog() {
   renderWatchAlertsPresetOptions();
   renderWatchAlertsIndexOptions();
   updateWatchAlertsModeVisibility();
+}
+
+function revealWatchAlertDetails(watchId, tab = "owned") {
+  if (!watchAlertsDialog || !watchAlertsList || !watchId) return;
+  [modelActionDialog, publicModelsDialog, myModelsDialog, presetParamDialog].forEach((dialog) => {
+    if (dialog && dialog !== watchAlertsDialog && dialog.open) closeDialog(dialog);
+  });
+  setWatchAlertsActiveTab(tab);
+  showDialog(watchAlertsDialog);
+  window.requestAnimationFrame(() => {
+    const details = [...watchAlertsList.querySelectorAll("details[data-watch-id]")]
+      .find((item) => item.dataset.watchId === watchId);
+    if (!details) return;
+    details.open = true;
+    details.scrollIntoView({ block: "center", behavior: "smooth" });
+    const watch = watchAlertsCache.find((item) => item.id === watchId);
+    const svgEl = details.querySelector(".watch-alert-chart-svg");
+    if (watch && svgEl) loadWatchAlertChart(watch, svgEl);
+  });
+}
+
+async function openWatchAlertDetailsDialog(watchId, tab = "owned") {
+  prepareWatchAlertsDialog();
+  await loadMyWatchAlerts({ render: false, throwOnError: true });
+  renderWatchAlertsList();
+  revealWatchAlertDetails(watchId, tab);
+}
+
+function openWatchAlertsDialog() {
+  prepareWatchAlertsDialog();
   loadMyWatchAlerts();
   showDialog(watchAlertsDialog);
+}
+
+function matchesOwnedWatchRequest(watch, request) {
+  if (!watch || (watch.role || "owner") !== "owner") return false;
+  if (String(watch.presetId || "") !== String(request.presetId || "")) return false;
+  if (request.indexCode) {
+    return String(watch.indexCode || "") === String(request.indexCode || "");
+  }
+  return !watch.indexCode
+    && normalizeSymbolInput(watch.symbol) === normalizeSymbolInput(request.symbol)
+    && String(watch.market || "").toUpperCase() === String(request.market || "").toUpperCase();
+}
+
+function getWatchRequestTargetLabel(request) {
+  if (request.indexCode) return request.indexCode;
+  return normalizeSymbolInput(request.symbol);
+}
+
+async function createOrOpenWatchAlert(request, options = {}) {
+  const existingWatches = await loadMyWatchAlerts({ render: false, throwOnError: true });
+  const existing = existingWatches.find((watch) => matchesOwnedWatchRequest(watch, request));
+  if (existing) {
+    renderWatchAlertsList();
+    revealWatchAlertDetails(existing.id, "owned");
+    setStatus(`已存在盯盘：${existing.presetLabel || options.label || "模型"} ${getWatchRequestTargetLabel(request)}。`);
+    return { watch: existing, existed: true };
+  }
+  if (options.confirmCreateMessage && !window.confirm(options.confirmCreateMessage)) {
+    return { watch: null, existed: false, cancelled: true };
+  }
+
+  const response = await fetch("/api/watch-alerts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  const payload = await readJsonResponse(response, options.errorMessage || "添加盯盘提醒失败。");
+  const watchId = payload.watch && payload.watch.id;
+  await loadMyWatchAlerts({ render: false });
+  renderWatchAlertsList();
+  if (watchId) revealWatchAlertDetails(watchId, "owned");
+  setStatus(options.createdMessage || `已建立盯盘：${options.label || "模型"} ${getWatchRequestTargetLabel(request)}。`);
+  return { watch: payload.watch || null, existed: false };
 }
 
 async function createWatchAlert() {
@@ -5149,15 +5231,9 @@ async function createWatchAlert() {
   }
   if (watchAlertsCreateButton) watchAlertsCreateButton.disabled = true;
   try {
-    const response = await fetch("/api/watch-alerts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    await readJsonResponse(response, "添加盯盘提醒失败。");
-    if (watchAlertsSymbolInput) watchAlertsSymbolInput.value = "";
-    if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "已添加。";
-    await loadMyWatchAlerts();
+    const result = await createOrOpenWatchAlert(body, { errorMessage: "添加盯盘提醒失败。" });
+    if (!result.existed && watchAlertsSymbolInput) watchAlertsSymbolInput.value = "";
+    if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = result.existed ? "已存在，已打开详情。" : "已添加，已打开详情。";
   } catch (error) {
     if (watchAlertsCreateStatus) watchAlertsCreateStatus.textContent = "";
     setStatus(`添加盯盘提醒失败：${error.message}`, true);
@@ -10728,15 +10804,14 @@ async function createWatchFromModelList(model) {
   }
   const market = inferMarketFromSymbol(symbol);
   try {
-    const response = await fetch("/api/watch-alerts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ presetId: model.id, market, symbol, frequencyMinutes: 60 }),
+    await createOrOpenWatchAlert({
+      presetId: model.id, market, symbol, frequencyMinutes: 60,
+    }, {
+      label: model.label || "模型",
+      errorMessage: "添加盯盘提醒失败。",
+      createdMessage: `已为「${model.label || "模型"}」在 ${symbol} 建立盯盘。`,
     });
-    await readJsonResponse(response, "添加盯盘提醒失败。");
-    setStatus(`已为「${model.label || "模型"}」在 ${symbol} 建立盯盘。`);
     await loadModelList({ silent: true });
-    await loadMyWatchAlerts();
   } catch (error) {
     setStatus(`建立盯盘失败：${error.message}`, true);
   }
