@@ -1077,6 +1077,73 @@ async function upsertPreset(ownerUserId, name, preset, isLegacy = false, options
   return newId;
 }
 
+async function backfillPresetValidationSnapshotsFromScanResults(ownerUserId, presetId = null) {
+  if (!ownerUserId) return 0;
+  const result = await dbPool.query(`
+    INSERT INTO preset_validation_snapshots (
+      preset_id, train_years, test_years,
+      train_annualized_return, train_start_date, train_end_date,
+      test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
+      test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
+      annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+    )
+    SELECT
+      sp.id,
+      CASE
+        WHEN osr.train_start_date IS NOT NULL AND osr.train_end_date IS NOT NULL AND osr.train_end_date > osr.train_start_date
+          THEN GREATEST(1, ROUND(((osr.train_end_date - osr.train_start_date)::numeric / 365.25))::integer)
+        ELSE 4
+      END AS train_years,
+      CASE
+        WHEN osr.test_year1_start_date IS NOT NULL AND osr.test_year2_end_date IS NOT NULL AND osr.test_year2_end_date > osr.test_year1_start_date
+          THEN GREATEST(1, ROUND(((osr.test_year2_end_date - osr.test_year1_start_date)::numeric / 365.25))::integer)
+        ELSE 2
+      END AS test_years,
+      osr.train_annualized_return, osr.train_start_date, osr.train_end_date,
+      osr.test_year1_annualized_return, osr.test_year1_return_rate, osr.test_year1_max_drawdown, osr.test_year1_trades, osr.test_year1_start_date, osr.test_year1_end_date,
+      osr.test_year2_annualized_return, osr.test_year2_return_rate, osr.test_year2_max_drawdown, osr.test_year2_trades, osr.test_year2_start_date, osr.test_year2_end_date,
+      osr.annualized_diff_year1, osr.annualized_diff_year2, osr.reached_target, NOW()
+    FROM strategy_presets sp
+    JOIN optimization_scan_results osr ON osr.id = sp.original_model_id
+    LEFT JOIN preset_validation_snapshots existing ON existing.preset_id = sp.id
+    WHERE sp.owner_user_id = $1
+      AND ($2::text IS NULL OR sp.id = $2::text)
+      AND sp.hidden_at IS NULL
+      AND existing.preset_id IS NULL
+      AND sp.original_model_id <> '0'
+      AND osr.train_start_date IS NOT NULL
+      AND osr.test_year1_start_date IS NOT NULL
+      AND osr.test_year2_start_date IS NOT NULL
+    ON CONFLICT (preset_id) DO NOTHING
+    RETURNING preset_id
+  `, [ownerUserId, presetId]);
+  return result.rows.length;
+}
+
+async function copyPresetValidationSnapshot(sourcePresetId, targetPresetId) {
+  if (!sourcePresetId || !targetPresetId || sourcePresetId === targetPresetId) return 0;
+  const result = await dbPool.query(`
+    INSERT INTO preset_validation_snapshots (
+      preset_id, train_years, test_years,
+      train_annualized_return, train_start_date, train_end_date,
+      test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
+      test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
+      annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+    )
+    SELECT
+      $2, train_years, test_years,
+      train_annualized_return, train_start_date, train_end_date,
+      test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
+      test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
+      annualized_diff_year1, annualized_diff_year2, reached_target, NOW()
+    FROM preset_validation_snapshots
+    WHERE preset_id = $1
+    ON CONFLICT (preset_id) DO NOTHING
+    RETURNING preset_id
+  `, [sourcePresetId, targetPresetId]);
+  return result.rows.length;
+}
+
 function presetRowsToMap(rows) {
   return rows.reduce((next, row) => {
     const preset = row.config && typeof row.config === "object" ? row.config : {};
@@ -1769,7 +1836,8 @@ async function handlePresetsApi(req, res) {
     const userId = userIdForEmail(user.email);
 
     for (const [name, preset] of Object.entries(incoming)) {
-      await upsertPreset(userId, name, preset, false);
+      const savedId = await upsertPreset(userId, name, preset, false);
+      if (savedId) await backfillPresetValidationSnapshotsFromScanResults(userId, savedId);
     }
     const presets = await readUserPresets(user.email);
     sendJson(res, 200, {
@@ -5517,6 +5585,7 @@ async function handleModelListApi(req, res) {
       return;
     }
     const ownerUserId = userIdForEmail(currentUser.email);
+    await backfillPresetValidationSnapshotsFromScanResults(ownerUserId);
 
     const ownWatchesResult = await dbPool.query(`
       SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
@@ -5827,6 +5896,7 @@ async function handleCopyPublicModelApi(req, res) {
       newId, userIdForEmail(currentUser.email), newName, newLabel, source.strategy_type,
       JSON.stringify(config), JSON.stringify(meta),
     ]);
+    await copyPresetValidationSnapshot(presetId, newId);
     sendJson(res, 200, { id: newId, label: newLabel });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "复制模型失败。" });

@@ -440,3 +440,28 @@ User-facing share flow:
 Verification:
 
 - `git diff --check` passed.
+
+## Model List Validation Snapshot Backfill
+
+User reported that models saved from "AI 已达标"/validated-search can still show "暂无验证记录" in the "模型列表" page, even after running "历史模拟".
+
+Root cause:
+
+- "模型列表" renders validation from `preset_validation_snapshots`.
+- "历史模拟"/"重新加载历史模拟" runs an ad-hoc backtest for display and does not write `preset_validation_snapshots`.
+- The normal "重新验证" API writes `preset_validation_snapshots` only when `presetId` is present and `trainYears + testYears >= 6`.
+- AI validated-search rows already have their validation data in `optimization_scan_results`, but saving one as a personal `strategy_presets` row did not copy that data into `preset_validation_snapshots`.
+
+Local fix:
+
+- `server.js`
+  - Added `backfillPresetValidationSnapshotsFromScanResults(ownerUserId, presetId = null)`.
+  - Saving `/api/presets` now backfills a missing validation snapshot when the saved preset's `original_model_id` points to an `optimization_scan_results.id`.
+  - Opening `/api/model-list` backfills existing saved personal models that already have that relationship but no snapshot yet.
+  - Copying a public model now copies the source preset's validation snapshot to the new private copy.
+
+Operational notes:
+
+- No local scan process was stopped or restarted for this change.
+- Read-only local DB check found 20 existing active personal models that can be backfilled from `optimization_scan_results`.
+- `node --check server.js` passed.
