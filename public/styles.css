@@ -929,6 +929,39 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .watch-alerts-dialog .param-dialog-body {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .watch-alerts-dialog .admin-scan-filter-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-bottom: 0;
+  }
+
+  .watch-alerts-dialog .admin-scan-filter-row label,
+  .watch-alerts-dialog .admin-scan-filter-row input,
+  .watch-alerts-dialog .admin-scan-filter-row select,
+  .watch-alerts-dialog .admin-scan-filter-row button {
+    width: 100%;
+  }
+
+  .watch-alerts-dialog .admin-scan-details summary {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .watch-alerts-dialog .admin-scan-actions {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .watch-alerts-dialog .admin-scan-actions button {
+    flex: 1 1 140px;
+  }
+
   .model-list-grid,
   .model-list-card-head {
     grid-template-columns: 1fr;
@@ -2545,6 +2578,24 @@ textarea:focus {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.watch-alerts-dialog .param-dialog-body {
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.watch-alerts-dialog .admin-ranking-list {
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 18px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.watch-alerts-dialog .admin-scan-details {
+  scroll-margin-top: 12px;
 }
 
 .ghost-button {

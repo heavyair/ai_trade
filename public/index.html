@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260905-model-list">
+    <link rel="stylesheet" href="/styles.css?v=20260906-watch-scroll">
   </head>
   <body>
     <main class="shell">
@@ -87,12 +87,12 @@
         </form>
       </dialog>
 
-      <dialog id="watchAlertsDialog" class="param-dialog" aria-label="设置盯盘提醒">
+      <dialog id="watchAlertsDialog" class="param-dialog watch-alerts-dialog" aria-label="设置盯盘提醒">
         <form method="dialog" class="param-dialog-body">
           <div class="dialog-head">
             <div>
               <h2>设置盯盘提醒</h2>
-              <p class="field-hint">选择一个已保存的模型，盯一支股票或整个指数的成分股，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你（指数盯盘一次邮件会列出所有触发信号的成分股）。单股盯盘从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率；指数盯盘不模拟账户。</p>
+              <p class="field-hint">选择一个已保存的模型，盯一支股票或整个指数的成分股，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你（指数盯盘一次邮件会列出所有触发信号的成分股）。单股盯盘从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率；展开自己的盯盘后可以生成分享链接。指数盯盘不模拟账户。</p>
             </div>
             <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
           </div>

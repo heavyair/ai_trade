@@ -365,3 +365,78 @@ Operational notes:
 
 - No local scan process was stopped or restarted for this update.
 - No deployment was performed for this update yet.
+
+## App Server Deployment Attempt - Commit 40d5e09
+
+The user asked to push/deploy commit `40d5e09 调整盯盘创建和时效判断` to both app servers.
+
+`172.105.9.107`:
+
+1. Verified SSH connectivity and running Docker container `ai_trade`.
+2. Backed up current container files to:
+   - `/tmp/ai_trade_backup_before_40d5e09`
+3. Uploaded deploy files to:
+   - `/tmp/ai_trade_deploy_40d5e09`
+4. Deployed these files into the `ai_trade` container:
+   - `/app/server.js`
+   - `/app/public/app.js`
+   - `/app/public/index.html`
+   - `/app/public/styles.css`
+   - `/app/scripts/universe/run-watch-alerts.js`
+5. Validated inside the container:
+   - `node --check /app/server.js`
+   - `node --check /app/public/app.js`
+   - `node --check /app/scripts/universe/run-watch-alerts.js`
+6. Restarted only `ai_trade`.
+7. Verified:
+   - `http://127.0.0.1/` returned `200` on the server.
+   - `http://127.0.0.1/api/model-list` returned `401`.
+   - Public `http://172.105.9.107/api/model-list` returned `401`.
+   - `/app/public/index.html` contains `20260905-watch-detail`.
+   - `/app/public/app.js` contains `createOrOpenWatchAlert`.
+   - `/app/scripts/universe/run-watch-alerts.js` no longer contains `beatsReturn`.
+
+`139.177.195.223`:
+
+- Deployment still blocked.
+- HTTP is reachable, but the backend is still old:
+  - `http://139.177.195.223/api/model-list` returns `404`.
+- SSH port 22 remains unreachable:
+  - Local `Test-NetConnection 139.177.195.223 -Port 22`: `TcpTestSucceeded=False`, `PingSucceeded=True`.
+  - Direct SSH from this machine times out.
+  - SSH from `172.105.9.107` to `139.177.195.223` also times out.
+- No files were changed on 139 during this attempt.
+
+## Watch Dialog Mobile Scroll Update
+
+The user reported that the watch-alerts dialog cannot scroll on mobile and asked how to share a watch.
+
+Local changes:
+
+- `public/index.html`
+  - Added `watch-alerts-dialog` class to `#watchAlertsDialog`.
+  - Updated the watch dialog hint to say users can expand their own watch and generate a share link.
+  - Bumped CSS asset query string to `20260906-watch-scroll`.
+- `public/styles.css`
+  - Added watch-dialog-specific layout:
+    - `height: 100dvh`
+    - fixed grid rows with the watch list as `minmax(0, 1fr)`
+    - `#watchAlertsList` / `.admin-ranking-list` scrolls inside the dialog
+    - touch scrolling enabled via `-webkit-overflow-scrolling: touch`
+  - Added mobile styles for the watch dialog:
+    - full-width form controls/buttons
+    - wrapped summary text
+    - wrapped action buttons
+
+User-facing share flow:
+
+1. Open `设置盯盘提醒`.
+2. Stay on `我的盯盘提醒`.
+3. Expand the target watch row.
+4. Click `生成分享链接` or `复制分享链接`.
+5. Send that link to the other user.
+6. The recipient opens the link and logs in; it follows the watch without exposing hidden model parameters.
+
+Verification:
+
+- `git diff --check` passed.
