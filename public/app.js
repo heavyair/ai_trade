@@ -3334,6 +3334,7 @@ if (revalidateRunButton) {
     const upsideThresholdPercent = Number.isFinite(upsideThresholdPercentRaw) ? upsideThresholdPercentRaw : 30;
     const drawdownTolerancePercentRaw = Number(revalidateDrawdownTolerancePercentInput && revalidateDrawdownTolerancePercentInput.value);
     const drawdownTolerancePercent = Number.isFinite(drawdownTolerancePercentRaw) ? drawdownTolerancePercentRaw : 5;
+    const canSaveValidationSnapshot = !context.isAiCandidate && Boolean(context.isOwner);
     if (revalidateStatus) revalidateStatus.textContent = "正在用现有参数重新回测...";
     if (revalidateResult) revalidateResult.innerHTML = "";
     revalidateRunButton.disabled = true;
@@ -3342,10 +3343,9 @@ if (revalidateRunButton) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // Only a real strategy_presets row (not an AI-candidate optimization_scan_results row)
-          // can own a validation snapshot — server.js re-checks ownership itself either way, so
-          // sending this whenever it might apply is safe; it's just a no-op save when it doesn't.
-          presetId: context.isAiCandidate ? null : context.id,
+          // Only a real strategy_presets row owned by the current viewer can save a validation
+          // snapshot; followed/public/AI-candidate models still get the displayed result.
+          presetId: canSaveValidationSnapshot ? context.id : null,
           symbol: context.symbol,
           strategyType: context.strategyType,
           config: context.config || {},
@@ -3359,7 +3359,7 @@ if (revalidateRunButton) {
       const payload = await readJsonResponse(response, "重新验证失败。");
       if (revalidateStatus) revalidateStatus.textContent = "已完成。";
       renderRevalidateResult(payload);
-      if (!context.isAiCandidate && trainYears + testYears >= 6) {
+      if (canSaveValidationSnapshot && trainYears + testYears >= 6) {
         revalidateResult.insertAdjacentHTML("afterbegin", '<div class="field-hint up">已满足6年验证标准，结果已自动保存到"我的模型"。</div>');
       }
     } catch (error) {
@@ -10745,11 +10745,11 @@ function renderModelListSection(title, models, role) {
           const ownActions = `
             <button class="ghost-button model-list-action-button" type="button" data-model-list-action="rename" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">重命名</button>
             <button class="ghost-button model-list-action-button" type="button" data-model-list-action="watch" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">设置盯盘</button>
-            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="simulate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">历史模拟</button>
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="revalidate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">验证收益</button>
             <button class="ghost-button model-list-delete-button" type="button" data-model-list-action="delete" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">删除</button>
           `;
           const followedActions = `
-            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="simulate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">历史模拟</button>
+            <button class="ghost-button model-list-action-button" type="button" data-model-list-action="revalidate" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">验证收益</button>
             <button class="ghost-button model-list-delete-button" type="button" data-model-list-action="unfollow" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}" data-watch-id="${escapeHtml(watchForUnfollow && watchForUnfollow.id || "")}">取消跟盘</button>
           `;
           return `
@@ -10853,6 +10853,33 @@ async function runModelListSimulation(model, role) {
     input.checked = input.value === presetName;
   });
   await loadData();
+}
+
+function openModelListRevalidate(model, role) {
+  if (!model) return;
+  const symbol = getModelListPrimarySymbol(model);
+  if (!symbol) {
+    setStatus("这个模型没有可用于验证收益的股票代码。", true);
+    return;
+  }
+  const config = model.bestConfig && typeof model.bestConfig === "object" ? model.bestConfig : {};
+  if (Object.keys(config).length === 0) {
+    setStatus("这个模型没有可用于验证收益的参数。", true);
+    return;
+  }
+  modelActionContext = {
+    id: model.id,
+    numericId: model.numericId,
+    label: model.label || "模型",
+    config,
+    strategyType: model.strategyType || config.strategyType || "wave",
+    symbol,
+    name: role === "own" ? (model.name || null) : null,
+    isOwner: role === "own",
+    isAiCandidate: false,
+    ownerEmail: model.ownerEmail || "",
+  };
+  openRevalidateDialog();
 }
 
 function summarizePresetParameters(preset) {
@@ -15267,6 +15294,10 @@ if (rankingPresetList) {
       }
       if (action === "simulate") {
         await runModelListSimulation(model, role);
+        return;
+      }
+      if (action === "revalidate") {
+        openModelListRevalidate(model, role);
         return;
       }
       if (action === "unfollow") {

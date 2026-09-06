@@ -465,3 +465,21 @@ Operational notes:
 - No local scan process was stopped or restarted for this change.
 - Read-only local DB check found 20 existing active personal models that can be backfilled from `optimization_scan_results`.
 - `node --check server.js` passed.
+
+## Model List "验证收益" Button
+
+User asked to replace the per-card "历史模拟" button in "模型列表" with a revalidation button named "验证收益".
+
+Local changes:
+
+- `public/app.js`
+  - In both "我的模型" and "跟盘模型" card actions, replaced the model-list `simulate` action button label/action with `revalidate` and display text "验证收益".
+  - Added `openModelListRevalidate(model, role)` to open the existing "重新验证" dialog with the model-list row's symbol/config.
+  - Revalidation snapshots are only saved when the current viewer owns the model; followed/public rows still show the verification result but do not claim it was saved.
+- `public/index.html`
+  - Bumped `app.js` cache version to `20260906-model-list-revalidate`.
+
+Verification:
+
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
