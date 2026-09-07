@@ -334,6 +334,17 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
     Number(candidate.target_percent) || options.targetPercent, candidate.original_validation_max_drawdown || null,
     options.minIncrementalDays, options.minIncrementalTrades, status.status, status.reason,
   ]);
+  if (candidate.subject_type === "watch" && candidate.watch_id) {
+    const isInvalid = status.status === "invalid";
+    await pool.query(`
+      UPDATE watch_alerts SET
+        is_invalid = $2,
+        invalid_reason = $3,
+        invalid_since = CASE WHEN $2 THEN COALESCE(invalid_since, NOW()) ELSE NULL END,
+        updated_at = NOW()
+      WHERE id = $1
+    `, [candidate.watch_id, isInvalid, isInvalid ? status.reason : ""]);
+  }
 }
 
 async function saveError(pool, candidate, message) {

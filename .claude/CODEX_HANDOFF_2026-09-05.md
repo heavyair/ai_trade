@@ -352,6 +352,9 @@ Local changes:
     latest trade date.
   - Separately records incremental validation for rows after the original validation end date.
   - Does not call AI, search new parameters, edit model configs, delete models, or stop watches.
+  - For `subject_type='watch'`, also mirrors `status='invalid'` into the legacy
+    `watch_alerts.is_invalid/invalid_reason` fields and clears those fields when daily validation
+    returns non-invalid, so older watch UI state does not keep showing a stale invalid flag.
 - `server.js`
   - Ensures `model_validation_states` exists at startup.
   - Adds admin scheduled job `modelValidationDaily` with display schedule `每天 18:30`.
