@@ -5625,21 +5625,24 @@ function formatUpsideRatio(annualizedReturn, upsideDeviation) {
 
 function renderWatchableAuditYear(label, year, options = {}) {
   const thresholdPercent = Number(options.upsideThresholdPercent);
+  const targetPercent = options.targetPercent === null || options.targetPercent === undefined ? null : Number(options.targetPercent);
   const annualizedReturn = year && year.annualizedReturn !== null && year.annualizedReturn !== undefined ? Number(year.annualizedReturn) : null;
   const upsideDeviation = year && year.upsideDeviation !== null && year.upsideDeviation !== undefined ? Number(year.upsideDeviation) : null;
   const required = year && year.requiredAnnualizedReturn !== null && year.requiredAnnualizedReturn !== undefined
     ? Number(year.requiredAnnualizedReturn)
     : (Number.isFinite(thresholdPercent) && upsideDeviation !== null ? (thresholdPercent / 100) * upsideDeviation : null);
   const margin = annualizedReturn !== null && required !== null ? annualizedReturn - required : null;
-  const gateClass = (year && (year.passesUpsideGate === false || year.passesDrawdownGate === false)) ? "down" : "up";
+  const targetMargin = annualizedReturn !== null && Number.isFinite(targetPercent) ? annualizedReturn - targetPercent : null;
+  const gateClass = (year && (year.passesTargetGate === false || year.passesUpsideGate === false || year.passesDrawdownGate === false)) ? "down" : "up";
   const trades = year && year.trades !== null && year.trades !== undefined ? Number(year.trades) : null;
   return `
     <div class="watchable-audit-year">
       <strong class="${gateClass}">${escapeHtml(label)}</strong>
       <span>${escapeHtml(year && year.start ? year.start : "")}${year && year.end ? `~${escapeHtml(year.end)}` : ""}</span>
       <span>年化 ${formatNullablePercent(annualizedReturn)} · ${trades === null ? "--" : trades}笔</span>
-      <span>回撤 ${formatNullablePercent(year && year.maxDrawdown)} · 上行σ ${formatNullablePercent(upsideDeviation)}</span>
-      <span>回报/上行σ ${formatUpsideRatio(annualizedReturn, upsideDeviation)} · 余量 ${formatNullablePercent(margin)}</span>
+      <span>回撤 ${formatNullablePercent(year && year.maxDrawdown)} · 买持回撤 ${formatNullablePercent(year && year.buyHoldMaxDrawdown)}</span>
+      <span>上行σ ${formatNullablePercent(upsideDeviation)} · 回报/上行σ ${formatUpsideRatio(annualizedReturn, upsideDeviation)}</span>
+      <span>上行余量 ${formatNullablePercent(margin)}${targetMargin === null ? "" : ` · 目标余量 ${formatNullablePercent(targetMargin)}`}</span>
     </div>
   `;
 }
@@ -5657,6 +5660,14 @@ function renderWatchableTrainAudit(model) {
 }
 
 function renderWatchableValidationAudit(model) {
+  if (Array.isArray(model.validationYearBreakdown) && model.validationYearBreakdown.length > 0) {
+    return model.validationYearBreakdown.slice(0, 2)
+      .map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, {
+        upsideThresholdPercent: model.upsideThresholdPercent,
+        targetPercent: model.targetPercent,
+      }))
+      .join("");
+  }
   const threshold = Number(model.upsideThresholdPercent) || 30;
   const year1 = {
     start: model.testYear1StartDate,
@@ -5678,8 +5689,8 @@ function renderWatchableValidationAudit(model) {
     upsideDeviation: model.testYear2UpsideDeviation,
     requiredAnnualizedReturn: model.testYear2UpsideDeviation === null || model.testYear2UpsideDeviation === undefined ? null : (threshold / 100) * Number(model.testYear2UpsideDeviation),
   };
-  return renderWatchableAuditYear("验证1", year1, { upsideThresholdPercent: threshold })
-    + renderWatchableAuditYear("验证2", year2, { upsideThresholdPercent: threshold });
+  return renderWatchableAuditYear("验证1", year1, { upsideThresholdPercent: threshold, targetPercent: model.targetPercent })
+    + renderWatchableAuditYear("验证2", year2, { upsideThresholdPercent: threshold, targetPercent: model.targetPercent });
 }
 
 function renderWatchableAiModelRow(model) {

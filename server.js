@@ -2178,14 +2178,14 @@ function normalizeYearBreakdownItems(value) {
   }));
 }
 
-async function resolveScanTrainYearBreakdown(row) {
+async function resolveScanTrainYearBreakdown(row, rowsForSymbol = null) {
   const saved = normalizeYearBreakdownItems(row.train_year_breakdown);
   if (saved.length > 0) return saved;
   const trainStartDate = row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "";
   const trainEndDate = row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "";
   if (!row.symbol || !trainStartDate || !trainEndDate) return [];
   try {
-    const allRows = await loadRowsForSymbol(dbPool, row.symbol, row.market);
+    const allRows = Array.isArray(rowsForSymbol) ? rowsForSymbol : await loadRowsForSymbol(dbPool, row.symbol, row.market);
     const trainRows = allRows.filter((priceRow) => priceRow.date >= trainStartDate && priceRow.date < trainEndDate);
     if (trainRows.length === 0) return [];
     const rawConfig = row.best_config && typeof row.best_config === "object" ? row.best_config : {};
@@ -2261,6 +2261,80 @@ async function resolveScanTrainYearBreakdown(row) {
       });
     }
     return breakdown;
+  } catch (error) {
+    return [];
+  }
+}
+
+function scanYearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1 } = {}) {
+  if (!Array.isArray(years) || years.length < minYears) return false;
+  return years.every((year) => {
+    if (!year || year.annualizedReturn === null || year.annualizedReturn === undefined) return false;
+    const annualized = Number(year.annualizedReturn);
+    if (!Number.isFinite(annualized)) return false;
+    if (requireTarget && annualized < targetPercent) return false;
+    if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
+    if (year.passesTargetGate === false) return false;
+    return true;
+  });
+}
+
+async function resolveScanValidationYearBreakdown(row, rowsForSymbol = null) {
+  if (!row.symbol) return [];
+  try {
+    const allRows = Array.isArray(rowsForSymbol) ? rowsForSymbol : await loadRowsForSymbol(dbPool, row.symbol, row.market);
+    const initialCash = Number(row.best_config && row.best_config.initialCash) || 2000000;
+    const tradeFee = Number(row.best_config && row.best_config.tradeFee) || 5;
+    const targetPercent = Number(row.target_percent) || 50;
+    const upsideThresholdPercent = Number(row.upside_threshold_percent) || 30;
+    const drawdownTolerancePercent = Number(row.drawdown_tolerance_percent) || 5;
+    const windows = [
+      {
+        start: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+        end: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+        annualizedReturn: Number(row.test_year1_annualized_return) || 0,
+        returnRate: Number(row.test_year1_return_rate) || 0,
+        trades: row.test_year1_trades || 0,
+        maxDrawdown: Number(row.test_year1_max_drawdown) || 0,
+        upsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
+      },
+      {
+        start: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+        end: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+        annualizedReturn: Number(row.test_year2_annualized_return) || 0,
+        returnRate: Number(row.test_year2_return_rate) || 0,
+        trades: row.test_year2_trades || 0,
+        maxDrawdown: Number(row.test_year2_max_drawdown) || 0,
+        upsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
+      },
+    ];
+
+    return windows.map((window) => {
+      const yearRows = window.start && window.end
+        ? allRows.filter((priceRow) => priceRow.date >= window.start && priceRow.date < window.end)
+        : [];
+      const upsideDeviation = window.upsideDeviation !== null
+        ? window.upsideDeviation
+        : (yearRows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(yearRows) : null);
+      const requiredAnnualizedReturn = upsideDeviation !== null ? (upsideThresholdPercent / 100) * upsideDeviation : null;
+      let buyHoldMaxDrawdown = null;
+      let allowedMaxDrawdown = null;
+      if (yearRows.length > 0) {
+        const buyHoldStates = engine.buildBuyHoldStates(yearRows, initialCash, tradeFee);
+        buyHoldMaxDrawdown = buyHoldStates.length ? buyHoldStates[buyHoldStates.length - 1].maxDrawdown : null;
+        allowedMaxDrawdown = buyHoldMaxDrawdown !== null ? buyHoldMaxDrawdown * (1 + drawdownTolerancePercent / 100) : null;
+      }
+      return {
+        ...window,
+        buyHoldMaxDrawdown,
+        upsideDeviation,
+        requiredAnnualizedReturn,
+        allowedMaxDrawdown,
+        passesTargetGate: Number(window.annualizedReturn) >= targetPercent,
+        passesUpsideGate: requiredAnnualizedReturn === null || Number(window.annualizedReturn) >= requiredAnnualizedReturn,
+        passesDrawdownGate: allowedMaxDrawdown === null || Number(window.maxDrawdown) < allowedMaxDrawdown,
+      };
+    });
   } catch (error) {
     return [];
   }
@@ -3109,7 +3183,17 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
 
     const models = [];
     for (const row of result.rows) {
-      const trainYearBreakdown = await resolveScanTrainYearBreakdown(row);
+      let rowsForSymbol = null;
+      try {
+        rowsForSymbol = await loadRowsForSymbol(dbPool, row.symbol, row.market);
+      } catch (error) {
+        rowsForSymbol = null;
+      }
+      const trainYearBreakdown = await resolveScanTrainYearBreakdown(row, rowsForSymbol);
+      const validationYearBreakdown = await resolveScanValidationYearBreakdown(row, rowsForSymbol);
+      const targetPercent = Number(row.target_percent) || 50;
+      if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4 })) continue;
+      if (!scanYearBreakdownPasses(validationYearBreakdown, { requireTarget: true, targetPercent, minYears: 2 })) continue;
       models.push({
         id: row.id,
         numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
@@ -3125,7 +3209,8 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
         trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
         trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
         trainYearBreakdown,
-        targetPercent: Number(row.target_percent) || 50,
+        validationYearBreakdown,
+        targetPercent,
         upsideThresholdPercent: Number(row.upside_threshold_percent) || 30,
         drawdownTolerancePercent: Number(row.drawdown_tolerance_percent) || 5,
         testYear1ReturnRate: Number(row.test_year1_return_rate) || 0,
