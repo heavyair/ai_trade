@@ -369,6 +369,7 @@ async function main() {
           let passesUpside = true;
           let passesDrawdown = true;
           if (!stats) {
+            failingTrainYears.push(`${win.start}~${win.end}: 无法计算训练年化收益`);
             trainYearBreakdown.push({
               start: win.start,
               end: win.end,
@@ -380,22 +381,24 @@ async function main() {
               upsideDeviation: win.upsideDev,
               requiredAnnualizedReturn: required,
               allowedMaxDrawdown: allowedDD,
-              passesUpsideGate: true,
-              passesDrawdownGate: true,
+              passesUpsideGate: false,
+              passesDrawdownGate: false,
             });
             return;
           }
-          if (win.upsideDev !== null) {
-            if (!(stats.ann >= required)) {
-              failingTrainYears.push(`${win.start}~${win.end}: ${stats.ann.toFixed(1)}%<${required.toFixed(1)}%`);
-              passesUpside = false;
-            }
+          if (win.upsideDev === null || required === null) {
+            failingTrainYears.push(`${win.start}~${win.end}: 无法计算上行标准差`);
+            passesUpside = false;
+          } else if (!(stats.ann >= required)) {
+            failingTrainYears.push(`${win.start}~${win.end}: ${stats.ann.toFixed(1)}%<${required.toFixed(1)}%`);
+            passesUpside = false;
           }
-          if (buyHoldDD !== null) {
-            if (!(stats.maxDrawdown < allowedDD)) {
-              failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%×${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}=${allowedDD.toFixed(1)}%`);
-              passesDrawdown = false;
-            }
+          if (buyHoldDD === null || allowedDD === null) {
+            failingTrainDrawdownYears.push(`${win.start}~${win.end}: 无法计算买入持有回撤`);
+            passesDrawdown = false;
+          } else if (!(stats.maxDrawdown < allowedDD)) {
+            failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%×${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}=${allowedDD.toFixed(1)}%`);
+            passesDrawdown = false;
           }
           trainYearBreakdown.push({
             start: win.start,
@@ -454,15 +457,15 @@ async function main() {
         // separately (never averaged) — a year whose upsideDev couldn't be computed
         // (testUpsideDev[n] === null, too little price history) is treated as passing, same as
         // the training-year gate does.
-        const passesUpsideYear1 = testUpsideDev[0] === null || year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[0];
-        const passesUpsideYear2 = testUpsideDev[1] === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[1];
+        const passesUpsideYear1 = testUpsideDev[0] !== null && year1Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[0];
+        const passesUpsideYear2 = testUpsideDev[1] !== null && year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * testUpsideDev[1];
         // Per-year drawdown gate, validation side: this validation year's own max drawdown
         // (scoredYearN.maxDrawdown, reset at the window's own start — same semantics as
         // testBuyHoldDD's dedicated buy-hold run for that window) must be smaller than buy-hold's
         // own drawdown in that SAME window. A window whose buy-hold drawdown couldn't be computed
         // is treated as passing.
-        const passesDrawdownYear1 = testBuyHoldDD[0] === null || scoredYear1.maxDrawdown < testBuyHoldDD[0] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
-        const passesDrawdownYear2 = testBuyHoldDD[1] === null || scoredYear2.maxDrawdown < testBuyHoldDD[1] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+        const passesDrawdownYear1 = testBuyHoldDD[0] !== null && scoredYear1.maxDrawdown < testBuyHoldDD[0] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+        const passesDrawdownYear2 = testBuyHoldDD[1] !== null && scoredYear2.maxDrawdown < testBuyHoldDD[1] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
         const reachedTarget = passesTrainUpsideGate && passesTrainDrawdownGate
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;

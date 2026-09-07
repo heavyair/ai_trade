@@ -2273,6 +2273,11 @@ function scanYearBreakdownPasses(years, { requireTarget = false, targetPercent =
     const annualized = Number(year.annualizedReturn);
     if (!Number.isFinite(annualized)) return false;
     if (requireTarget && annualized < targetPercent) return false;
+    const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
+    if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
+    const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
+    const maxDrawdown = Number(year.maxDrawdown);
+    if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
     if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
     if (year.passesTargetGate === false) return false;
     return true;
