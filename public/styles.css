@@ -2117,6 +2117,14 @@ button:disabled {
   font-weight: 700;
 }
 
+.admin-watchable-ai-table td {
+  vertical-align: top;
+}
+
+.admin-watchable-ai-table td:nth-child(4) {
+  min-width: 260px;
+}
+
 .admin-scan-sort-header {
   cursor: pointer;
   user-select: none;

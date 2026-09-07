@@ -320,6 +320,48 @@ Verification:
 - `node --check public/app.js` passed.
 - `git diff --check` passed.
 
+## Admin Watchable AI Model Picker
+
+User asked for an admin interface that can quickly pick AI search models suitable for creating watch alerts, sorted by the analysis logic just reported, and automatically marks which models already have watches.
+
+Local changes:
+
+- `server.js`
+  - Added admin-only `GET /api/admin/watchable-ai-models`.
+  - Source scope is `optimization_scan_results.source = 'validated-search'`.
+  - Filters out rows that are not `reached_target`, rows with zero combined validation trades, and rows whose daily validation state is `invalid`.
+  - Keeps `watching` rows visible but marks them as `观察中`.
+  - Computes recommendation score from:
+    - daily validation status
+    - validation trade-count bucket
+    - strategy type auditability (`block-rules`/`wave`/`local-high-ladder` favored)
+    - weaker validation year return
+    - train/validation annualized diff penalty
+    - year-to-year trade-count diff penalty
+  - Marks existing watches by joining saved `strategy_presets` whose `original_model_id` equals the AI scan result id, then `watch_alerts` under those saved presets.
+  - Supports query params:
+    - `market=0|1|US`
+    - `hideWatched=1`
+- `public/index.html`
+  - Added admin tab `可建盯盘模型`.
+  - Added market filter, hide-existing-watch checkbox, refresh button, summary, and result list.
+  - Bumped `styles.css`/`app.js` cache version to `20260907-watchable-ai`.
+- `public/app.js`
+  - Added DOM bindings and admin tab handling for `watchableAi`.
+  - Added loader/rendering for `/api/admin/watchable-ai-models`.
+  - Rows show recommendation tier/score, market, symbol, model name, strategy, two validation years, trade sample, daily validation state, and existing watch count/targets.
+  - Model name uses the existing unified model action menu; because these are AI candidates, building a watch still goes through the established "另存为正式模型 first" flow.
+  - After creating a watch from this context, the new admin list refreshes so the watch marker updates immediately.
+- `public/styles.css`
+  - Added small layout rules for the new table.
+
+Verification:
+
+- `node --check public/app.js` passed.
+- `node --check server.js` passed.
+- `git diff --check` passed.
+- Local HTTP smoke could not start because local Postgres rejected user `postgres`; production uses container env and is not affected.
+
 ## Fixed-Start Daily Model Validation
 
 User accepted the recommendation to stop using rolling windows as the decisive model-validity

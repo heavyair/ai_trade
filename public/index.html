@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260906-watch-scroll">
+    <link rel="stylesheet" href="/styles.css?v=20260907-watchable-ai">
   </head>
   <body>
     <main class="shell">
@@ -255,6 +255,7 @@
             <button id="adminAutoGenerateTabButton" type="button">AI自动生成</button>
             <button id="adminStockScreenTabButton" type="button">选股记录</button>
             <button id="adminWatchAlertsTabButton" type="button">盯盘提醒</button>
+            <button id="adminWatchableAiTabButton" type="button">可建盯盘模型</button>
             <button id="adminValidatedSearchTabButton" type="button">验证搜索</button>
             <button id="adminWaveVisualizerTabButton" type="button">波浪可视化</button>
             <button id="adminScheduledJobsTabButton" type="button">定时任务</button>
@@ -409,6 +410,26 @@
           <div id="adminWatchAlertsPanel" class="hidden">
             <p class="field-hint">所有用户设置的"盯盘提醒"配置，按更新时间排序。</p>
             <div id="adminWatchAlertsList" class="admin-ranking-list"></div>
+          </div>
+          <div id="adminWatchableAiPanel" class="hidden">
+            <p class="field-hint">已经通过 AI 验证搜索、可优先考虑另存后建立盯盘的模型。默认按当前有效性、交易样本、两年收益稳定性和策略可审查性排序，并标识是否已有盯盘。</p>
+            <div class="admin-scan-filter-row">
+              <label>市场
+                <select id="adminWatchableAiMarketSelect">
+                  <option value="">全部</option>
+                  <option value="0">深市</option>
+                  <option value="1">沪市</option>
+                  <option value="US">美股</option>
+                </select>
+              </label>
+              <label>
+                <input id="adminWatchableAiHideWatchedInput" type="checkbox">
+                隐藏已有盯盘
+              </label>
+              <button type="button" id="adminWatchableAiReloadButton" class="ghost-button">刷新</button>
+              <span id="adminWatchableAiSummary" class="field-hint"></span>
+            </div>
+            <div id="adminWatchableAiList" class="admin-ranking-list"></div>
           </div>
           <div id="adminValidatedSearchPanel" class="hidden">
             <p class="field-hint">跟 AI自动生成 的区别：对每个模型思路的每次尝试都立即在验证期打分，专门找验证期年化收益能达标的模型；没达标也会保存当前最好成绩，方便下次继续搜索时跳过已经很成熟的股票。</p>
@@ -1555,6 +1576,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260906-chart-indicators"></script>
+    <script src="/app.js?v=20260907-watchable-ai"></script>
   </body>
 </html>

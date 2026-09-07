@@ -2899,6 +2899,151 @@ async function handleAdminValidatedSearchListApi(req, res) {
   }
 }
 
+async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const market = String(requestUrl.searchParams.get("market") || "").trim();
+    const hideWatched = requestUrl.searchParams.get("hideWatched") === "1";
+    const params = [];
+    const filters = [
+      "osr.source = 'validated-search'",
+      "osr.reached_target = TRUE",
+      "(osr.test_year1_trades + osr.test_year2_trades) > 0",
+      "COALESCE(mvs.status, 'valid') <> 'invalid'",
+    ];
+    if (market) {
+      params.push(market);
+      filters.push(`osr.market = $${params.length}`);
+    }
+    if (hideWatched) {
+      filters.push("COALESCE(w.watch_count, 0) = 0");
+    }
+
+    const result = await dbQuery(`
+      WITH scored AS (
+        SELECT
+          osr.id, osr.numeric_id, osr.symbol, osr.market, osr.symbol_name, osr.preset_label,
+          osr.strategy_type, osr.best_config, osr.model_reason, osr.scanned_at,
+          osr.train_annualized_return, osr.train_start_date, osr.train_end_date,
+          osr.test_year1_annualized_return, osr.test_year1_start_date, osr.test_year1_end_date,
+          osr.test_year1_trades, osr.test_year2_annualized_return, osr.test_year2_start_date,
+          osr.test_year2_end_date, osr.test_year2_trades, osr.annualized_diff_year1,
+          osr.annualized_diff_year2, osr.test_year1_upside_deviation, osr.test_year2_upside_deviation,
+          osr.best_trades, osr.tested_candidates,
+          COALESCE(mvs.status, 'valid') AS validation_status,
+          COALESCE(mvs.status_reason, '') AS validation_reason,
+          COALESCE(mvs.last_checked_at, osr.last_rechecked_at, osr.scanned_at) AS validation_checked_at,
+          COALESCE(w.watch_count, 0) AS watch_count,
+          COALESCE(w.active_watch_count, 0) AS active_watch_count,
+          COALESCE(w.watch_targets, '') AS watch_targets,
+          (osr.test_year1_trades + osr.test_year2_trades) AS total_test_trades,
+          LEAST(osr.test_year1_annualized_return, osr.test_year2_annualized_return) AS worst_year_return,
+          ((osr.test_year1_annualized_return + osr.test_year2_annualized_return) / 2.0) AS avg_year_return,
+          ABS(osr.test_year1_trades - osr.test_year2_trades) AS trade_diff,
+          GREATEST(osr.annualized_diff_year1, osr.annualized_diff_year2) AS max_annualized_diff
+        FROM optimization_scan_results osr
+        LEFT JOIN model_validation_states mvs
+          ON mvs.subject_type = 'ai_scan' AND mvs.subject_id = osr.id
+        LEFT JOIN LATERAL (
+          SELECT
+            COUNT(*)::int AS watch_count,
+            COUNT(*) FILTER (WHERE wa.enabled)::int AS active_watch_count,
+            STRING_AGG(DISTINCT COALESCE(NULLIF(wa.symbol, ''), NULLIF(wa.index_name, ''), NULLIF(wa.index_code, ''), '未知'), ', ' ORDER BY COALESCE(NULLIF(wa.symbol, ''), NULLIF(wa.index_name, ''), NULLIF(wa.index_code, ''), '未知')) AS watch_targets
+          FROM strategy_presets sp
+          JOIN watch_alerts wa ON wa.preset_id = sp.id
+          WHERE sp.original_model_id = osr.id AND sp.hidden_at IS NULL
+        ) w ON TRUE
+        WHERE ${filters.join(" AND ")}
+      )
+      SELECT *,
+        (
+          CASE WHEN validation_status = 'valid' THEN 1000 WHEN validation_status = 'watching' THEN 780 ELSE 0 END
+          + CASE
+              WHEN total_test_trades BETWEEN 11 AND 60 THEN 220
+              WHEN total_test_trades BETWEEN 61 AND 120 THEN 180
+              WHEN total_test_trades BETWEEN 6 AND 10 THEN 130
+              WHEN total_test_trades > 120 THEN 90
+              WHEN total_test_trades BETWEEN 3 AND 5 THEN 60
+              ELSE 0
+            END
+          + CASE strategy_type
+              WHEN 'block-rules' THEN 90
+              WHEN 'wave' THEN 80
+              WHEN 'local-high-ladder' THEN 75
+              WHEN 'order-grid' THEN 55
+              WHEN 'score-rules' THEN 45
+              WHEN 'stagnation-reversal' THEN 30
+              WHEN 'ma-rsi-band' THEN 20
+              ELSE 10
+            END
+          + LEAST(GREATEST(worst_year_return, 0), 300)
+          - LEAST(max_annualized_diff, 300) * 0.15
+          - LEAST(trade_diff, 200) * 0.25
+        ) AS recommendation_score,
+        CASE
+          WHEN validation_status = 'watching' THEN '观察中'
+          WHEN total_test_trades BETWEEN 11 AND 60 AND strategy_type IN ('block-rules', 'wave', 'local-high-ladder') AND worst_year_return >= 80 THEN '优先'
+          WHEN total_test_trades >= 6 AND worst_year_return >= 60 THEN '可用'
+          ELSE '谨慎'
+        END AS recommendation_tier
+      FROM scored
+      ORDER BY recommendation_score DESC, worst_year_return DESC, avg_year_return DESC, scanned_at DESC
+      LIMIT 300
+    `, params);
+
+    const models = result.rows.map((row) => ({
+      id: row.id,
+      numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+      label: row.preset_label,
+      strategyType: row.strategy_type,
+      bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+      targetSymbol: row.symbol || "",
+      market: row.market || "",
+      symbolName: row.symbol_name || "",
+      reason: row.model_reason || "",
+      updatedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
+      trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+      trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+      trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
+      testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
+      testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+      testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+      testYear1Trades: row.test_year1_trades || 0,
+      testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
+      testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+      testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+      testYear2Trades: row.test_year2_trades || 0,
+      annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
+      annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
+      testYear1UpsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
+      testYear2UpsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
+      bestTrades: row.best_trades || 0,
+      testedCandidates: row.tested_candidates || 0,
+      totalTestTrades: row.total_test_trades || 0,
+      validationStatus: row.validation_status || "valid",
+      validationReason: row.validation_reason || "",
+      validationCheckedAt: row.validation_checked_at ? new Date(row.validation_checked_at).toISOString() : "",
+      watchCount: row.watch_count || 0,
+      activeWatchCount: row.active_watch_count || 0,
+      watchTargets: row.watch_targets || "",
+      recommendationScore: Number(row.recommendation_score) || 0,
+      recommendationTier: row.recommendation_tier || "",
+    }));
+    sendJson(res, 200, {
+      adminEmail: ADMIN_EMAIL,
+      models,
+      watchedModels: models.filter((model) => Number(model.watchCount) > 0).length,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "管理员操作失败。" });
+  }
+}
+
 async function handleAdminValidatedSearchRunApi(req, res) {
   try {
     const admin = await requireAdminUser(req);
@@ -6385,6 +6530,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/watch-alerts") {
     handleAdminWatchAlertsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/watchable-ai-models") {
+    handleAdminWatchableAiModelsApi(req, res, requestUrl);
     return;
   }
 

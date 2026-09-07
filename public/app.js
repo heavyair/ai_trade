@@ -200,6 +200,13 @@ const adminStockScreenTabButton = document.querySelector("#adminStockScreenTabBu
 const adminWatchAlertsTabButton = document.querySelector("#adminWatchAlertsTabButton");
 const adminWatchAlertsPanel = document.querySelector("#adminWatchAlertsPanel");
 const adminWatchAlertsList = document.querySelector("#adminWatchAlertsList");
+const adminWatchableAiTabButton = document.querySelector("#adminWatchableAiTabButton");
+const adminWatchableAiPanel = document.querySelector("#adminWatchableAiPanel");
+const adminWatchableAiMarketSelect = document.querySelector("#adminWatchableAiMarketSelect");
+const adminWatchableAiHideWatchedInput = document.querySelector("#adminWatchableAiHideWatchedInput");
+const adminWatchableAiReloadButton = document.querySelector("#adminWatchableAiReloadButton");
+const adminWatchableAiSummary = document.querySelector("#adminWatchableAiSummary");
+const adminWatchableAiList = document.querySelector("#adminWatchableAiList");
 const adminValidatedSearchTabButton = document.querySelector("#adminValidatedSearchTabButton");
 const adminValidatedSearchPanel = document.querySelector("#adminValidatedSearchPanel");
 const adminValidatedSearchModeSelect = document.querySelector("#adminValidatedSearchModeSelect");
@@ -3194,6 +3201,9 @@ if (modelActionCreateWatchButton) {
         createdMessage: `已为「${resolved.label}」在 ${context.symbol} 建立盯盘（默认每小时检查一次）。`,
       });
       await loadModelList({ silent: true });
+      if (adminWatchableAiPanel && !adminWatchableAiPanel.classList.contains("hidden")) {
+        await loadAdminWatchableAiModels();
+      }
     } catch (error) {
       setStatus(`建立盯盘失败：${error.message}`, true);
     }
@@ -5500,6 +5510,116 @@ if (adminWatchAlertsList) {
   adminWatchAlertsList.addEventListener("toggle", (event) => handleWatchAlertsToggle(event, adminWatchAlertsCache), true);
 }
 
+let adminWatchableAiCache = [];
+
+function renderWatchableAiModelRow(model) {
+  const totalTrades = Number(model.totalTestTrades) || 0;
+  const minReturn = Math.min(Number(model.testYear1AnnualizedReturn) || 0, Number(model.testYear2AnnualizedReturn) || 0);
+  const watchCount = Number(model.watchCount) || 0;
+  const activeWatchCount = Number(model.activeWatchCount) || 0;
+  const status = model.validationStatus || "valid";
+  const statusClass = status === "valid" ? "up" : status === "watching" ? "field-hint" : "down";
+  const watchText = watchCount > 0
+    ? `<span class="up">已有 ${watchCount} 个盯盘</span>${activeWatchCount !== watchCount ? `（启用 ${activeWatchCount}）` : ""}`
+    : '<span class="field-hint">未建盯盘</span>';
+  return `
+    <tr>
+      <td><strong>${escapeHtml(model.recommendationTier || "")}</strong><br><span class="field-hint">评分 ${Math.round(Number(model.recommendationScore) || 0)}</span></td>
+      <td>${escapeHtml(model.market || "")}</td>
+      <td>${escapeHtml(model.targetSymbol || "")}</td>
+      <td>${formatModelNameLink({
+        id: model.id,
+        numericId: model.numericId,
+        label: model.label || "",
+        config: model.bestConfig,
+        strategyType: model.strategyType,
+        symbol: model.targetSymbol,
+        reason: model.reason,
+        testYear1AnnualizedReturn: model.testYear1AnnualizedReturn,
+        testYear1Trades: model.testYear1Trades,
+        testYear2AnnualizedReturn: model.testYear2AnnualizedReturn,
+        testYear2Trades: model.testYear2Trades,
+        isAiCandidate: true,
+      })}</td>
+      <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
+      <td class="up">${formatPercent(model.testYear1AnnualizedReturn)}<br><span class="field-hint">${model.testYear1Trades || 0} 笔</span></td>
+      <td class="up">${formatPercent(model.testYear2AnnualizedReturn)}<br><span class="field-hint">${model.testYear2Trades || 0} 笔</span></td>
+      <td>${totalTrades} 笔<br><span class="field-hint">最差年 ${formatPercent(minReturn)}</span></td>
+      <td><span class="${statusClass}">${escapeHtml(status)}</span><br><span class="field-hint">${escapeHtml(model.validationReason || "")}</span></td>
+      <td>${watchText}<br><span class="field-hint">${escapeHtml(model.watchTargets || "")}</span></td>
+      <td>${escapeHtml(formatAdminDate(model.updatedAt))}</td>
+    </tr>
+  `;
+}
+
+function renderAdminWatchableAiModels(payload) {
+  const models = Array.isArray(payload.models) ? payload.models : [];
+  adminWatchableAiCache = models;
+  if (adminWatchableAiSummary) {
+    const watched = Number(payload.watchedModels) || models.filter((m) => Number(m.watchCount) > 0).length;
+    adminWatchableAiSummary.textContent = `共 ${models.length} 个候选，${watched} 个已有盯盘。`;
+  }
+  if (!adminWatchableAiList) return;
+  if (models.length === 0) {
+    adminWatchableAiList.innerHTML = '<div class="ranking-empty">没有满足条件的可建盯盘 AI 搜索模型。</div>';
+    return;
+  }
+  adminWatchableAiList.innerHTML = `
+    <table class="admin-ranking-table admin-watchable-ai-table">
+      <thead>
+        <tr>
+          <th>推荐</th>
+          <th>市场</th>
+          <th>股票</th>
+          <th>模型</th>
+          <th>策略</th>
+          <th>验证1年</th>
+          <th>验证2年</th>
+          <th>交易样本</th>
+          <th>每日验证</th>
+          <th>盯盘状态</th>
+          <th>更新时间</th>
+        </tr>
+      </thead>
+      <tbody>${models.map(renderWatchableAiModelRow).join("")}</tbody>
+    </table>
+  `;
+}
+
+async function loadAdminWatchableAiModels() {
+  if (!adminWatchableAiList) return;
+  if (!adminWatchableAiList.innerHTML.trim()) {
+    adminWatchableAiList.innerHTML = '<div class="ranking-empty">正在读取可建盯盘模型...</div>';
+  }
+  const params = new URLSearchParams();
+  if (adminWatchableAiMarketSelect && adminWatchableAiMarketSelect.value) {
+    params.set("market", adminWatchableAiMarketSelect.value);
+  }
+  if (adminWatchableAiHideWatchedInput && adminWatchableAiHideWatchedInput.checked) {
+    params.set("hideWatched", "1");
+  }
+  try {
+    const response = await fetch(`/api/admin/watchable-ai-models?${params.toString()}`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取可建盯盘模型失败。");
+    renderAdminWatchableAiModels(payload);
+  } catch (error) {
+    adminWatchableAiList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+if (adminWatchableAiTabButton) {
+  adminWatchableAiTabButton.addEventListener("click", () => setAdminTab("watchableAi"));
+}
+if (adminWatchableAiReloadButton) {
+  adminWatchableAiReloadButton.addEventListener("click", () => loadAdminWatchableAiModels());
+}
+if (adminWatchableAiMarketSelect) {
+  adminWatchableAiMarketSelect.addEventListener("change", () => loadAdminWatchableAiModels());
+}
+if (adminWatchableAiHideWatchedInput) {
+  adminWatchableAiHideWatchedInput.addEventListener("change", () => loadAdminWatchableAiModels());
+}
+
 function openAdminValidationParamViewer(sourceScanResultId) {
   const candidate = adminValidationCache.find((item) => item.sourceScanResultId === sourceScanResultId);
   if (!candidate) return;
@@ -5609,10 +5729,11 @@ function setAdminTab(tab) {
   const showAutoGenerate = tab === "autoGenerate";
   const showStockScreen = tab === "stockScreen";
   const showWatchAlerts = tab === "watchAlerts";
+  const showWatchableAi = tab === "watchableAi";
   const showValidatedSearch = tab === "validatedSearch";
   const showWaveVisualizer = tab === "waveVisualizer";
   const showScheduledJobs = tab === "scheduledJobs";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showValidatedSearch && !showWaveVisualizer && !showScheduledJobs;
+  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showWatchableAi && !showValidatedSearch && !showWaveVisualizer && !showScheduledJobs;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -5621,6 +5742,7 @@ function setAdminTab(tab) {
   if (adminAutoGenerateTabButton) adminAutoGenerateTabButton.classList.toggle("active", showAutoGenerate);
   if (adminStockScreenTabButton) adminStockScreenTabButton.classList.toggle("active", showStockScreen);
   if (adminWatchAlertsTabButton) adminWatchAlertsTabButton.classList.toggle("active", showWatchAlerts);
+  if (adminWatchableAiTabButton) adminWatchableAiTabButton.classList.toggle("active", showWatchableAi);
   if (adminValidatedSearchTabButton) adminValidatedSearchTabButton.classList.toggle("active", showValidatedSearch);
   if (adminWaveVisualizerTabButton) adminWaveVisualizerTabButton.classList.toggle("active", showWaveVisualizer);
   if (adminScheduledJobsTabButton) adminScheduledJobsTabButton.classList.toggle("active", showScheduledJobs);
@@ -5632,6 +5754,7 @@ function setAdminTab(tab) {
   if (adminAutoGeneratePanel) adminAutoGeneratePanel.classList.toggle("hidden", !showAutoGenerate);
   if (adminStockScreenPanel) adminStockScreenPanel.classList.toggle("hidden", !showStockScreen);
   if (adminWatchAlertsPanel) adminWatchAlertsPanel.classList.toggle("hidden", !showWatchAlerts);
+  if (adminWatchableAiPanel) adminWatchableAiPanel.classList.toggle("hidden", !showWatchableAi);
   if (adminValidatedSearchPanel) adminValidatedSearchPanel.classList.toggle("hidden", !showValidatedSearch);
   if (adminWaveVisualizerPanel) adminWaveVisualizerPanel.classList.toggle("hidden", !showWaveVisualizer);
   if (adminScheduledJobsPanel) adminScheduledJobsPanel.classList.toggle("hidden", !showScheduledJobs);
@@ -5642,6 +5765,7 @@ function setAdminTab(tab) {
   if (showAutoGenerate) loadAdminAutoGenerate();
   if (showStockScreen) loadAdminStockScreen();
   if (showWatchAlerts) loadAdminWatchAlerts();
+  if (showWatchableAi) loadAdminWatchableAiModels();
   if (showValidatedSearch) loadAdminValidatedSearch();
   // No auto-fetch here, unlike the other tabs — this tool's data comes from the user
   // explicitly clicking 加载历史/加载模型, not a background list to load on open. Just keep
