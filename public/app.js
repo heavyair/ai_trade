@@ -3183,7 +3183,7 @@ async function openModelActionOptimization(context) {
   renderModelCompareOptions();
   selectOnlyComparisonPreset(presetName);
   setStatus(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
-  openOptimizationDialog(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
+  openOptimizationPreparingDialog(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   try {
     await loadData();
     openBlockRuleOptimizationRangeEditor(presetName);
@@ -13536,6 +13536,25 @@ function setOptimizationProgress(done, total) {
   const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   if (optimizationProgressBar) optimizationProgressBar.style.width = `${percent}%`;
   if (optimizationProgressLabel) optimizationProgressLabel.textContent = `${percent}%（${done}/${total}）`;
+}
+
+function openOptimizationPreparingDialog(message) {
+  if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">${escapeHtml(message)}</div>`;
+  if (optimizationNarrative) optimizationNarrative.innerHTML = "";
+  if (optimizationParamPreview) optimizationParamPreview.textContent = "正在准备参数输入...";
+  if (saveOptimizationButton) saveOptimizationButton.disabled = true;
+  if (optimizationSaveNameRow) optimizationSaveNameRow.classList.add("hidden");
+  if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+  if (optimizationUniformPointCountRow) optimizationUniformPointCountRow.classList.add("hidden");
+  if (optimizationCombinationSummary) optimizationCombinationSummary.classList.add("hidden");
+  if (runOptimizationButton) runOptimizationButton.classList.add("hidden");
+  if (optimizationProgress) optimizationProgress.classList.add("hidden");
+  if (optimizationTitle) optimizationTitle.textContent = "准备优化参数";
+  if (optimizationSubtitle) optimizationSubtitle.textContent = message;
+  if (optimizationDialog && !optimizationDialog.open) {
+    showDialog(optimizationDialog);
+  }
+  scrollDialogToTop(optimizationDialog);
 }
 
 function openOptimizationDialog(message) {

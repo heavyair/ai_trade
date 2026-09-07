@@ -781,3 +781,13 @@ Mobile follow-up fix:
   - `showDialog()` now falls back to setting the `open` attribute if `showModal()` throws.
 - `public/index.html`
   - Bumped the static asset query string to `20260907-optimization-mobile`.
+
+Optimization prepare-state fix:
+
+- `public/app.js`
+  - Added `openOptimizationPreparingDialog(message)` for the click-time/loading state.
+  - Model-action "优化参数" now uses the preparing dialog while history data loads, not `openOptimizationDialog()`.
+  - `openOptimizationDialog()` remains reserved for the real optimization run after the user clicks "运行优化".
+  - This prevents the optimization UI from showing a `0/0` progress target or appearing to run before parameter inputs are available.
+- `public/index.html`
+  - Bumped the static asset query string to `20260907-optimization-prepare`.
