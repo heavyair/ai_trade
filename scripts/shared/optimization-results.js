@@ -126,6 +126,14 @@ async function ensureResultsTable(pool) {
     -- means "not applicable" for that source.
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_upside_deviation DOUBLE PRECISION;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_upside_deviation DOUBLE PRECISION;
+
+    -- Per-training-year audit trail for AI validated-search rows. Stored as an array because
+    -- trainYears is configurable (usually 4, but not guaranteed forever). Each item mirrors the
+    -- same gate inputs search-validated-best.js uses before a candidate is allowed into validation.
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_year_breakdown JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS target_percent DOUBLE PRECISION NOT NULL DEFAULT 50;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS upside_threshold_percent DOUBLE PRECISION NOT NULL DEFAULT 30;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS drawdown_tolerance_percent DOUBLE PRECISION NOT NULL DEFAULT 5;
   `);
 }
 
@@ -175,6 +183,7 @@ async function saveOptimizationResult(pool, row) {
       test_year2_trades, test_year2_rows_tested, test_year2_start_date, test_year2_end_date,
       annualized_diff_year1, annualized_diff_year2,
       test_year1_upside_deviation, test_year2_upside_deviation,
+      train_year_breakdown, target_percent, upside_threshold_percent, drawdown_tolerance_percent,
       reached_target, source, model_reason, used_prior_examples, scanned_at
     )
     VALUES (
@@ -184,7 +193,8 @@ async function saveOptimizationResult(pool, row) {
       $29,$30,$31,$32,$33,$34,$35,
       $36,$37,
       $38,$39,
-      $40,$41,$42,$43,NOW()
+      $40::jsonb,$41,$42,$43,
+      $44,$45,$46,$47,NOW()
     )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
@@ -222,6 +232,10 @@ async function saveOptimizationResult(pool, row) {
       annualized_diff_year2 = EXCLUDED.annualized_diff_year2,
       test_year1_upside_deviation = EXCLUDED.test_year1_upside_deviation,
       test_year2_upside_deviation = EXCLUDED.test_year2_upside_deviation,
+      train_year_breakdown = EXCLUDED.train_year_breakdown,
+      target_percent = EXCLUDED.target_percent,
+      upside_threshold_percent = EXCLUDED.upside_threshold_percent,
+      drawdown_tolerance_percent = EXCLUDED.drawdown_tolerance_percent,
       reached_target = EXCLUDED.reached_target,
       source = EXCLUDED.source,
       model_reason = EXCLUDED.model_reason,
@@ -240,6 +254,10 @@ async function saveOptimizationResult(pool, row) {
     row.annualizedDiffYear1, row.annualizedDiffYear2,
     row.testYear1UpsideDeviation === undefined || row.testYear1UpsideDeviation === null ? null : Number(row.testYear1UpsideDeviation),
     row.testYear2UpsideDeviation === undefined || row.testYear2UpsideDeviation === null ? null : Number(row.testYear2UpsideDeviation),
+    JSON.stringify(Array.isArray(row.trainYearBreakdown) ? row.trainYearBreakdown : []),
+    row.targetPercent === undefined || row.targetPercent === null ? 50 : Number(row.targetPercent),
+    row.upsideThresholdPercent === undefined || row.upsideThresholdPercent === null ? 30 : Number(row.upsideThresholdPercent),
+    row.drawdownTolerancePercent === undefined || row.drawdownTolerancePercent === null ? 5 : Number(row.drawdownTolerancePercent),
     Boolean(row.reachedTarget), row.source || "", row.modelReason || "", Boolean(row.usedPriorExamples),
   ]);
 }

@@ -15,6 +15,7 @@ const { splitTrainTestWindows, shiftYears, toIsoDate: shiftedDateToIso } = requi
 const { annualizedReturnRate } = require("./scripts/shared/annualize.js");
 const { annualizedUpsideDeviation } = require("./scripts/shared/volatility.js");
 const { ensureModelValidationStateTable } = require("./scripts/shared/model-validation-state.js");
+const { ensureResultsTable } = require("./scripts/shared/optimization-results.js");
 const engine = require("./scripts/universe/engine.js");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -536,6 +537,7 @@ async function initializeDatabase() {
   `);
 
   await ensureIndexCatalogTable(dbPool);
+  await ensureResultsTable(dbPool);
   await ensureModelValidationStateTable(dbPool);
 }
 
@@ -2157,6 +2159,113 @@ function mapAdminOptimizationScanRow(row, universeIndexByCode) {
   };
 }
 
+function normalizeYearBreakdownItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    start: item && item.start ? String(item.start).slice(0, 10) : "",
+    end: item && item.end ? String(item.end).slice(0, 10) : "",
+    annualizedReturn: item && item.annualizedReturn !== null && item.annualizedReturn !== undefined ? Number(item.annualizedReturn) : null,
+    returnRate: item && item.returnRate !== null && item.returnRate !== undefined ? Number(item.returnRate) : null,
+    trades: item && item.trades !== null && item.trades !== undefined ? Number(item.trades) : null,
+    rows: item && item.rows !== null && item.rows !== undefined ? Number(item.rows) : null,
+    maxDrawdown: item && item.maxDrawdown !== null && item.maxDrawdown !== undefined ? Number(item.maxDrawdown) : null,
+    buyHoldMaxDrawdown: item && item.buyHoldMaxDrawdown !== null && item.buyHoldMaxDrawdown !== undefined ? Number(item.buyHoldMaxDrawdown) : null,
+    upsideDeviation: item && item.upsideDeviation !== null && item.upsideDeviation !== undefined ? Number(item.upsideDeviation) : null,
+    requiredAnnualizedReturn: item && item.requiredAnnualizedReturn !== null && item.requiredAnnualizedReturn !== undefined ? Number(item.requiredAnnualizedReturn) : null,
+    allowedMaxDrawdown: item && item.allowedMaxDrawdown !== null && item.allowedMaxDrawdown !== undefined ? Number(item.allowedMaxDrawdown) : null,
+    passesUpsideGate: item && item.passesUpsideGate !== undefined ? Boolean(item.passesUpsideGate) : true,
+    passesDrawdownGate: item && item.passesDrawdownGate !== undefined ? Boolean(item.passesDrawdownGate) : true,
+  }));
+}
+
+async function resolveScanTrainYearBreakdown(row) {
+  const saved = normalizeYearBreakdownItems(row.train_year_breakdown);
+  if (saved.length > 0) return saved;
+  const trainStartDate = row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "";
+  const trainEndDate = row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "";
+  if (!row.symbol || !trainStartDate || !trainEndDate) return [];
+  try {
+    const allRows = await loadRowsForSymbol(dbPool, row.symbol, row.market);
+    const trainRows = allRows.filter((priceRow) => priceRow.date >= trainStartDate && priceRow.date < trainEndDate);
+    if (trainRows.length === 0) return [];
+    const rawConfig = row.best_config && typeof row.best_config === "object" ? row.best_config : {};
+    const strategyType = row.strategy_type || rawConfig.strategyType || "wave";
+    const initialCash = Number(rawConfig.initialCash) || 2000000;
+    const tradeFee = Number(rawConfig.tradeFee) || 5;
+    const config = engine.buildConfigFromPresetObject(
+      { ...rawConfig, strategyType },
+      { initialCash, tradeFee, strategyType }
+    );
+    engine.setActiveLotSizeSymbol(row.symbol);
+    const states = engine.buildBacktestStates(trainRows, config);
+    if (!states.length) return [];
+
+    const upsideThresholdPercent = Number(row.upside_threshold_percent) || 30;
+    const drawdownTolerancePercent = Number(row.drawdown_tolerance_percent) || 5;
+    const breakdown = [];
+    for (let yearIndex = 0; yearIndex < 10; yearIndex += 1) {
+      const start = shiftedDateToIso(shiftYears(new Date(trainStartDate), yearIndex));
+      const end = shiftedDateToIso(shiftYears(new Date(trainStartDate), yearIndex + 1));
+      if (!start || !end || start >= trainEndDate) break;
+      const cappedEnd = end > trainEndDate ? trainEndDate : end;
+      const yearRows = allRows.filter((priceRow) => priceRow.date >= start && priceRow.date < cappedEnd);
+
+      let baselineIndex = -1;
+      let endIndex = -1;
+      for (let i = 0; i < states.length; i += 1) {
+        const date = states[i].row.date;
+        if (date < start) baselineIndex = i;
+        if (date < cappedEnd) endIndex = i;
+      }
+
+      const upsideDeviation = yearRows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS ? annualizedUpsideDeviation(yearRows) : null;
+      const requiredAnnualizedReturn = upsideDeviation !== null ? (upsideThresholdPercent / 100) * upsideDeviation : null;
+      let buyHoldMaxDrawdown = null;
+      let allowedMaxDrawdown = null;
+      if (yearRows.length > 0) {
+        const buyHoldStates = engine.buildBuyHoldStates(yearRows, initialCash, tradeFee);
+        buyHoldMaxDrawdown = buyHoldStates.length ? buyHoldStates[buyHoldStates.length - 1].maxDrawdown : null;
+        allowedMaxDrawdown = buyHoldMaxDrawdown !== null ? buyHoldMaxDrawdown * (1 + drawdownTolerancePercent / 100) : null;
+      }
+
+      if (endIndex < 0) {
+        breakdown.push({
+          start, end: cappedEnd, annualizedReturn: null, returnRate: null, trades: null, rows: 0,
+          maxDrawdown: null, buyHoldMaxDrawdown, upsideDeviation, requiredAnnualizedReturn,
+          allowedMaxDrawdown, passesUpsideGate: true, passesDrawdownGate: true,
+        });
+        continue;
+      }
+
+      const baselineEquity = baselineIndex >= 0 ? states[baselineIndex].equity : states[0].equity;
+      const rowsInWindow = endIndex - baselineIndex;
+      const baselineTrades = baselineIndex >= 0 ? states[baselineIndex].trades.length : 0;
+      const returnRate = rowsInWindow > 0 && baselineEquity > 0
+        ? ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100
+        : null;
+      const annualizedReturn = returnRate !== null ? annualizedReturnRate(returnRate, rowsInWindow) : null;
+      const trades = states[endIndex].trades.length - baselineTrades;
+      let peak = baselineEquity;
+      let maxDrawdown = 0;
+      for (let i = baselineIndex + 1; i <= endIndex; i += 1) {
+        const equity = states[i].equity;
+        peak = Math.max(peak, equity);
+        maxDrawdown = Math.max(maxDrawdown, peak > 0 ? ((peak - equity) / peak) * 100 : 0);
+      }
+      breakdown.push({
+        start, end: cappedEnd, annualizedReturn, returnRate, trades, rows: rowsInWindow,
+        maxDrawdown, buyHoldMaxDrawdown, upsideDeviation, requiredAnnualizedReturn,
+        allowedMaxDrawdown,
+        passesUpsideGate: requiredAnnualizedReturn === null || annualizedReturn === null || annualizedReturn >= requiredAnnualizedReturn,
+        passesDrawdownGate: allowedMaxDrawdown === null || maxDrawdown < allowedMaxDrawdown,
+      });
+    }
+    return breakdown;
+  } catch (error) {
+    return [];
+  }
+}
+
 async function handleAdminOptimizationScanApi(req, res) {
   try {
     await requireAdminUser(req);
@@ -2930,9 +3039,12 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
           osr.strategy_type, osr.best_config, osr.model_reason, osr.scanned_at,
           osr.train_annualized_return, osr.train_start_date, osr.train_end_date,
           osr.test_year1_annualized_return, osr.test_year1_start_date, osr.test_year1_end_date,
-          osr.test_year1_trades, osr.test_year2_annualized_return, osr.test_year2_start_date,
-          osr.test_year2_end_date, osr.test_year2_trades, osr.annualized_diff_year1,
+          osr.test_year1_return_rate, osr.test_year1_max_drawdown, osr.test_year1_trades,
+          osr.test_year2_annualized_return, osr.test_year2_start_date,
+          osr.test_year2_end_date, osr.test_year2_return_rate, osr.test_year2_max_drawdown,
+          osr.test_year2_trades, osr.annualized_diff_year1,
           osr.annualized_diff_year2, osr.test_year1_upside_deviation, osr.test_year2_upside_deviation,
+          osr.train_year_breakdown, osr.target_percent, osr.upside_threshold_percent, osr.drawdown_tolerance_percent,
           osr.best_trades, osr.tested_candidates,
           COALESCE(mvs.status, 'valid') AS validation_status,
           COALESCE(mvs.status_reason, '') AS validation_reason,
@@ -2995,44 +3107,56 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
       LIMIT 300
     `, params);
 
-    const models = result.rows.map((row) => ({
-      id: row.id,
-      numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
-      label: row.preset_label,
-      strategyType: row.strategy_type,
-      bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
-      targetSymbol: row.symbol || "",
-      market: row.market || "",
-      symbolName: row.symbol_name || "",
-      reason: row.model_reason || "",
-      updatedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
-      trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
-      trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
-      trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
-      testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
-      testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
-      testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
-      testYear1Trades: row.test_year1_trades || 0,
-      testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
-      testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
-      testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
-      testYear2Trades: row.test_year2_trades || 0,
-      annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
-      annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
-      testYear1UpsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
-      testYear2UpsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
-      bestTrades: row.best_trades || 0,
-      testedCandidates: row.tested_candidates || 0,
-      totalTestTrades: row.total_test_trades || 0,
-      validationStatus: row.validation_status || "valid",
-      validationReason: row.validation_reason || "",
-      validationCheckedAt: row.validation_checked_at ? new Date(row.validation_checked_at).toISOString() : "",
-      watchCount: row.watch_count || 0,
-      activeWatchCount: row.active_watch_count || 0,
-      watchTargets: row.watch_targets || "",
-      recommendationScore: Number(row.recommendation_score) || 0,
-      recommendationTier: row.recommendation_tier || "",
-    }));
+    const models = [];
+    for (const row of result.rows) {
+      const trainYearBreakdown = await resolveScanTrainYearBreakdown(row);
+      models.push({
+        id: row.id,
+        numericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+        label: row.preset_label,
+        strategyType: row.strategy_type,
+        bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+        targetSymbol: row.symbol || "",
+        market: row.market || "",
+        symbolName: row.symbol_name || "",
+        reason: row.model_reason || "",
+        updatedAt: row.scanned_at ? new Date(row.scanned_at).toISOString() : "",
+        trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
+        trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
+        trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
+        trainYearBreakdown,
+        targetPercent: Number(row.target_percent) || 50,
+        upsideThresholdPercent: Number(row.upside_threshold_percent) || 30,
+        drawdownTolerancePercent: Number(row.drawdown_tolerance_percent) || 5,
+        testYear1ReturnRate: Number(row.test_year1_return_rate) || 0,
+        testYear1MaxDrawdown: Number(row.test_year1_max_drawdown) || 0,
+        testYear1AnnualizedReturn: Number(row.test_year1_annualized_return) || 0,
+        testYear1StartDate: row.test_year1_start_date ? new Date(row.test_year1_start_date).toISOString().slice(0, 10) : "",
+        testYear1EndDate: row.test_year1_end_date ? new Date(row.test_year1_end_date).toISOString().slice(0, 10) : "",
+        testYear1Trades: row.test_year1_trades || 0,
+        testYear2ReturnRate: Number(row.test_year2_return_rate) || 0,
+        testYear2MaxDrawdown: Number(row.test_year2_max_drawdown) || 0,
+        testYear2AnnualizedReturn: Number(row.test_year2_annualized_return) || 0,
+        testYear2StartDate: row.test_year2_start_date ? new Date(row.test_year2_start_date).toISOString().slice(0, 10) : "",
+        testYear2EndDate: row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "",
+        testYear2Trades: row.test_year2_trades || 0,
+        annualizedDiffYear1: Number(row.annualized_diff_year1) || 0,
+        annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
+        testYear1UpsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
+        testYear2UpsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
+        bestTrades: row.best_trades || 0,
+        testedCandidates: row.tested_candidates || 0,
+        totalTestTrades: row.total_test_trades || 0,
+        validationStatus: row.validation_status || "valid",
+        validationReason: row.validation_reason || "",
+        validationCheckedAt: row.validation_checked_at ? new Date(row.validation_checked_at).toISOString() : "",
+        watchCount: row.watch_count || 0,
+        activeWatchCount: row.active_watch_count || 0,
+        watchTargets: row.watch_targets || "",
+        recommendationScore: Number(row.recommendation_score) || 0,
+        recommendationTier: row.recommendation_tier || "",
+      });
+    }
     sendJson(res, 200, {
       adminEmail: ADMIN_EMAIL,
       models,

@@ -5610,6 +5610,78 @@ if (adminWatchAlertsList) {
 
 let adminWatchableAiCache = [];
 
+function formatNullablePercent(value) {
+  return value === null || value === undefined || !Number.isFinite(Number(value))
+    ? "--"
+    : formatPercent(Number(value));
+}
+
+function formatUpsideRatio(annualizedReturn, upsideDeviation) {
+  const ret = Number(annualizedReturn);
+  const upside = Number(upsideDeviation);
+  if (!Number.isFinite(ret) || !Number.isFinite(upside) || upside <= 0) return "--";
+  return `${(ret / upside).toFixed(2)}x`;
+}
+
+function renderWatchableAuditYear(label, year, options = {}) {
+  const thresholdPercent = Number(options.upsideThresholdPercent);
+  const annualizedReturn = year && year.annualizedReturn !== null && year.annualizedReturn !== undefined ? Number(year.annualizedReturn) : null;
+  const upsideDeviation = year && year.upsideDeviation !== null && year.upsideDeviation !== undefined ? Number(year.upsideDeviation) : null;
+  const required = year && year.requiredAnnualizedReturn !== null && year.requiredAnnualizedReturn !== undefined
+    ? Number(year.requiredAnnualizedReturn)
+    : (Number.isFinite(thresholdPercent) && upsideDeviation !== null ? (thresholdPercent / 100) * upsideDeviation : null);
+  const margin = annualizedReturn !== null && required !== null ? annualizedReturn - required : null;
+  const gateClass = (year && (year.passesUpsideGate === false || year.passesDrawdownGate === false)) ? "down" : "up";
+  const trades = year && year.trades !== null && year.trades !== undefined ? Number(year.trades) : null;
+  return `
+    <div class="watchable-audit-year">
+      <strong class="${gateClass}">${escapeHtml(label)}</strong>
+      <span>${escapeHtml(year && year.start ? year.start : "")}${year && year.end ? `~${escapeHtml(year.end)}` : ""}</span>
+      <span>年化 ${formatNullablePercent(annualizedReturn)} · ${trades === null ? "--" : trades}笔</span>
+      <span>回撤 ${formatNullablePercent(year && year.maxDrawdown)} · 上行σ ${formatNullablePercent(upsideDeviation)}</span>
+      <span>回报/上行σ ${formatUpsideRatio(annualizedReturn, upsideDeviation)} · 余量 ${formatNullablePercent(margin)}</span>
+    </div>
+  `;
+}
+
+function renderWatchableTrainAudit(model) {
+  const years = Array.isArray(model.trainYearBreakdown) ? model.trainYearBreakdown : [];
+  if (years.length === 0) {
+    return '<span class="field-hint">暂无训练逐年数据</span>';
+  }
+  return years.slice(0, 4)
+    .map((year, index) => renderWatchableAuditYear(`训练${index + 1}`, year, {
+      upsideThresholdPercent: model.upsideThresholdPercent,
+    }))
+    .join("");
+}
+
+function renderWatchableValidationAudit(model) {
+  const threshold = Number(model.upsideThresholdPercent) || 30;
+  const year1 = {
+    start: model.testYear1StartDate,
+    end: model.testYear1EndDate,
+    annualizedReturn: model.testYear1AnnualizedReturn,
+    returnRate: model.testYear1ReturnRate,
+    trades: model.testYear1Trades,
+    maxDrawdown: model.testYear1MaxDrawdown,
+    upsideDeviation: model.testYear1UpsideDeviation,
+    requiredAnnualizedReturn: model.testYear1UpsideDeviation === null || model.testYear1UpsideDeviation === undefined ? null : (threshold / 100) * Number(model.testYear1UpsideDeviation),
+  };
+  const year2 = {
+    start: model.testYear2StartDate,
+    end: model.testYear2EndDate,
+    annualizedReturn: model.testYear2AnnualizedReturn,
+    returnRate: model.testYear2ReturnRate,
+    trades: model.testYear2Trades,
+    maxDrawdown: model.testYear2MaxDrawdown,
+    upsideDeviation: model.testYear2UpsideDeviation,
+    requiredAnnualizedReturn: model.testYear2UpsideDeviation === null || model.testYear2UpsideDeviation === undefined ? null : (threshold / 100) * Number(model.testYear2UpsideDeviation),
+  };
+  return renderWatchableAuditYear("验证1", year1, { upsideThresholdPercent: threshold })
+    + renderWatchableAuditYear("验证2", year2, { upsideThresholdPercent: threshold });
+}
+
 function renderWatchableAiModelRow(model) {
   const totalTrades = Number(model.totalTestTrades) || 0;
   const minReturn = Math.min(Number(model.testYear1AnnualizedReturn) || 0, Number(model.testYear2AnnualizedReturn) || 0);
@@ -5643,12 +5715,22 @@ function renderWatchableAiModelRow(model) {
         testYear1Trades: model.testYear1Trades,
         testYear2AnnualizedReturn: model.testYear2AnnualizedReturn,
         testYear2Trades: model.testYear2Trades,
+        testYear1MaxDrawdown: model.testYear1MaxDrawdown,
+        testYear2MaxDrawdown: model.testYear2MaxDrawdown,
+        testYear1UpsideDeviation: model.testYear1UpsideDeviation,
+        testYear2UpsideDeviation: model.testYear2UpsideDeviation,
         isAiCandidate: true,
       })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
-      <td class="up">${formatPercent(model.testYear1AnnualizedReturn)}<br><span class="field-hint">${model.testYear1Trades || 0} 笔</span></td>
-      <td class="up">${formatPercent(model.testYear2AnnualizedReturn)}<br><span class="field-hint">${model.testYear2Trades || 0} 笔</span></td>
-      <td>${totalTrades} 笔<br><span class="field-hint">最差年 ${formatPercent(minReturn)}</span></td>
+      <td class="watchable-audit-cell">
+        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)}</div>
+        ${renderWatchableTrainAudit(model)}
+      </td>
+      <td class="watchable-audit-cell">
+        <div class="field-hint">目标 ${formatPercent(model.targetPercent)} · 上行门槛 ${formatPercent(model.upsideThresholdPercent)} · 回撤容差 ${formatPercent(model.drawdownTolerancePercent)}</div>
+        ${renderWatchableValidationAudit(model)}
+      </td>
+      <td>${totalTrades} 笔<br><span class="field-hint">最差年 ${formatPercent(minReturn)} · 差异 ${formatPercent(Math.max(Number(model.annualizedDiffYear1) || 0, Number(model.annualizedDiffYear2) || 0))}</span></td>
       <td><span class="${statusClass}">${escapeHtml(status)}</span><br><span class="field-hint">${escapeHtml(model.validationReason || "")}</span></td>
       <td>${watchText}<br><span class="field-hint">${escapeHtml(model.watchTargets || "")}</span></td>
       <td>${escapeHtml(formatAdminDate(model.updatedAt))}</td>
@@ -5677,8 +5759,8 @@ function renderAdminWatchableAiModels(payload) {
           <th>股票</th>
           <th>模型</th>
           <th>策略</th>
-          <th>验证1年</th>
-          <th>验证2年</th>
+          <th>训练逐年指标</th>
+          <th>验证逐年指标</th>
           <th>交易样本</th>
           <th>每日验证</th>
           <th>盯盘状态</th>

@@ -165,6 +165,8 @@ function computeWindowStats(states, windowStart, windowEnd) {
   const rowsInWindow = endIndex - baselineIndex;
   if (rowsInWindow <= 0 || !(baselineEquity > 0)) return null;
   const returnPct = ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100;
+  const baselineTrades = baselineIndex >= 0 ? states[baselineIndex].trades.length : 0;
+  const trades = states[endIndex].trades.length - baselineTrades;
 
   let peak = baselineEquity;
   let maxDrawdown = 0;
@@ -175,7 +177,7 @@ function computeWindowStats(states, windowStart, windowEnd) {
     maxDrawdown = Math.max(maxDrawdown, drawdown);
   }
 
-  return { ann: annualizedReturnRate(returnPct, rowsInWindow), maxDrawdown };
+  return { ann: annualizedReturnRate(returnPct, rowsInWindow), returnRate: returnPct, maxDrawdown, trades, rows: rowsInWindow };
 }
 
 // Splits the training window into TRAIN_YEARS sequential 1-year [start, end) slices (anchored on
@@ -358,22 +360,57 @@ async function main() {
         const trainStates = engine.buildBacktestStates(trainRows, best.config);
         const failingTrainYears = [];
         const failingTrainDrawdownYears = [];
+        const trainYearBreakdown = [];
         trainYearWindows.forEach((win, i) => {
           const stats = computeWindowStats(trainStates, win.start, win.end);
-          if (!stats) return;
+          const buyHoldDD = trainYearBuyHoldDD[i];
+          const required = win.upsideDev !== null ? (UPSIDE_THRESHOLD_PERCENT / 100) * win.upsideDev : null;
+          const allowedDD = buyHoldDD !== null ? buyHoldDD * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100) : null;
+          let passesUpside = true;
+          let passesDrawdown = true;
+          if (!stats) {
+            trainYearBreakdown.push({
+              start: win.start,
+              end: win.end,
+              annualizedReturn: null,
+              returnRate: null,
+              trades: null,
+              maxDrawdown: null,
+              buyHoldMaxDrawdown: buyHoldDD,
+              upsideDeviation: win.upsideDev,
+              requiredAnnualizedReturn: required,
+              allowedMaxDrawdown: allowedDD,
+              passesUpsideGate: true,
+              passesDrawdownGate: true,
+            });
+            return;
+          }
           if (win.upsideDev !== null) {
-            const required = (UPSIDE_THRESHOLD_PERCENT / 100) * win.upsideDev;
             if (!(stats.ann >= required)) {
               failingTrainYears.push(`${win.start}~${win.end}: ${stats.ann.toFixed(1)}%<${required.toFixed(1)}%`);
+              passesUpside = false;
             }
           }
-          const buyHoldDD = trainYearBuyHoldDD[i];
           if (buyHoldDD !== null) {
-            const allowedDD = buyHoldDD * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
             if (!(stats.maxDrawdown < allowedDD)) {
               failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%×${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}=${allowedDD.toFixed(1)}%`);
+              passesDrawdown = false;
             }
           }
+          trainYearBreakdown.push({
+            start: win.start,
+            end: win.end,
+            annualizedReturn: stats.ann,
+            returnRate: stats.returnRate,
+            trades: stats.trades,
+            maxDrawdown: stats.maxDrawdown,
+            buyHoldMaxDrawdown: buyHoldDD,
+            upsideDeviation: win.upsideDev,
+            requiredAnnualizedReturn: required,
+            allowedMaxDrawdown: allowedDD,
+            passesUpsideGate: passesUpside,
+            passesDrawdownGate: passesDrawdown,
+          });
         });
         const passesTrainUpsideGate = failingTrainYears.length === 0;
         const passesTrainDrawdownGate = failingTrainDrawdownYears.length === 0;
@@ -392,7 +429,7 @@ async function main() {
         }
 
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        qualifyingAttempts.push({ model, best, trainAnnualized, usedPriorExamples });
+        qualifyingAttempts.push({ model, best, trainAnnualized, trainYearBreakdown, usedPriorExamples });
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
           aiCalls,
@@ -404,7 +441,7 @@ async function main() {
       // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
       // gets checked, not just whichever happened to be found first or scored best on train.
       console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
-      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, usedPriorExamples }, i) => {
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, usedPriorExamples }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
@@ -427,7 +464,7 @@ async function main() {
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
         console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
-        return { model, best, trainAnnualized, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
+        return { model, best, trainAnnualized, trainYearBreakdown, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
       });
 
       const passing = validated.filter((v) => v.reachedTarget);
@@ -501,6 +538,10 @@ async function main() {
               annualizedDiffYear2: Math.abs(entry.year2Annualized - entry.trainAnnualized),
               testYear1UpsideDeviation: testUpsideDev[0],
               testYear2UpsideDeviation: testUpsideDev[1],
+              trainYearBreakdown: entry.trainYearBreakdown,
+              targetPercent: TARGET_PERCENT,
+              upsideThresholdPercent: UPSIDE_THRESHOLD_PERCENT,
+              drawdownTolerancePercent: DRAWDOWN_TOLERANCE_PERCENT,
               trainStartDate,
               trainEndDate,
               reachedTarget: entry.reachedTarget,
