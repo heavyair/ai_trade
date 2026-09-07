@@ -429,6 +429,35 @@ Verification:
   - `买入规则1触发：8日未创新低天数==5（指标：8日未创新低天数=5天） → 调仓到1000股`
   - `卖出规则1触发：6日未创新高天数==3（指标：6日未创新高天数=3天） → 全部清仓`
 
+## Trade Chart Indicator Reference Overlay
+
+User wants the trade-record price curve to make the trigger indicators visually auditable, not
+just show the final reason text.
+
+Local changes:
+
+- `public/app.js`
+  - Added `daysSinceNewHigh` support to the model-trades streak-condition collector.
+  - Added rolling high-point series using the same `computeRollingExtremeIndices(..., excludeCurrent=true)`
+    convention as the engine, so "today" never counts as its own reference.
+  - The model trade price chart now supports:
+    - N-day low reference line for `daysSinceNewLow`;
+    - N-day high reference line for `daysSinceNewHigh`;
+    - per-candle tooltip/click detail showing reference price, reference date, today's high/low,
+      whether the reference was broken, and the current streak count.
+  - Latest rule stats now include both low and high reference date/price when those conditions
+    exist.
+- `public/index.html`
+  - Added legend item for `N日最高价参考线`.
+  - Bumped `app.js` cache string to `20260906-chart-indicators`.
+- `public/styles.css`
+  - Added high-reference-line and legend color styles.
+
+Verification:
+
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
+
 ## Local Validated Search - US Qualified + QQQ
 
 User asked to start a new validated-search scan for the 9 currently qualified US symbols plus QQQ, using the same parameters as the previous scan.

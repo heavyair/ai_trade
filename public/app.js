@@ -132,6 +132,7 @@ const modelTradesSubtitle = document.querySelector("#modelTradesSubtitle");
 const modelTradesDetail = document.querySelector("#modelTradesDetail");
 const modelTradesWaveLegend = document.querySelector("#modelTradesWaveLegend");
 const modelTradesLowReferenceLegend = document.querySelector("#modelTradesLowReferenceLegend");
+const modelTradesHighReferenceLegend = document.querySelector("#modelTradesHighReferenceLegend");
 const modelTradesMaLegend = document.querySelector("#modelTradesMaLegend");
 const modelTradesRuleEditorSection = document.querySelector("#modelTradesRuleEditorSection");
 const modelTradesRuleEditor = document.querySelector("#modelTradesRuleEditor");
@@ -5782,13 +5783,18 @@ function collectWaveConditions(source) {
   return results;
 }
 
-// Every downDayCount/daysSinceNewLow condition across buyBlockRules/sellBlockRules/scoreRules,
+// Every downDayCount/daysSinceNewLow/daysSinceNewHigh condition across
+// buyBlockRules/sellBlockRules/scoreRules,
 // same scanning shape as collectWaveConditions — returns direct condition references so the
 // caller can read each one's own lookbackDays as the default for the preview controls.
 function collectStreakConditions(source) {
   const results = [];
-  const isStreakIndicator = (indicator) => indicator === "downDayCount" || indicator === "daysSinceNewLow";
-  const indicatorLabel = (indicator) => (indicator === "downDayCount" ? "下跌天数" : "未创新低天数");
+  const isStreakIndicator = (indicator) => indicator === "downDayCount" || indicator === "daysSinceNewLow" || indicator === "daysSinceNewHigh";
+  const indicatorLabel = (indicator) => {
+    if (indicator === "downDayCount") return "下跌天数";
+    if (indicator === "daysSinceNewHigh") return "未创新高天数";
+    return "未创新低天数";
+  };
   const scanBlocks = (blocks, labelPrefix) => {
     (Array.isArray(blocks) ? blocks : []).forEach((block, blockIndex) => {
       (block && block.conditions || []).forEach((condition, conditionIndex) => {
@@ -8064,6 +8070,27 @@ function getDaysSinceNewLowSeries(rows, lookbackDays) {
 function getRollingLowPriceSeries(rows, lookbackDays) {
   const previousLowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, true);
   return rows.map((row, index) => (previousLowIndices[index] === null ? null : rows[previousLowIndices[index]].low));
+}
+
+function getRollingLowPointSeries(rows, lookbackDays) {
+  const previousLowIndices = computeRollingExtremeIndices(rows, lookbackDays, "low", (a, b) => a <= b, true);
+  return rows.map((row, index) => {
+    const referenceIndex = previousLowIndices[index];
+    return referenceIndex === null ? null : { date: rows[referenceIndex].date, price: rows[referenceIndex].low };
+  });
+}
+
+function getRollingHighPriceSeries(rows, lookbackDays) {
+  const previousHighIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, true);
+  return rows.map((row, index) => (previousHighIndices[index] === null ? null : rows[previousHighIndices[index]].high));
+}
+
+function getRollingHighPointSeries(rows, lookbackDays) {
+  const previousHighIndices = computeRollingExtremeIndices(rows, lookbackDays, "high", (a, b) => a >= b, true);
+  return rows.map((row, index) => {
+    const referenceIndex = previousHighIndices[index];
+    return referenceIndex === null ? null : { date: rows[referenceIndex].date, price: rows[referenceIndex].high };
+  });
 }
 
 function getUpDayCountSeries(rows, lookbackDays) {
@@ -13976,12 +14003,27 @@ function drawModelTradesChartWithOverlays(config, rows, trades, finalState, opti
     : [];
   const downDayEntry = streakConditions.find((entry) => entry.indicator === "downDayCount");
   const lowEntry = streakConditions.find((entry) => entry.indicator === "daysSinceNewLow");
+  const highEntry = streakConditions.find((entry) => entry.indicator === "daysSinceNewHigh");
   let lowReferenceSeries = [];
+  let lowReferencePoints = [];
+  let lowStreakSeries = [];
   if (lowEntry) {
     const lookback = Number(lowEntry.condition.lookbackDays) > 0 ? Number(lowEntry.condition.lookbackDays) : 15;
-    lowReferenceSeries = getRollingLowPriceSeries(rows, lookback);
+    lowReferencePoints = getRollingLowPointSeries(rows, lookback);
+    lowReferenceSeries = lowReferencePoints.map((point) => (point ? point.price : null));
+    lowStreakSeries = getDaysSinceNewLowSeries(rows, lookback);
   }
   if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.toggle("hidden", !lowEntry);
+  let highReferenceSeries = [];
+  let highReferencePoints = [];
+  let highStreakSeries = [];
+  if (highEntry) {
+    const lookback = Number(highEntry.condition.lookbackDays) > 0 ? Number(highEntry.condition.lookbackDays) : 15;
+    highReferencePoints = getRollingHighPointSeries(rows, lookback);
+    highReferenceSeries = highReferencePoints.map((point) => (point ? point.price : null));
+    highStreakSeries = getDaysSinceNewHighSeries(rows, lookback);
+  }
+  if (modelTradesHighReferenceLegend) modelTradesHighReferenceLegend.classList.toggle("hidden", !highEntry);
 
   const maPeriods = collectMaPeriods(config);
   const maLines = maPeriods.map((days) => ({ days, values: getMovingAverageSeries(rows, days) }));
@@ -13995,7 +14037,34 @@ function drawModelTradesChartWithOverlays(config, rows, trades, finalState, opti
       .join(" ");
   }
 
-  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, { wavePoints, lowReferenceSeries, maLines, zoom: modelTradesChartZoom });
+  const indicatorStatusRows = rows.map((row, index) => {
+    const parts = [];
+    if (lowEntry) {
+      const lookback = Number(lowEntry.condition.lookbackDays) > 0 ? Number(lowEntry.condition.lookbackDays) : 15;
+      const referencePoint = lowReferencePoints[index];
+      const reference = referencePoint ? referencePoint.price : null;
+      const streak = lowStreakSeries[index];
+      const broke = Number.isFinite(reference) ? row.low < reference : null;
+      parts.push(`${lookback}日低点参考 ${Number.isFinite(reference) ? `${formatPrice(reference)}(${referencePoint.date})` : "--"}；今日低 ${formatPrice(row.low)}；${broke === null ? "样本不足" : (broke ? "已跌破/创新低" : `未跌破，已${streak}天未创新低`)}`);
+    }
+    if (highEntry) {
+      const lookback = Number(highEntry.condition.lookbackDays) > 0 ? Number(highEntry.condition.lookbackDays) : 15;
+      const referencePoint = highReferencePoints[index];
+      const reference = referencePoint ? referencePoint.price : null;
+      const streak = highStreakSeries[index];
+      const broke = Number.isFinite(reference) ? row.high > reference : null;
+      parts.push(`${lookback}日高点参考 ${Number.isFinite(reference) ? `${formatPrice(reference)}(${referencePoint.date})` : "--"}；今日高 ${formatPrice(row.high)}；${broke === null ? "样本不足" : (broke ? "已突破/创新高" : `未突破，已${streak}天未创新高`)}`);
+    }
+    return parts.join(" ｜ ");
+  });
+  drawModelOrderPriceChartInto(modelOrderPriceChart, rows, trades, {
+    wavePoints,
+    lowReferenceSeries,
+    highReferenceSeries,
+    indicatorStatusRows,
+    maLines,
+    zoom: modelTradesChartZoom,
+  });
 
   if (modelTradesRuleStats) {
     const parts = [];
@@ -14006,11 +14075,22 @@ function drawModelTradesChartWithOverlays(config, rows, trades, finalState, opti
     }
     if (lowEntry) {
       const lookback = Number(lowEntry.condition.lookbackDays) > 0 ? Number(lowEntry.condition.lookbackDays) : 15;
-      const latestLow = getRollingLowPriceSeries(rows, lookback).slice(-1)[0];
-      const latestStreak = getDaysSinceNewLowSeries(rows, lookback).slice(-1)[0];
+      const latestPoint = lowReferencePoints.slice(-1)[0];
+      const latestLow = latestPoint ? latestPoint.price : null;
+      const latestStreak = lowStreakSeries.slice(-1)[0];
       parts.push(
-        `${lookback}日内最低价：${latestLow === null || latestLow === undefined ? "--" : formatPrice(latestLow)} · ` +
+        `${lookback}日内最低价：${latestLow === null || latestLow === undefined ? "--" : `${formatPrice(latestLow)}(${latestPoint.date})`} · ` +
         `已连续${latestStreak === null || latestStreak === undefined ? "--" : `${latestStreak}天`}未创新低`
+      );
+    }
+    if (highEntry) {
+      const lookback = Number(highEntry.condition.lookbackDays) > 0 ? Number(highEntry.condition.lookbackDays) : 15;
+      const latestPoint = highReferencePoints.slice(-1)[0];
+      const latestHigh = latestPoint ? latestPoint.price : null;
+      const latestStreak = highStreakSeries.slice(-1)[0];
+      parts.push(
+        `${lookback}日内最高价：${latestHigh === null || latestHigh === undefined ? "--" : `${formatPrice(latestHigh)}(${latestPoint.date})`} · ` +
+        `已连续${latestStreak === null || latestStreak === undefined ? "--" : `${latestStreak}天`}未创新高`
       );
     }
     const buyCount = trades.filter((trade) => trade.side === "buy").length;
@@ -14058,6 +14138,7 @@ function resetModelTradesCharts() {
   if (modelTradesRuleStats) modelTradesRuleStats.textContent = "";
   if (modelTradesWaveLegend) modelTradesWaveLegend.classList.add("hidden");
   if (modelTradesLowReferenceLegend) modelTradesLowReferenceLegend.classList.add("hidden");
+  if (modelTradesHighReferenceLegend) modelTradesHighReferenceLegend.classList.add("hidden");
   if (modelTradesMaLegend) modelTradesMaLegend.classList.add("hidden");
   drawModelOrderPriceChartInto(modelOrderPriceChart, [], [], {});
 }
@@ -14294,11 +14375,16 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
   const wavePoints = Array.isArray(options.wavePoints) ? options.wavePoints : [];
   const visibleWavePoints = wavePoints.filter((point) => Number.isInteger(point.rowIndex) && point.rowIndex <= upToIndex);
   const lowReferenceSeries = Array.isArray(options.lowReferenceSeries) ? options.lowReferenceSeries : [];
+  const highReferenceSeries = Array.isArray(options.highReferenceSeries) ? options.highReferenceSeries : [];
+  const indicatorStatusRows = Array.isArray(options.indicatorStatusRows) ? options.indicatorStatusRows : [];
   const maLines = Array.isArray(options.maLines) ? options.maLines : [];
   const priceValues = rows.flatMap((row) => [row.high, row.low, row.close]);
   trades.forEach((trade) => priceValues.push(trade.price));
   wavePoints.forEach((point) => priceValues.push(point.price));
   lowReferenceSeries.forEach((value) => {
+    if (Number.isFinite(value)) priceValues.push(value);
+  });
+  highReferenceSeries.forEach((value) => {
     if (Number.isFinite(value)) priceValues.push(value);
   });
   maLines.forEach((line) => {
@@ -14334,9 +14420,10 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
       const closeY = scaleY(row.close);
       const bodyTop = Math.min(openY, closeY);
       const bodyHeight = Math.max(1, Math.abs(closeY - openY));
-      const label = `${row.date} 开${formatPrice(row.open)} 高${formatPrice(row.high)} 低${formatPrice(row.low)} 收${formatPrice(row.close)}`;
+      const indicatorDetail = indicatorStatusRows[index] || "";
+      const label = `${row.date} 开${formatPrice(row.open)} 高${formatPrice(row.high)} 低${formatPrice(row.low)} 收${formatPrice(row.close)}${indicatorDetail ? `；${indicatorDetail}` : ""}`;
       return `
-        <g class="candle-group" data-role="candle" data-date="${row.date}" data-x="${x.toFixed(2)}" data-high-y="${highY.toFixed(2)}">
+        <g class="candle-group" data-role="candle" data-date="${row.date}" data-indicator-detail="${escapeHtml(indicatorDetail)}" data-x="${x.toFixed(2)}" data-high-y="${highY.toFixed(2)}">
           <rect class="candle-hit-area" x="${(x - candleHitWidth / 2).toFixed(2)}" y="${pad.top}" width="${candleHitWidth.toFixed(2)}" height="${innerHeight}"></rect>
           <line class="candle-wick ${colorClass}" x1="${x.toFixed(2)}" x2="${x.toFixed(2)}" y1="${highY.toFixed(2)}" y2="${lowY.toFixed(2)}"></line>
           <rect class="candle-body ${colorClass}" x="${(x - candleBodyWidth / 2).toFixed(2)}" y="${bodyTop.toFixed(2)}" width="${candleBodyWidth.toFixed(2)}" height="${bodyHeight.toFixed(2)}"></rect>
@@ -14409,6 +14496,18 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     lowReferenceDrawing = true;
   }
 
+  let highReferencePath = "";
+  let highReferenceDrawing = false;
+  for (let index = 0; index <= upToIndex; index += 1) {
+    const value = highReferenceSeries[index];
+    if (!Number.isFinite(value)) {
+      highReferenceDrawing = false;
+      continue;
+    }
+    highReferencePath += `${highReferenceDrawing ? "L" : "M"}${xForIndex(index).toFixed(2)},${scaleY(value).toFixed(2)} `;
+    highReferenceDrawing = true;
+  }
+
   // Same segmented-path approach as lowReferencePath just above — an MA series is null for its
   // first (period-1) rows before enough closes have accumulated, so each gap starts a fresh "M".
   // One color per distinct period from MA_LINE_COLORS, cycling if a model somehow references
@@ -14450,6 +14549,7 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
     ${maLineNodes}
     ${waveLinePath ? `<path class="wave-line" d="${waveLinePath}"></path>` : ""}
     ${lowReferencePath ? `<path class="low-reference-line" d="${lowReferencePath.trim()}"></path>` : ""}
+    ${highReferencePath ? `<path class="high-reference-line" d="${highReferencePath.trim()}"></path>` : ""}
     ${waveMarkerNodes}
     ${tradeNodes}
     ${dateTickIndexes
@@ -14486,7 +14586,8 @@ function drawModelOrderPriceChartInto(target, rows, trades, options = {}) {
       if (label) {
         label.setAttribute("x", x.toFixed(2));
         label.setAttribute("y", Math.max(pad.top + 4, highY - 16).toFixed(2));
-        label.textContent = `选中日期：${group.dataset.date}`;
+        const detail = group.dataset.indicatorDetail || "";
+        label.textContent = detail ? `${group.dataset.date}：${detail}` : `选中日期：${group.dataset.date}`;
       }
     });
   }

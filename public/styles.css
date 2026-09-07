@@ -656,6 +656,10 @@ button:disabled {
   background: #d4841f;
 }
 
+.model-trades-high-reference-dot {
+  background: #7c3aed;
+}
+
 .confirm-dot {
   background: #f0a202;
 }
@@ -3204,6 +3208,13 @@ textarea:focus {
   stroke: #d4841f;
   stroke-width: 1.5;
   stroke-dasharray: 3 3;
+}
+
+.high-reference-line {
+  fill: none;
+  stroke: #7c3aed;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
 }
 
 .point-label {
