@@ -2619,6 +2619,40 @@ textarea:focus {
   -webkit-overflow-scrolling: touch;
 }
 
+.optimization-dialog .param-dialog-body {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: auto;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
+}
+
+.optimization-dialog .dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin: -18px -18px 0;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.optimization-dialog .optimization-param-ranges {
+  max-height: min(54dvh, 620px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.optimization-dialog .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin: 0 -18px calc(-18px - env(safe-area-inset-bottom));
+  padding: 12px 18px calc(18px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
 .watch-alerts-dialog .admin-scan-details {
   scroll-margin-top: 12px;
 }
@@ -3591,6 +3625,10 @@ tbody tr:last-child td {
 
   .model-selector-dialog .param-dialog-body {
     grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .optimization-dialog .optimization-param-ranges {
+    max-height: 44dvh;
   }
 
   .preset-param-button {

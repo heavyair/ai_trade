@@ -791,3 +791,14 @@ Optimization prepare-state fix:
   - This prevents the optimization UI from showing a `0/0` progress target or appearing to run before parameter inputs are available.
 - `public/index.html`
   - Bumped the static asset query string to `20260907-optimization-prepare`.
+
+Optimization mobile scroll/accessibility fix:
+
+- `public/index.html`
+  - Added `optimization-dialog` class to `#optimizationDialog`.
+  - Bumped static asset query string to `20260907-optimization-scroll`.
+- `public/styles.css`
+  - Added optimization-dialog-specific scrolling.
+  - The dialog body scrolls on mobile.
+  - The header and bottom action bar are sticky.
+  - The parameter range list has its own max-height and scroll, so the "运行优化" button remains reachable even with many parameter rows.
