@@ -729,3 +729,26 @@ Verification:
 
 - `node --check public/app.js` passed.
 - `git diff --check` passed.
+
+## Model Action Optimization Range
+
+User clarified that "优化参数" should automatically use the current model plus the same historical train/validation data that produced the model, not an arbitrary latest rolling window.
+
+Local changes:
+
+- `public/app.js`
+  - Added `getModelContextOptimizationRange(context)`.
+  - The model action dialog's "优化参数" now sets the simulation range from the model's original validation snapshot:
+    - start: `trainStartDate`
+    - end: `testYear2EndDate`, falling back to `testYear1EndDate`/`trainEndDate` if needed.
+  - If an old row has no snapshot dates, it falls back to the previous recent-5-year range.
+  - The same range helper is now used by model-action "重新加载历史模拟" and the model-list "验证收益" flow.
+  - Model-list name links now carry the nested validation/daily-validation context so the dialog can resolve the original dates.
+- `public/index.html`
+  - Bumped the static asset query string to `20260907-model-action-optimize-range`.
+
+Behavior to preserve:
+
+- Optimizing parameters still uses the currently selected model config as the source.
+- Saving an optimized parameter set still creates a new model; it does not overwrite the original preset.
+- Existing watch alerts keep their frozen config and are not automatically changed by parameter optimization.

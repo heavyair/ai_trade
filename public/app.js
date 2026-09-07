@@ -1884,6 +1884,12 @@ function renderAdminScanList() {
         <td>${formatModelNameLink({
           id: record.presetId, numericId: record.presetNumericId, label: record.presetLabel || "",
           config: record.bestConfig, strategyType: record.strategyType, symbol: record.symbol,
+          trainStartDate: record.trainStartDate,
+          trainEndDate: record.trainEndDate,
+          testYear1StartDate: record.testYear1StartDate,
+          testYear1EndDate: record.testYear1EndDate,
+          testYear2StartDate: record.testYear2StartDate,
+          testYear2EndDate: record.testYear2EndDate,
           testYear1AnnualizedReturn: record.testYear1AnnualizedReturn,
           testYear1Trades: record.testYear1Trades,
           testYear2AnnualizedReturn: record.testYear2AnnualizedReturn,
@@ -3136,18 +3142,47 @@ function ensureOptimizablePresetFromContext(context) {
   return key;
 }
 
+function getModelContextOptimizationRange(context) {
+  const validation = context && context.validation && typeof context.validation === "object" ? context.validation : {};
+  const dailyValidation = context && context.dailyValidation && typeof context.dailyValidation === "object" ? context.dailyValidation : {};
+  const start = context && (
+    context.trainStartDate
+    || validation.trainStartDate
+    || context.testStartDate
+    || context.validationStartDate
+    || dailyValidation.validationStartDate
+  );
+  const end = context && (
+    context.testYear2EndDate
+    || validation.testYear2EndDate
+    || context.testYear1EndDate
+    || validation.testYear1EndDate
+    || context.trainEndDate
+    || validation.trainEndDate
+    || context.validationEndDate
+    || dailyValidation.originalValidationEndDate
+  );
+  if (start && end && String(start) <= String(end)) {
+    return { start, end, label: `${start} ~ ${end}` };
+  }
+  const fallbackStart = formatDate(shiftYears(new Date(), -5));
+  const fallbackEnd = todayText();
+  return { start: fallbackStart, end: fallbackEnd, label: `${fallbackStart} ~ ${fallbackEnd}` };
+}
+
 async function openModelActionOptimization(context) {
   if (!context || !context.symbol) return;
   if (!requireSignedInForSave()) return;
   closeDialog(modelActionDialog);
   const presetName = ensureOptimizablePresetFromContext(context);
   if (!presetName) return;
+  const range = getModelContextOptimizationRange(context);
   setWizardPage("simulation");
   if (codeInput) codeInput.value = context.symbol;
-  if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
-  if (endInput) endInput.value = todayText();
+  if (startInput) startInput.value = range.start;
+  if (endInput) endInput.value = range.end;
   renderModelCompareOptions();
-  setStatus(`正在加载 ${context.symbol} 历史行情，准备优化参数...`);
+  setStatus(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   try {
     await loadData();
     openBlockRuleOptimizationRangeEditor(presetName);
@@ -3180,8 +3215,9 @@ if (modelActionReloadSimButton) {
     }
     setWizardPage("simulation");
     if (codeInput) codeInput.value = context.symbol;
-    if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
-    if (endInput) endInput.value = todayText();
+    const range = getModelContextOptimizationRange(context);
+    if (startInput) startInput.value = range.start;
+    if (endInput) endInput.value = range.end;
     renderModelCompareOptions();
     document.querySelectorAll(".model-compare-enabled").forEach((input) => {
       input.checked = input.value === targetName;
@@ -3628,6 +3664,12 @@ function renderAiGeneratedPresetRow(p, options = {}) {
             id: p.id, numericId: p.numericId, label: p.label || "",
             config: p.bestConfig, strategyType: p.strategyType, symbol: p.targetSymbol,
             reason: p.reason,
+            trainStartDate: p.trainStartDate,
+            trainEndDate: p.trainEndDate,
+            testYear1StartDate: p.testYear1StartDate,
+            testYear1EndDate: p.testYear1EndDate,
+            testYear2StartDate: p.testYear2StartDate,
+            testYear2EndDate: p.testYear2EndDate,
             testYear1AnnualizedReturn: p.testYear1AnnualizedReturn,
             testYear1Trades: p.testYear1Trades,
             testYear2AnnualizedReturn: p.testYear2AnnualizedReturn,
@@ -5585,6 +5627,12 @@ function renderWatchableAiModelRow(model) {
         strategyType: model.strategyType,
         symbol: model.targetSymbol,
         reason: model.reason,
+        trainStartDate: model.trainStartDate,
+        trainEndDate: model.trainEndDate,
+        testYear1StartDate: model.testYear1StartDate,
+        testYear1EndDate: model.testYear1EndDate,
+        testYear2StartDate: model.testYear2StartDate,
+        testYear2EndDate: model.testYear2EndDate,
         testYear1AnnualizedReturn: model.testYear1AnnualizedReturn,
         testYear1Trades: model.testYear1Trades,
         testYear2AnnualizedReturn: model.testYear2AnnualizedReturn,
@@ -11017,6 +11065,8 @@ function renderModelListSection(title, models, role) {
                 id: model.id, numericId: model.numericId, label: model.label,
                 config: localPreset, strategyType: model.strategyType,
                 symbol, isOwner: role === "own", name: model.name,
+                validation: model.validation,
+                dailyValidation: model.dailyValidation,
               })
             : escapeHtml(model.label || "模型");
           const ownerPart = role === "followed" && model.ownerEmail
@@ -11128,8 +11178,9 @@ async function runModelListSimulation(model, role) {
   }
   setWizardPage("simulation");
   if (codeInput) codeInput.value = symbol;
-  if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
-  if (endInput) endInput.value = todayText();
+  const range = getModelContextOptimizationRange(model);
+  if (startInput) startInput.value = range.start;
+  if (endInput) endInput.value = range.end;
   renderModelCompareOptions();
   document.querySelectorAll(".model-compare-enabled").forEach((input) => {
     input.checked = input.value === presetName;
@@ -11160,6 +11211,8 @@ function openModelListRevalidate(model, role) {
     isOwner: role === "own",
     isAiCandidate: false,
     ownerEmail: model.ownerEmail || "",
+    validation: model.validation,
+    dailyValidation: model.dailyValidation,
   };
   openRevalidateDialog();
 }
