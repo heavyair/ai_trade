@@ -429,7 +429,10 @@ async function main() {
         }
 
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
-        qualifyingAttempts.push({ model, best, trainAnnualized, trainYearBreakdown, usedPriorExamples });
+        qualifyingAttempts.push({
+          model, best, trainAnnualized, trainYearBreakdown,
+          passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples,
+        });
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
           aiCalls,
@@ -441,7 +444,7 @@ async function main() {
       // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
       // gets checked, not just whichever happened to be found first or scored best on train.
       console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
-      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, usedPriorExamples }, i) => {
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
@@ -460,11 +463,17 @@ async function main() {
         // is treated as passing.
         const passesDrawdownYear1 = testBuyHoldDD[0] === null || scoredYear1.maxDrawdown < testBuyHoldDD[0] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
         const passesDrawdownYear2 = testBuyHoldDD[1] === null || scoredYear2.maxDrawdown < testBuyHoldDD[1] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
-        const reachedTarget = year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
+        const reachedTarget = passesTrainUpsideGate && passesTrainDrawdownGate
+          && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
         console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
-        return { model, best, trainAnnualized, trainYearBreakdown, year1Annualized, year2Annualized, worstTestAnnualized, scoredYear1, scoredYear2, reachedTarget, usedPriorExamples };
+        return {
+          model, best, trainAnnualized, trainYearBreakdown,
+          passesTrainUpsideGate, passesTrainDrawdownGate,
+          year1Annualized, year2Annualized, worstTestAnnualized,
+          scoredYear1, scoredYear2, reachedTarget, usedPriorExamples,
+        };
       });
 
       const passing = validated.filter((v) => v.reachedTarget);
