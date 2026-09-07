@@ -3182,6 +3182,7 @@ async function openModelActionOptimization(context) {
   if (startInput) startInput.value = range.start;
   if (endInput) endInput.value = range.end;
   renderModelCompareOptions();
+  selectOnlyComparisonPreset(presetName);
   setStatus(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   try {
     await loadData();
@@ -3219,9 +3220,7 @@ if (modelActionReloadSimButton) {
     if (startInput) startInput.value = range.start;
     if (endInput) endInput.value = range.end;
     renderModelCompareOptions();
-    document.querySelectorAll(".model-compare-enabled").forEach((input) => {
-      input.checked = input.value === targetName;
-    });
+    selectOnlyComparisonPreset(targetName);
     await loadData();
   });
 }
@@ -7503,6 +7502,13 @@ function renderModelCompareOptions() {
   renderSimulationOverview();
 }
 
+function selectOnlyComparisonPreset(presetName) {
+  document.querySelectorAll(".model-compare-enabled").forEach((input) => {
+    input.checked = input.value === presetName;
+  });
+  renderSimulationOverview();
+}
+
 function openModelSelectorDialog() {
   renderModelCompareOptions();
   showDialog(modelSelectorDialog);
@@ -11182,9 +11188,7 @@ async function runModelListSimulation(model, role) {
   if (startInput) startInput.value = range.start;
   if (endInput) endInput.value = range.end;
   renderModelCompareOptions();
-  document.querySelectorAll(".model-compare-enabled").forEach((input) => {
-    input.checked = input.value === presetName;
-  });
+  selectOnlyComparisonPreset(presetName);
   await loadData();
 }
 

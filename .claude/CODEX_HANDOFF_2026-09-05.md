@@ -752,3 +752,12 @@ Behavior to preserve:
 - Optimizing parameters still uses the currently selected model config as the source.
 - Saving an optimized parameter set still creates a new model; it does not overwrite the original preset.
 - Existing watch alerts keep their frozen config and are not automatically changed by parameter optimization.
+
+Follow-up fix:
+
+- `public/app.js`
+  - Added `selectOnlyComparisonPreset(presetName)`.
+  - "优化参数" now auto-selects the current model before `loadData()`, so the history loader no longer falls through to the generic "选择模型" dialog.
+  - The same helper replaces duplicated checkbox-selection code in model-action reload simulation and model-list simulation.
+- `public/index.html`
+  - Bumped the static asset query string to `20260907-model-action-optimize-autoselect`.
