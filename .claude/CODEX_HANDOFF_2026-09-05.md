@@ -320,6 +320,122 @@ Verification:
 - `node --check public/app.js` passed.
 - `git diff --check` passed.
 
+## Fixed-Start Daily Model Validation
+
+User accepted the recommendation to stop using rolling windows as the decisive model-validity
+test, and asked to deploy the improvement.
+
+Implementation order:
+
+1. Added the persistent validation state table helper.
+2. Added the daily validation script.
+3. Wired server startup and admin scheduled-job registry.
+4. Exposed daily validation state in watch/model-list API responses.
+5. Updated the 15-minute watch-alert script so it no longer auto-disables watches from a rolling
+   252-day validity check.
+6. Added frontend model-list display for cumulative/new validation state.
+
+Local changes:
+
+- `scripts/shared/model-validation-state.js`
+  - New `model_validation_states` table.
+  - One row per subject: `ai_scan`, `owned_preset`, or `watch`.
+  - Stores immutable original validation dates plus latest cumulative and incremental metrics.
+- `scripts/universe/run-model-validation-daily.js`
+  - New cron/manual script.
+  - Targets:
+    - all AI qualified models from `optimization_scan_results` where `source='validated-search'`
+      and `reached_target=true`;
+    - all owned qualified presets with `preset_validation_snapshots.reached_target=true`;
+    - all active non-index symbol watches.
+  - Uses fixed-start cumulative validation from the original validation start date through the
+    latest trade date.
+  - Separately records incremental validation for rows after the original validation end date.
+  - Does not call AI, search new parameters, edit model configs, delete models, or stop watches.
+- `server.js`
+  - Ensures `model_validation_states` exists at startup.
+  - Adds admin scheduled job `modelValidationDaily` with display schedule `每天 18:30`.
+  - `/api/model-list` now returns `dailyValidation` for owned models, followed watches, and watch
+    rows when available.
+  - `/api/watch-alerts` now also returns each watch's daily validation state.
+- `scripts/universe/run-watch-alerts.js`
+  - Loads `model_validation_states` at startup.
+  - Joins daily validation state for active symbol watches.
+  - Keeps signal detection and account simulation unchanged.
+  - No longer runs the old trailing-window validity test as a decisive check.
+  - No longer auto-stops a watch simply because validity is invalid; it only mirrors the daily
+    status into compatibility fields.
+- `public/app.js`
+  - Adds model-list UI for `dailyValidation`: status, latest trade date, cumulative days,
+    cumulative annualized return, cumulative drawdown/trades, incremental days/annualized/trades,
+    and reason.
+  - Also shows each watch row's own daily validation state.
+- `public/styles.css`
+  - Adds responsive wrapping for the daily validation reason.
+- `public/index.html`
+  - Bumps `app.js` cache string to `20260906-fixed-validation`.
+
+Status logic:
+
+- `valid`: cumulative fixed-start validation still clears the annualized target, or new evidence
+  is still too small to overturn the original validation.
+- `watching`: cumulative annualized has slipped below target, but the newly-added period does not
+  yet have enough days/trades to decide.
+- `warning`: enough new evidence exists and either cumulative return, incremental return, or
+  drawdown is weak, but not enough combined evidence to mark invalid.
+- `invalid`: enough new evidence exists and cumulative annualized is below target plus either the
+  incremental return is materially weak or drawdown broke the original drawdown reference.
+- No buy-and-hold comparison is used in this daily validity decision.
+
+Verification:
+
+- `node --check scripts/universe/run-model-validation-daily.js` passed.
+- `node --check scripts/universe/run-watch-alerts.js` passed.
+- `node --check server.js` passed.
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
+- Local dry-run could not connect because local Postgres on `localhost:15432` refused the
+  connection; run the database dry-run inside the production container after deploy.
+
+## Local Validated Search - US Qualified + QQQ
+
+User asked to start a new validated-search scan for the 9 currently qualified US symbols plus QQQ, using the same parameters as the previous scan.
+
+Targets:
+
+- `NET,TSLA,CRWD,ARM,AVGO,TSM,ASX,GOOG,AMD,QQQ`
+
+Parameters copied from the previous `scripts/universe/validatedSearch.log` run:
+
+- `targetPercent=50`
+- `upsideThresholdPercent=30`
+- `drawdownTolerancePercent=5`
+- `attemptsPerSymbol=60`
+- `maxAttempts=2000`
+- `candidates=10000` (user changed this from the previous run's `400`)
+- `pointCount=5`
+- `trainYears=4`
+- `testYears=2`
+- `--save`
+
+Operational notes:
+
+- First attempted process did not load `.env.local`, so it had no `OPENAI_API_KEY`/`DEEPSEEK_API_KEY`, produced `summary: []`, and exited. No useful records were saved.
+- A second process started with `candidates=400` as PID `34356`; user then requested `candidates=10000`. PID `34356` was stopped while still on `NET`.
+- Restarted correctly with `node --env-file=.env.local` and `--candidates=10000`.
+- Running process:
+  - PID `40420`
+  - stdout log `C:\Users\victor\AppData\Local\Temp\ai_trade_validatedSearch_us9_qqq_candidates10000_20260906_022140.log`
+  - stderr log `C:\Users\victor\AppData\Local\Temp\ai_trade_validatedSearch_us9_qqq_candidates10000_20260906_022140.err`
+  - started local time `2026-09-06 02:21:40 -04:00`
+- Initial log confirmed `candidates=10000`, currently on `NET`, and no API-key error.
+- Completion check:
+  - PID `40420` is no longer running.
+  - `data/validated-search-progress.json` reports `status=done`, `10/10` symbols processed, `600` AI calls, `15` saved, `0` data-skipped, `12` AI errors.
+  - Server DB (`172.105.9.107`, container `ai_trade_postgres`) confirms `15` rows saved after `2026-09-06 02:21:40-04`, `10` reached target, covering `9` distinct symbols.
+  - Target-met saved rows: `NET` 1, `CRWD` 7, `ARM` 1, `AMD` 1.
+  - Best-so-far below-target rows: `TSLA`, `AVGO`, `ASX`, `GOOG`, `QQQ`.
+
 Operational notes:
 
 - No local scan process was stopped or restarted for this update.

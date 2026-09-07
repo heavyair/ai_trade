@@ -899,6 +899,19 @@ button:disabled {
   font-weight: 700;
 }
 
+.model-list-daily-validation small {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.model-list-status-warn {
+  color: #8a5a00;
+}
+
 .model-list-watch-list {
   display: grid;
   gap: 8px;

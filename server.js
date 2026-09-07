@@ -14,6 +14,7 @@ const { loadRowsForSymbol } = require("./scripts/shared/load-rows.js");
 const { splitTrainTestWindows, shiftYears, toIsoDate: shiftedDateToIso } = require("./scripts/shared/train-test-window.js");
 const { annualizedReturnRate } = require("./scripts/shared/annualize.js");
 const { annualizedUpsideDeviation } = require("./scripts/shared/volatility.js");
+const { ensureModelValidationStateTable } = require("./scripts/shared/model-validation-state.js");
 const engine = require("./scripts/universe/engine.js");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -503,12 +504,10 @@ async function initializeDatabase() {
     FROM strategy_presets sp
     WHERE sp.id = wa.preset_id AND wa.frozen_config IS NULL;
 
-    -- Ongoing validity: run-watch-alerts.js re-checks the frozen strategy against a trailing
-    -- window of freshly-arrived data every cycle. is_invalid flips on once it fails the current
-    -- upside/drawdown gates; last_invalid_warning_date dedups the recurring warning email to
-    -- once/day (frequency_minutes can be as low as 30, so without a dedup this would spam) for
-    -- as long as a position is still open. invalid_since is purely informational
-    -- (first-detected time).
+    -- Ongoing validity state is now written by scripts/universe/run-model-validation-daily.js
+    -- into model_validation_states using a fixed-start cumulative validation window. These older
+    -- columns remain for compatibility with existing UI rows and historical data; watch-alert
+    -- checking no longer uses a rolling 252-day window to auto-disable a watch.
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS is_invalid BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_reason TEXT NOT NULL DEFAULT '';
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS invalid_since TIMESTAMPTZ;
@@ -537,6 +536,7 @@ async function initializeDatabase() {
   `);
 
   await ensureIndexCatalogTable(dbPool);
+  await ensureModelValidationStateTable(dbPool);
 }
 
 function sendJson(res, statusCode, payload) {
@@ -2488,6 +2488,13 @@ const SCHEDULED_JOB_REGISTRY = {
     scriptPath: path.join(__dirname, "scripts", "universe", "run-watch-alerts.js"),
     scriptArgs: [],
   },
+  modelValidationDaily: {
+    label: "模型每日新增验证",
+    scheduleText: "生产环境 crontab：每天 18:30",
+    execPath: process.execPath,
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-model-validation-daily.js"),
+    scriptArgs: [],
+  },
   refreshIndexCatalog: {
     label: "指数成分股刷新",
     scheduleText: "生产环境 crontab：每天 04:30",
@@ -3318,14 +3325,12 @@ function mapWatchAlertRow(row, { role = "owner", inviteToken = null, followers =
     accountRowsScored: row.account_rows_scored || 0,
     accountTrades: isFollowerView ? rawTrades.map((trade) => ({ ...trade, reason: "" })) : rawTrades,
     accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
-    // Whether the FROZEN strategy (see the schema comment on frozen_config) still clears the
-    // current trailing-year upside/drawdown gates — set by run-watch-alerts.js, not recomputed
-    // here. See that script's header comment for exactly what "invalid" means.
-    // (invalid_reason is aggregate performance metadata, not a specific rule threshold, so it's
-    // shown to followers same as owners.)
+    // Compatibility fields plus the newer fixed-start daily validation state. The newer state is
+    // informational and does not automatically stop an active watch.
     isInvalid: Boolean(row.is_invalid),
     invalidReason: row.invalid_reason || "",
     invalidSince: row.invalid_since ? new Date(row.invalid_since).toISOString() : "",
+    dailyValidation: mapModelValidationState(row, row.watch_validation_status ? "watch_validation" : "model_validation"),
     inviteToken: role === "owner" ? inviteToken : null,
     followers: role === "owner" && Array.isArray(followers) ? followers : null,
   };
@@ -3363,9 +3368,30 @@ async function handleWatchAlertsApi(req, res) {
       const ownerUserId = userIdForEmail(user.email);
       const ownedResult = await dbQuery(`
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
-          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+          mvs.status AS watch_validation_status, mvs.status_reason AS watch_validation_status_reason,
+          mvs.validation_start_date AS watch_validation_validation_start_date,
+          mvs.original_validation_end_date AS watch_validation_original_validation_end_date,
+          mvs.latest_trade_date AS watch_validation_latest_trade_date,
+          mvs.cumulative_days AS watch_validation_cumulative_days,
+          mvs.cumulative_return_rate AS watch_validation_cumulative_return_rate,
+          mvs.cumulative_annualized_return AS watch_validation_cumulative_annualized_return,
+          mvs.cumulative_max_drawdown AS watch_validation_cumulative_max_drawdown,
+          mvs.cumulative_trades AS watch_validation_cumulative_trades,
+          mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
+          mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
+          mvs.incremental_start_date AS watch_validation_incremental_start_date,
+          mvs.incremental_days AS watch_validation_incremental_days,
+          mvs.incremental_return_rate AS watch_validation_incremental_return_rate,
+          mvs.incremental_annualized_return AS watch_validation_incremental_annualized_return,
+          mvs.incremental_max_drawdown AS watch_validation_incremental_max_drawdown,
+          mvs.incremental_trades AS watch_validation_incremental_trades,
+          mvs.target_percent AS watch_validation_target_percent,
+          mvs.last_checked_at AS watch_validation_last_checked_at,
+          mvs.last_error AS watch_validation_last_error
         FROM watch_alerts
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
         WHERE watch_alerts.owner_user_id = $1
         ORDER BY watch_alerts.created_at DESC
       `, [ownerUserId]);
@@ -3397,10 +3423,31 @@ async function handleWatchAlertsApi(req, res) {
 
       const followedResult = await dbQuery(`
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
-          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+          mvs.status AS watch_validation_status, mvs.status_reason AS watch_validation_status_reason,
+          mvs.validation_start_date AS watch_validation_validation_start_date,
+          mvs.original_validation_end_date AS watch_validation_original_validation_end_date,
+          mvs.latest_trade_date AS watch_validation_latest_trade_date,
+          mvs.cumulative_days AS watch_validation_cumulative_days,
+          mvs.cumulative_return_rate AS watch_validation_cumulative_return_rate,
+          mvs.cumulative_annualized_return AS watch_validation_cumulative_annualized_return,
+          mvs.cumulative_max_drawdown AS watch_validation_cumulative_max_drawdown,
+          mvs.cumulative_trades AS watch_validation_cumulative_trades,
+          mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
+          mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
+          mvs.incremental_start_date AS watch_validation_incremental_start_date,
+          mvs.incremental_days AS watch_validation_incremental_days,
+          mvs.incremental_return_rate AS watch_validation_incremental_return_rate,
+          mvs.incremental_annualized_return AS watch_validation_incremental_annualized_return,
+          mvs.incremental_max_drawdown AS watch_validation_incremental_max_drawdown,
+          mvs.incremental_trades AS watch_validation_incremental_trades,
+          mvs.target_percent AS watch_validation_target_percent,
+          mvs.last_checked_at AS watch_validation_last_checked_at,
+          mvs.last_error AS watch_validation_last_error
         FROM watch_alert_followers waf
         JOIN watch_alerts ON watch_alerts.id = waf.watch_id
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
         WHERE waf.follower_user_id = $1
         ORDER BY waf.created_at DESC
       `, [ownerUserId]);
@@ -5512,6 +5559,35 @@ function mapModelListValidation(row, overrides = {}) {
   });
 }
 
+function mapModelValidationState(row, prefix = "model_validation") {
+  const status = row[`${prefix}_status`];
+  if (!status) return null;
+  const numberOrNull = (value) => (value !== null && value !== undefined ? Number(value) : null);
+  return {
+    status: status || "",
+    reason: row[`${prefix}_status_reason`] || "",
+    validationStartDate: row[`${prefix}_validation_start_date`] ? new Date(row[`${prefix}_validation_start_date`]).toISOString().slice(0, 10) : "",
+    originalValidationEndDate: row[`${prefix}_original_validation_end_date`] ? new Date(row[`${prefix}_original_validation_end_date`]).toISOString().slice(0, 10) : "",
+    latestTradeDate: row[`${prefix}_latest_trade_date`] ? new Date(row[`${prefix}_latest_trade_date`]).toISOString().slice(0, 10) : "",
+    cumulativeDays: row[`${prefix}_cumulative_days`] || 0,
+    cumulativeReturnRate: numberOrNull(row[`${prefix}_cumulative_return_rate`]),
+    cumulativeAnnualizedReturn: numberOrNull(row[`${prefix}_cumulative_annualized_return`]),
+    cumulativeMaxDrawdown: numberOrNull(row[`${prefix}_cumulative_max_drawdown`]),
+    cumulativeTrades: row[`${prefix}_cumulative_trades`] || 0,
+    cumulativeBuyHoldReturnRate: numberOrNull(row[`${prefix}_cumulative_buy_hold_return_rate`]),
+    cumulativeBuyHoldMaxDrawdown: numberOrNull(row[`${prefix}_cumulative_buy_hold_max_drawdown`]),
+    incrementalStartDate: row[`${prefix}_incremental_start_date`] ? new Date(row[`${prefix}_incremental_start_date`]).toISOString().slice(0, 10) : "",
+    incrementalDays: row[`${prefix}_incremental_days`] || 0,
+    incrementalReturnRate: numberOrNull(row[`${prefix}_incremental_return_rate`]),
+    incrementalAnnualizedReturn: numberOrNull(row[`${prefix}_incremental_annualized_return`]),
+    incrementalMaxDrawdown: numberOrNull(row[`${prefix}_incremental_max_drawdown`]),
+    incrementalTrades: row[`${prefix}_incremental_trades`] || 0,
+    targetPercent: numberOrNull(row[`${prefix}_target_percent`]),
+    lastCheckedAt: row[`${prefix}_last_checked_at`] ? new Date(row[`${prefix}_last_checked_at`]).toISOString() : "",
+    lastError: row[`${prefix}_last_error`] || "",
+  };
+}
+
 function mapModelListPresetRow(row, watches = [], options = {}) {
   const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
   return {
@@ -5532,6 +5608,7 @@ function mapModelListPresetRow(row, watches = [], options = {}) {
     shareAllowWatch: Boolean(row.share_allow_watch),
     shareAllowCopy: Boolean(row.share_allow_copy),
     validation: mapModelListValidation(row),
+    dailyValidation: mapModelValidationState(row),
     watches,
   };
 }
@@ -5570,6 +5647,7 @@ function mapFollowedModelListRow(row, watches = []) {
       meta: sourceMeta.targetSymbol ? sourceMeta : { ...sourceMeta, targetSymbol: row.symbol || "" },
       createdAt: row.source_created_at,
     }),
+    dailyValidation: mapModelValidationState(row),
     watches,
   };
 }
@@ -5589,9 +5667,30 @@ async function handleModelListApi(req, res) {
 
     const ownWatchesResult = await dbPool.query(`
       SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
-        sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id
+        sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+        mvs.status AS watch_validation_status, mvs.status_reason AS watch_validation_status_reason,
+        mvs.validation_start_date AS watch_validation_validation_start_date,
+        mvs.original_validation_end_date AS watch_validation_original_validation_end_date,
+        mvs.latest_trade_date AS watch_validation_latest_trade_date,
+        mvs.cumulative_days AS watch_validation_cumulative_days,
+        mvs.cumulative_return_rate AS watch_validation_cumulative_return_rate,
+        mvs.cumulative_annualized_return AS watch_validation_cumulative_annualized_return,
+        mvs.cumulative_max_drawdown AS watch_validation_cumulative_max_drawdown,
+        mvs.cumulative_trades AS watch_validation_cumulative_trades,
+        mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
+        mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
+        mvs.incremental_start_date AS watch_validation_incremental_start_date,
+        mvs.incremental_days AS watch_validation_incremental_days,
+        mvs.incremental_return_rate AS watch_validation_incremental_return_rate,
+        mvs.incremental_annualized_return AS watch_validation_incremental_annualized_return,
+        mvs.incremental_max_drawdown AS watch_validation_incremental_max_drawdown,
+        mvs.incremental_trades AS watch_validation_incremental_trades,
+        mvs.target_percent AS watch_validation_target_percent,
+        mvs.last_checked_at AS watch_validation_last_checked_at,
+        mvs.last_error AS watch_validation_last_error
       FROM watch_alerts
       LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+      LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
       WHERE watch_alerts.owner_user_id = $1
       ORDER BY watch_alerts.created_at DESC
     `, [ownerUserId]);
@@ -5612,9 +5711,30 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
-        pvs.updated_at AS snapshot_updated_at
+        pvs.updated_at AS snapshot_updated_at,
+        mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
+        mvs.validation_start_date AS model_validation_validation_start_date,
+        mvs.original_validation_end_date AS model_validation_original_validation_end_date,
+        mvs.latest_trade_date AS model_validation_latest_trade_date,
+        mvs.cumulative_days AS model_validation_cumulative_days,
+        mvs.cumulative_return_rate AS model_validation_cumulative_return_rate,
+        mvs.cumulative_annualized_return AS model_validation_cumulative_annualized_return,
+        mvs.cumulative_max_drawdown AS model_validation_cumulative_max_drawdown,
+        mvs.cumulative_trades AS model_validation_cumulative_trades,
+        mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
+        mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
+        mvs.incremental_start_date AS model_validation_incremental_start_date,
+        mvs.incremental_days AS model_validation_incremental_days,
+        mvs.incremental_return_rate AS model_validation_incremental_return_rate,
+        mvs.incremental_annualized_return AS model_validation_incremental_annualized_return,
+        mvs.incremental_max_drawdown AS model_validation_incremental_max_drawdown,
+        mvs.incremental_trades AS model_validation_incremental_trades,
+        mvs.target_percent AS model_validation_target_percent,
+        mvs.last_checked_at AS model_validation_last_checked_at,
+        mvs.last_error AS model_validation_last_error
       FROM strategy_presets sp
       LEFT JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'owned_preset' AND mvs.subject_id = sp.id
       WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL
       ORDER BY COALESCE(pvs.updated_at, sp.updated_at, sp.created_at) DESC
     `, [ownerUserId]);
@@ -5634,12 +5754,33 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
-        pvs.updated_at AS snapshot_updated_at
+        pvs.updated_at AS snapshot_updated_at,
+        mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
+        mvs.validation_start_date AS model_validation_validation_start_date,
+        mvs.original_validation_end_date AS model_validation_original_validation_end_date,
+        mvs.latest_trade_date AS model_validation_latest_trade_date,
+        mvs.cumulative_days AS model_validation_cumulative_days,
+        mvs.cumulative_return_rate AS model_validation_cumulative_return_rate,
+        mvs.cumulative_annualized_return AS model_validation_cumulative_annualized_return,
+        mvs.cumulative_max_drawdown AS model_validation_cumulative_max_drawdown,
+        mvs.cumulative_trades AS model_validation_cumulative_trades,
+        mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
+        mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
+        mvs.incremental_start_date AS model_validation_incremental_start_date,
+        mvs.incremental_days AS model_validation_incremental_days,
+        mvs.incremental_return_rate AS model_validation_incremental_return_rate,
+        mvs.incremental_annualized_return AS model_validation_incremental_annualized_return,
+        mvs.incremental_max_drawdown AS model_validation_incremental_max_drawdown,
+        mvs.incremental_trades AS model_validation_incremental_trades,
+        mvs.target_percent AS model_validation_target_percent,
+        mvs.last_checked_at AS model_validation_last_checked_at,
+        mvs.last_error AS model_validation_last_error
       FROM watch_alert_followers waf
       JOIN watch_alerts ON watch_alerts.id = waf.watch_id
       LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
       LEFT JOIN users u ON u.id = watch_alerts.owner_user_id
       LEFT JOIN preset_validation_snapshots pvs ON pvs.preset_id = watch_alerts.preset_id
+      LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
       WHERE waf.follower_user_id = $1
       ORDER BY waf.created_at DESC
     `, [ownerUserId]);

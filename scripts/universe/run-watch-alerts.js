@@ -20,11 +20,10 @@
 // The TRADING STRATEGY itself (frozen_strategy_type/frozen_config/frozen_label) is a snapshot
 // taken once at watch creation and never re-read from strategy_presets afterward, for both
 // modes — editing/re-optimizing the source preset later has zero effect on an already-running
-// watch. Instead, every check cycle re-validates the frozen strategy against a trailing year of
-// freshly-arrived data (evaluateModelValidity, symbol watches only): once it fails the current
-// upside/drawdown gates, a warning email goes out; if no position is open it auto-disables
-// immediately, if a position IS open it keeps running and re-warns once/day until that position
-// closes on the model's own exit rule, then auto-disables on the next cycle.
+// watch. Model validity is maintained by run-model-validation-daily.js in
+// model_validation_states using a fixed-start cumulative validation window; this 15-minute
+// watcher only mirrors that status onto compatibility fields and never auto-disables a watch
+// because a rolling window happened to weaken.
 //
 // This is a lightweight per-watch job (seconds per symbol-mode row, longer for index-mode rows
 // since those scan every constituent), not a full-universe batch scan, so it deliberately does
@@ -40,6 +39,7 @@ const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { annualizedUpsideDeviation } = require("../shared/volatility.js");
 const { resolveIndexConstituents } = require("../shared/index-catalog.js");
+const { ensureModelValidationStateTable } = require("../shared/model-validation-state.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -114,7 +114,9 @@ async function loadDueWatches() {
   // comment on those columns for why (editing the source preset used to silently change what
   // an already-running watch does, mid-position, with no notification).
   const result = await pool.query(`
-    SELECT * FROM watch_alerts wa
+    SELECT wa.*, mvs.status AS validation_status, mvs.status_reason AS validation_status_reason
+    FROM watch_alerts wa
+    LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = wa.id
     WHERE wa.enabled = TRUE
       AND (wa.last_checked_at IS NULL
            OR NOW() - wa.last_checked_at >= (wa.frequency_minutes || ' minutes')::interval)
@@ -602,52 +604,14 @@ async function processSymbolWatch(watch) {
       JSON.stringify(scoredAccount.trades),
     ];
 
-    // As new trading days arrive, re-check whether the FROZEN strategy (untouched since watch
-    // creation) still clears the current upside/drawdown gates on a trailing year — a model can
-    // go stale even though nobody edited anything, just because the market it's tuned for moved
-    // on. hasPosition uses scoredAccount (already reflects any trade executed today) as the
-    // single source of truth for "is there something to protect by staying on," matching this
-    // file's existing no-incremental-state philosophy instead of tracking a separate position
-    // flag.
-    const validity = evaluateModelValidity(rows, baseConfig);
-    const nowInvalid = Boolean(validity.checked && validity.isInvalid);
-    const hasPosition = Math.abs(Number(scoredAccount.shares) || 0) > 1e-6;
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const previousWarningDateStr = watch.last_invalid_warning_date
-      ? watch.last_invalid_warning_date.toISOString().slice(0, 10)
-      : null;
-
-    let shouldDisableForInvalidity = false;
-    let shouldSendInvalidWarning = false;
-    let shouldSendInvalidStopped = false;
-    let nextInvalidWarningDate = previousWarningDateStr;
-    let nextInvalidSince = null;
-    if (nowInvalid) {
-      nextInvalidSince = watch.invalid_since || new Date();
-      nextInvalidWarningDate = todayStr;
-      if (hasPosition) {
-        shouldSendInvalidWarning = previousWarningDateStr !== todayStr;
-      } else {
-        shouldDisableForInvalidity = true;
-        shouldSendInvalidStopped = true;
-      }
-    }
-    if (shouldSendInvalidStopped) {
-      try {
-        await sendModelInvalidStoppedEmail(watch, validity.reason);
-        console.log(`[invalid-stopped] watch=${watch.id} ${watch.symbol} -> notified ${watch.owner_email}`);
-      } catch (emailError) {
-        console.error(`[error] failed to send invalid-stopped notice for watch=${watch.id}: ${emailError.message}`);
-      }
-    } else if (shouldSendInvalidWarning) {
-      try {
-        await sendModelInvalidWarningEmail(watch, validity.reason, scoredAccount);
-        console.log(`[invalid-warning] watch=${watch.id} ${watch.symbol} -> notified ${watch.owner_email}`);
-      } catch (emailError) {
-        console.error(`[error] failed to send invalid-warning notice for watch=${watch.id}: ${emailError.message}`);
-      }
-    }
-    const invalidParams = [nowInvalid, nowInvalid ? validity.reason : "", nextInvalidSince, nextInvalidWarningDate];
+    // Model validity now comes from run-model-validation-daily.js's fixed-start cumulative
+    // validation state. This 15-minute watcher still maintains signal/account state, but it no
+    // longer runs a trailing-window validity test or auto-disables a flat watch.
+    const nowInvalid = watch.validation_status === "invalid";
+    const invalidReason = nowInvalid ? (watch.validation_status_reason || "每日累计验证显示模型已失效。") : "";
+    const nextInvalidSince = nowInvalid ? (watch.invalid_since || new Date()) : null;
+    const invalidParams = [nowInvalid, invalidReason, nextInvalidSince, watch.last_invalid_warning_date || null];
+    const shouldDisableForInvalidity = false;
 
     if (todaysTrades.length > 0 && lastDate !== (watch.last_signal_date ? watch.last_signal_date.toISOString().slice(0, 10) : null)) {
       await sendAlertEmail(watch, todaysTrades);
@@ -705,6 +669,7 @@ async function processSymbolWatch(watch) {
 }
 
 async function main() {
+  await ensureModelValidationStateTable(pool);
   const watches = await loadDueWatches();
   console.log(`[watch-alerts] ${watches.length} due watch(es)`);
   for (const watch of watches) {

@@ -10674,6 +10674,42 @@ function renderModelListValidation(model) {
   `;
 }
 
+function renderModelListDailyValidation(model) {
+  const validation = model && model.dailyValidation;
+  if (!validation) {
+    return '<div class="model-list-validation model-list-muted">等待每日累计验证。</div>';
+  }
+  const statusLabels = {
+    valid: "有效",
+    watching: "观察中",
+    warning: "预警",
+    invalid: "失效",
+    insufficient: "样本不足",
+    error: "验证失败",
+  };
+  const status = validation.status || "";
+  const statusClass = status === "valid" ? "up" : (status === "invalid" || status === "error" ? "down" : "model-list-status-warn");
+  const cumulativeAnnualized = Number(validation.cumulativeAnnualizedReturn);
+  const incrementalAnnualized = Number(validation.incrementalAnnualizedReturn);
+  const cumulativeClass = cumulativeAnnualized >= 0 ? "up" : "down";
+  const incrementalClass = incrementalAnnualized >= 0 ? "up" : "down";
+  const reason = validation.reason ? `<small>${escapeHtml(validation.reason)}</small>` : "";
+  return `
+    <div class="model-list-validation model-list-daily-validation">
+      <span class="${statusClass}">累计验证 ${escapeHtml(statusLabels[status] || status || "未知")}</span>
+      <span>到 ${escapeHtml(validation.latestTradeDate || "--")}</span>
+      <span>${Number(validation.cumulativeDays) || 0} 天</span>
+      <span class="${cumulativeClass}">累计年化 ${Number.isFinite(cumulativeAnnualized) ? formatPercent(cumulativeAnnualized) : "--"}</span>
+      <span>累计回撤 ${validation.cumulativeMaxDrawdown !== null && validation.cumulativeMaxDrawdown !== undefined ? formatPercent(validation.cumulativeMaxDrawdown) : "--"}</span>
+      <span>累计交易 ${Number(validation.cumulativeTrades) || 0} 次</span>
+      <span>新增 ${Number(validation.incrementalDays) || 0} 天</span>
+      <span class="${incrementalClass}">新增年化 ${Number.isFinite(incrementalAnnualized) ? formatPercent(incrementalAnnualized) : "--"}</span>
+      <span>新增交易 ${Number(validation.incrementalTrades) || 0} 次</span>
+      ${reason}
+    </div>
+  `;
+}
+
 function renderModelListWatchState(watches) {
   const visible = Array.isArray(watches) ? watches : [];
   if (visible.length === 0) {
@@ -10693,6 +10729,7 @@ function renderModelListWatchState(watches) {
           watch.isInvalid ? "模型已失效" : "",
           watch.consecutiveFailures > 0 ? `失败 ${watch.consecutiveFailures} 次` : "",
         ].filter(Boolean).join(" · ");
+        const watchValidation = watch.dailyValidation ? renderModelListDailyValidation({ dailyValidation: watch.dailyValidation }) : "";
         const accountPart = isIndexWatch
           ? '<span class="model-list-muted">指数盯盘不模拟单一账户。</span>'
           : (watch.accountEquity === null || watch.accountEquity === undefined || watch.accountRowsScored <= 0
@@ -10708,6 +10745,7 @@ function renderModelListWatchState(watches) {
           <div class="model-list-watch">
             <div><strong>${target}</strong><small>${escapeHtml(status)}</small></div>
             <div class="model-list-watch-stats">${accountPart}</div>
+            ${watchValidation}
           </div>
         `;
       }).join("")}
@@ -10766,6 +10804,7 @@ function renderModelListSection(title, models, role) {
                 <span>更新 ${escapeHtml(formatAdminDate(model.updatedAt || model.createdAt))}</span>
               </div>
               ${renderModelListValidation(model)}
+              ${renderModelListDailyValidation(model)}
               ${renderModelListWatchState(model.watches)}
             </article>
           `;
