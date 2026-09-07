@@ -771,3 +771,13 @@ Second follow-up fix:
   - Opening the optimization range editor closes any model/data selector dialog first, so the optimization UI is immediately visible.
 - `public/index.html`
   - Bumped the static asset query string to `20260907-optimization-direct`.
+
+Mobile follow-up fix:
+
+- `public/app.js`
+  - The model-action "优化参数" click path now opens `optimizationDialog` immediately with a loading message before awaiting historical data.
+  - This avoids mobile browsers failing to show the optimization UI when `showModal()` happens after async data loading.
+  - `openOptimizationDialog()` now clears stale parameter-range controls while loading.
+  - `showDialog()` now falls back to setting the `open` attribute if `showModal()` throws.
+- `public/index.html`
+  - Bumped the static asset query string to `20260907-optimization-mobile`.

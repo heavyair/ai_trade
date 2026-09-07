@@ -3183,6 +3183,7 @@ async function openModelActionOptimization(context) {
   renderModelCompareOptions();
   selectOnlyComparisonPreset(presetName);
   setStatus(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
+  openOptimizationDialog(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   try {
     await loadData();
     openBlockRuleOptimizationRangeEditor(presetName);
@@ -7440,9 +7441,13 @@ function showDialog(dialog) {
   if (!dialog) return;
   const scrollLeft = window.scrollX;
   const scrollTop = window.scrollY;
-  if (typeof dialog.showModal === "function") {
-    dialog.showModal();
-  } else {
+  try {
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    } else {
+      dialog.setAttribute("open", "open");
+    }
+  } catch (error) {
     dialog.setAttribute("open", "open");
   }
   window.scrollTo(scrollLeft, scrollTop);
@@ -13539,6 +13544,10 @@ function openOptimizationDialog(message) {
   if (optimizationParamPreview) optimizationParamPreview.textContent = "优化进行中...";
   if (saveOptimizationButton) saveOptimizationButton.disabled = true;
   if (optimizationSaveNameRow) optimizationSaveNameRow.classList.add("hidden");
+  if (optimizationParamRanges) optimizationParamRanges.classList.add("hidden");
+  if (optimizationUniformPointCountRow) optimizationUniformPointCountRow.classList.add("hidden");
+  if (optimizationCombinationSummary) optimizationCombinationSummary.classList.add("hidden");
+  if (runOptimizationButton) runOptimizationButton.classList.add("hidden");
   if (optimizationTitle) optimizationTitle.textContent = "参数优化中";
   if (optimizationSubtitle) optimizationSubtitle.textContent = message;
   if (optimizationProgress) optimizationProgress.classList.remove("hidden");
