@@ -362,6 +362,33 @@ Verification:
 - `git diff --check` passed.
 - Local HTTP smoke could not start because local Postgres rejected user `postgres`; production uses container env and is not affected.
 
+## Model Action Optimize Button
+
+User asked to add an optimization-parameter entry to each model's popup action window, and asked whether optimization overwrites the original model.
+
+Local changes:
+
+- `public/index.html`
+  - Added `优化参数` button to `#modelActionDialog`.
+  - Bumped static asset query strings to `20260907-model-action-optimize`.
+- `public/app.js`
+  - Added `modelActionOptimizeButton` binding.
+  - Enabled the button only when the model context has a symbol and model authoring is allowed.
+  - Added `ensureOptimizablePresetFromContext(context)`:
+    - existing owned/saved presets reuse their real preset key
+    - AI candidates/read-only contexts get a temporary front-end preset key `__optimize_<source id>`
+    - temporary preset metadata preserves `originalModelId`, `originalModelLabel`, and `originalModelNumericId`
+  - Added `openModelActionOptimization(context)`:
+    - switches to simulation page
+    - loads 5 years of history for the model's own symbol
+    - opens the existing parameter optimization range editor
+  - The final save still goes through the existing `saveOptimizationPreset()` path, which creates a new saved model via `saveGeneratedPreset()`.
+
+Behavioral guarantee:
+
+- Optimization does not overwrite the original AI scan row or the source preset.
+- The optimized result is only persisted when the user clicks `保存优化参数`, and it is saved as a new model.
+
 ## Fixed-Start Daily Model Validation
 
 User accepted the recommendation to stop using rolling windows as the decisive model-validity

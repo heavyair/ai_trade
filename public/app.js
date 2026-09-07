@@ -297,6 +297,7 @@ const modelActionViewParamsButton = document.querySelector("#modelActionViewPara
 const modelActionViewTradesButton = document.querySelector("#modelActionViewTradesButton");
 const modelActionRenameButton = document.querySelector("#modelActionRenameButton");
 const modelActionSaveAsButton = document.querySelector("#modelActionSaveAsButton");
+const modelActionOptimizeButton = document.querySelector("#modelActionOptimizeButton");
 const modelActionReloadSimButton = document.querySelector("#modelActionReloadSimButton");
 const modelActionCreateWatchButton = document.querySelector("#modelActionCreateWatchButton");
 const modelActionScreenMarketButton = document.querySelector("#modelActionScreenMarketButton");
@@ -2998,6 +2999,7 @@ function openModelActionMenu(context) {
   if (modelActionRenameButton) modelActionRenameButton.classList.toggle("hidden", !canRename);
   const hasSymbol = Boolean(context.symbol);
   if (modelActionViewTradesButton) modelActionViewTradesButton.disabled = !hasSymbol;
+  if (modelActionOptimizeButton) modelActionOptimizeButton.disabled = !hasSymbol || !canUseModelAuthoring();
   if (modelActionReloadSimButton) modelActionReloadSimButton.disabled = !hasSymbol;
   // 建立盯盘/扫描市场都需要知道具体股票代码（盯盘要盯这只票；扫描市场靠代码推断用哪个市场
   // 的股票池），没有关联股票的模型（比如"通用"模型）这两个按钮先禁用。
@@ -3109,6 +3111,54 @@ if (modelActionSaveAsButton) {
     if (presetName) {
       setStatus(`已另存为模型：${strategyPresets[presetName].label}。`);
     }
+  });
+}
+
+function ensureOptimizablePresetFromContext(context) {
+  if (!context) return "";
+  if (context.name && strategyPresets[context.name]) return context.name;
+  const key = `__optimize_${String(context.id || "model").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const config = context.config && typeof context.config === "object" ? context.config : {};
+  strategyPresets[key] = sanitizeStoredPreset(key, {
+    ...config,
+    label: context.label || "AI 候选模型",
+    strategyType: context.strategyType || config.strategyType || "wave",
+    meta: {
+      targetSymbol: context.symbol || "通用",
+      creator: "auto",
+      originalText: context.reason || "",
+      modelText: context.reason || "",
+      originalModelId: context.id,
+      originalModelLabel: context.label || "",
+      originalModelNumericId: context.numericId || null,
+    },
+  });
+  return key;
+}
+
+async function openModelActionOptimization(context) {
+  if (!context || !context.symbol) return;
+  if (!requireSignedInForSave()) return;
+  closeDialog(modelActionDialog);
+  const presetName = ensureOptimizablePresetFromContext(context);
+  if (!presetName) return;
+  setWizardPage("simulation");
+  if (codeInput) codeInput.value = context.symbol;
+  if (startInput) startInput.value = formatDate(shiftYears(new Date(), -5));
+  if (endInput) endInput.value = todayText();
+  renderModelCompareOptions();
+  setStatus(`正在加载 ${context.symbol} 历史行情，准备优化参数...`);
+  try {
+    await loadData();
+    openBlockRuleOptimizationRangeEditor(presetName);
+  } catch (error) {
+    setStatus(`准备优化参数失败：${error.message}`, true);
+  }
+}
+
+if (modelActionOptimizeButton) {
+  modelActionOptimizeButton.addEventListener("click", async () => {
+    await openModelActionOptimization(modelActionContext);
   });
 }
 
