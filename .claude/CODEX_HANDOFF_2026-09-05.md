@@ -400,6 +400,35 @@ Verification:
 - Local dry-run could not connect because local Postgres on `localhost:15432` refused the
   connection; run the database dry-run inside the production container after deploy.
 
+## Trade Record Trigger Indicator Evidence
+
+User asked for trade records to show the actual indicator value behind rules such as:
+
+- `8日未创新低天数==5`
+- `6日未创新高天数==3`
+
+Local changes:
+
+- `scripts/universe/engine.js`
+  - Added rule-evidence helpers for block/score rule conditions.
+  - Block-rule buy/sell trade reasons now append the actual trigger-day indicator values, e.g.
+    `买入规则1触发：8日未创新低天数==5（指标：8日未创新低天数=5天） → 调仓到1000股`.
+  - Score-rule hit descriptions also include each matched rule's indicator values.
+- `public/app.js`
+  - Mirrored the same evidence helpers into the browser-side backtest engine so local/history
+    simulations show the same trade-record text as server-side saved runs.
+- `public/index.html`
+  - Bumped `app.js` cache string to `20260906-trade-indicators`.
+
+Verification:
+
+- `node --check scripts/universe/engine.js` passed.
+- `node --check public/app.js` passed.
+- `git diff --check` passed.
+- A synthetic local backtest produced:
+  - `买入规则1触发：8日未创新低天数==5（指标：8日未创新低天数=5天） → 调仓到1000股`
+  - `卖出规则1触发：6日未创新高天数==3（指标：6日未创新高天数=3天） → 全部清仓`
+
 ## Local Validated Search - US Qualified + QQQ
 
 User asked to start a new validated-search scan for the 9 currently qualified US symbols plus QQQ, using the same parameters as the previous scan.

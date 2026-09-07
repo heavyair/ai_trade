@@ -9614,6 +9614,45 @@ function evaluateBlockCondition(condition, index, cache, positionRatioHistory, h
   return true;
 }
 
+function formatConditionEvidenceValue(condition, value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "--";
+  if (CONDITION_DAY_COUNT_INDICATORS.has(condition.indicator)) return `${Math.round(value)}天`;
+  if (condition.indicator === "positionRatio" || condition.indicator === "drawdownFromHigh"
+    || condition.indicator === "drawdownFromBreakoutHigh" || condition.indicator === "drawdownFromWaveHigh"
+    || condition.indicator === "riseFromLow" || condition.indicator === "riseFromWaveLow"
+    || condition.indicator === "maValue" || condition.indicator === "maSlope"
+    || condition.indicator === "atrPercent" || condition.indicator === "candleBody"
+    || condition.indicator === "maCompare") {
+    return formatPercent(value);
+  }
+  return Number(value).toFixed(2);
+}
+
+function describeBlockConditionEvidence(condition, index, cache, positionRatioHistory, holdingDaysHistory) {
+  const value = getBlockConditionValue(condition, index, cache, positionRatioHistory, holdingDaysHistory);
+  if (condition.indicator === "daysSinceNewLow") {
+    return `${condition.lookbackDays || ""}日未创新低天数=${formatConditionEvidenceValue(condition, value)}`;
+  }
+  if (condition.indicator === "daysSinceNewHigh") {
+    return `${condition.lookbackDays || ""}日未创新高天数=${formatConditionEvidenceValue(condition, value)}`;
+  }
+  if (condition.indicator === "daysSinceNewWaveLow") {
+    return `波浪未创新低天数=${formatConditionEvidenceValue(condition, value)}`;
+  }
+  if (condition.indicator === "daysSinceNewWaveHigh") {
+    return `波浪未创新高天数=${formatConditionEvidenceValue(condition, value)}`;
+  }
+  return `${getBlockIndicatorLabel(condition.indicator)}=${formatConditionEvidenceValue(condition, value)}`;
+}
+
+function describeBlockRuleEvidence(block, index, cache, positionRatioHistory, holdingDaysHistory) {
+  const conditions = Array.isArray(block && block.conditions) ? block.conditions : [];
+  return conditions
+    .map((condition) => describeBlockConditionEvidence(condition, index, cache, positionRatioHistory, holdingDaysHistory))
+    .filter(Boolean)
+    .join("；");
+}
+
 function evaluateBlockRuleConditions(block, index, cache, positionRatioHistory, holdingDaysHistory) {
   if (!block || !block.enabled || !Array.isArray(block.conditions) || block.conditions.length === 0) return false;
   return block.conditions.every((condition) => evaluateBlockCondition(condition, index, cache, positionRatioHistory, holdingDaysHistory));
@@ -9769,7 +9808,8 @@ function buildGenericBacktestStates(rows, config) {
       const target = resolveBlockActionToTargetPercent(block.action, account, row, currentRatio);
       if (sellTarget === null || target < sellTarget) {
         sellTarget = target;
-        sellReason = `卖出规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`;
+        const evidence = describeBlockRuleEvidence(block, index, cache, positionRatioHistory, holdingDaysHistory);
+        sellReason = `卖出规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)}${evidence ? `（指标：${evidence}）` : ""} → ${describeBlockAction(block.action)}`;
       }
     });
 
@@ -9783,7 +9823,8 @@ function buildGenericBacktestStates(rows, config) {
       const target = resolveBlockActionToTargetPercent(block.action, account, row, currentRatio);
       if (buyTarget === null || target > buyTarget) {
         buyTarget = target;
-        buyReason = `买入规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)} → ${describeBlockAction(block.action)}`;
+        const evidence = describeBlockRuleEvidence(block, index, cache, positionRatioHistory, holdingDaysHistory);
+        buyReason = `买入规则${blockIndex + 1}触发：${describeBlockConditions(block.conditions)}${evidence ? `（指标：${evidence}）` : ""} → ${describeBlockAction(block.action)}`;
       }
     });
 
@@ -9849,7 +9890,8 @@ function buildScoreRuleBacktestStates(rows, config) {
       if (!evaluateBlockRuleConditions(rule, index, cache, positionRatioHistory, holdingDaysHistory)) return;
       const points = Number(rule.points) || 0;
       totalScore += points;
-      hitDescriptions.push(`规则${ruleIndex + 1}(+${points}分：${describeBlockConditions(rule.conditions)})`);
+      const evidence = describeBlockRuleEvidence(rule, index, cache, positionRatioHistory, holdingDaysHistory);
+      hitDescriptions.push(`规则${ruleIndex + 1}(+${points}分：${describeBlockConditions(rule.conditions)}${evidence ? `；指标：${evidence}` : ""})`);
     });
 
     const matchedBand = positionBands.find((band) => totalScore >= Number(band.minScore));
