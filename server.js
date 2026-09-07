@@ -534,6 +534,32 @@ async function initializeDatabase() {
     );
     CREATE INDEX IF NOT EXISTS watch_alert_followers_watch_idx ON watch_alert_followers(watch_id);
     CREATE INDEX IF NOT EXISTS watch_alert_followers_follower_idx ON watch_alert_followers(follower_user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS watch_share_codes (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_email TEXT NOT NULL,
+      token TEXT UNIQUE,
+      allow_view_params BOOLEAN NOT NULL DEFAULT FALSE,
+      allow_copy BOOLEAN NOT NULL DEFAULT FALSE,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS watch_share_codes_owner_idx ON watch_share_codes(owner_user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS watch_share_codes_token_idx ON watch_share_codes(token) WHERE token IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS watch_share_code_users (
+      id TEXT PRIMARY KEY,
+      share_code_id TEXT NOT NULL REFERENCES watch_share_codes(id) ON DELETE CASCADE,
+      viewer_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      viewer_email TEXT NOT NULL,
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(share_code_id, viewer_user_id)
+    );
+    CREATE INDEX IF NOT EXISTS watch_share_code_users_code_idx ON watch_share_code_users(share_code_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS watch_share_code_users_viewer_idx ON watch_share_code_users(viewer_user_id, created_at DESC);
   `);
 
   await ensureIndexCatalogTable(dbPool);
@@ -3633,9 +3659,16 @@ async function handleAdminStockScreenApi(req, res) {
 // since those are a side-channel that would otherwise leak the "hidden" config anyway. Extra
 // context (inviteToken, followers list) is only ever attached by the caller for a role="owner"
 // row the requester actually owns — see handleWatchAlertsApi's GET handler.
-function mapWatchAlertRow(row, { role = "owner", inviteToken = null, followers = null } = {}) {
+function mapWatchAlertRow(row, {
+  role = "owner", inviteToken = null, followers = null,
+  canViewParams = role === "owner", canCopy = false,
+} = {}) {
   const isFollowerView = role === "follower";
+  const isSharedCodeView = role === "shared-code";
+  const exposeParams = role === "owner" || (isSharedCodeView && canViewParams);
   const rawTrades = Array.isArray(row.account_trades) ? row.account_trades : [];
+  const originalText = row.preset_original_text || "";
+  const modelText = row.preset_model_text || originalText || "";
   return {
     id: row.id,
     role,
@@ -3655,9 +3688,13 @@ function mapWatchAlertRow(row, { role = "owner", inviteToken = null, followers =
     // dedicated single-preset lookup endpoint. Never sent for a follower's view (see this
     // function's doc comment) — the strategy TYPE name (score-rules/block-rules/...) still is,
     // that's not considered part of "the具体规则/config" that follow access excludes.
-    presetConfig: isFollowerView ? null : (row.preset_config && typeof row.preset_config === "object" ? row.preset_config : null),
+    presetConfig: exposeParams ? (row.preset_config && typeof row.preset_config === "object" ? row.preset_config : null) : null,
     presetStrategyType: row.preset_strategy_type || "",
-    presetOwnerUserId: isFollowerView ? null : (row.preset_owner_user_id || null),
+    presetOwnerUserId: exposeParams ? (row.preset_owner_user_id || null) : null,
+    presetOriginalText: isSharedCodeView || role === "owner" ? originalText : "",
+    presetModelText: isSharedCodeView || role === "owner" ? modelText : "",
+    canViewParams: exposeParams,
+    canCopy: Boolean(canCopy),
     symbol: row.symbol,
     symbolName: row.symbol_name,
     indexCode: row.index_code || null,
@@ -3728,6 +3765,7 @@ async function handleWatchAlertsApi(req, res) {
       const ownedResult = await dbQuery(`
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
           sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+          sp.original_text AS preset_original_text, sp.model_text AS preset_model_text,
           mvs.status AS watch_validation_status, mvs.status_reason AS watch_validation_status_reason,
           mvs.validation_start_date AS watch_validation_validation_start_date,
           mvs.original_validation_end_date AS watch_validation_original_validation_end_date,
@@ -3783,6 +3821,7 @@ async function handleWatchAlertsApi(req, res) {
       const followedResult = await dbQuery(`
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
           sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+          sp.original_text AS preset_original_text, sp.model_text AS preset_model_text,
           mvs.status AS watch_validation_status, mvs.status_reason AS watch_validation_status_reason,
           mvs.validation_start_date AS watch_validation_validation_start_date,
           mvs.original_validation_end_date AS watch_validation_original_validation_end_date,
@@ -3812,7 +3851,54 @@ async function handleWatchAlertsApi(req, res) {
       `, [ownerUserId]);
       const followedWatches = followedResult.rows.map((row) => mapWatchAlertRow(row, { role: "follower" }));
 
-      sendJson(res, 200, { watches: [...ownedWatches, ...followedWatches] });
+      const sharedCodeResult = await dbQuery(`
+        SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
+          sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
+          sp.original_text AS preset_original_text, sp.model_text AS preset_model_text,
+          wsc.allow_view_params, wsc.allow_copy
+        FROM watch_share_code_users wsu
+        JOIN watch_share_codes wsc ON wsc.id = wsu.share_code_id AND wsc.enabled = TRUE
+        JOIN watch_alerts ON watch_alerts.owner_user_id = wsc.owner_user_id
+        LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
+        WHERE wsu.viewer_user_id = $1
+        ORDER BY wsc.updated_at DESC, watch_alerts.created_at DESC
+      `, [ownerUserId]);
+      const sharedCodeWatches = sharedCodeResult.rows.map((row) => mapWatchAlertRow(row, {
+        role: "shared-code",
+        canViewParams: Boolean(row.allow_view_params),
+        canCopy: Boolean(row.allow_copy),
+      }));
+
+      const shareCodeResult = await dbQuery(`
+        SELECT id, token, allow_view_params, allow_copy, enabled, created_at, updated_at
+        FROM watch_share_codes WHERE owner_user_id = $1
+      `, [ownerUserId]);
+      const shareCode = shareCodeResult.rows[0] || null;
+      let shareCodeUsers = [];
+      if (shareCode) {
+        const usersResult = await dbQuery(`
+          SELECT viewer_user_id, viewer_email, created_at, last_used_at
+          FROM watch_share_code_users WHERE share_code_id = $1 ORDER BY last_used_at DESC
+        `, [shareCode.id]);
+        shareCodeUsers = usersResult.rows.map((row) => ({
+          viewerUserId: row.viewer_user_id,
+          viewerEmail: row.viewer_email,
+          createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+          lastUsedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : "",
+        }));
+      }
+
+      sendJson(res, 200, {
+        watches: [...ownedWatches, ...followedWatches, ...sharedCodeWatches],
+        shareCode: shareCode ? {
+          token: shareCode.token || "",
+          allowViewParams: Boolean(shareCode.allow_view_params),
+          allowCopy: Boolean(shareCode.allow_copy),
+          enabled: Boolean(shareCode.enabled),
+          users: shareCodeUsers,
+        } : null,
+      });
       return;
     }
 
@@ -4127,6 +4213,173 @@ async function handleWatchAlertUnfollowApi(req, res) {
     sendJson(res, 200, { removed: true });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "取消关注失败。" });
+  }
+}
+
+async function handleWatchShareCodeApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method === "POST") {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const regenerate = Boolean(payload.regenerate);
+      const disable = Boolean(payload.disable);
+      const allowViewParams = Boolean(payload.allowViewParams);
+      const allowCopy = Boolean(payload.allowCopy);
+      const existing = await dbQuery(`SELECT id, token FROM watch_share_codes WHERE owner_user_id = $1`, [ownerUserId]);
+      if (disable) {
+        if (existing.rows.length > 0) {
+          await dbQuery(`DELETE FROM watch_share_code_users WHERE share_code_id = $1`, [existing.rows[0].id]);
+          await dbQuery(`UPDATE watch_share_codes SET enabled = FALSE, token = NULL, updated_at = NOW() WHERE owner_user_id = $1`, [ownerUserId]);
+        }
+        sendJson(res, 200, { shareCode: { token: "", allowViewParams, allowCopy, enabled: false, users: [] } });
+        return;
+      }
+      const token = (!existing.rows[0] || regenerate || !existing.rows[0].token)
+        ? randomId("ws").replace(/^ws_/, "")
+        : existing.rows[0].token;
+      const id = existing.rows[0] ? existing.rows[0].id : randomId("wsc");
+      await dbQuery(`
+        INSERT INTO watch_share_codes (id, owner_user_id, owner_email, token, allow_view_params, allow_copy, enabled)
+        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+        ON CONFLICT (owner_user_id) DO UPDATE SET
+          owner_email = EXCLUDED.owner_email,
+          token = EXCLUDED.token,
+          allow_view_params = EXCLUDED.allow_view_params,
+          allow_copy = EXCLUDED.allow_copy,
+          enabled = TRUE,
+          updated_at = NOW()
+      `, [id, ownerUserId, user.email, token, allowViewParams, allowCopy]);
+      sendJson(res, 200, {
+        shareCode: { token, allowViewParams, allowCopy, enabled: true },
+      });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const body = await readRequestBody(req);
+      const payload = body ? JSON.parse(body) : {};
+      const viewerUserId = String(payload.viewerUserId || "").trim();
+      if (!viewerUserId) {
+        sendJson(res, 400, { error: "缺少使用者 id。" });
+        return;
+      }
+      const result = await dbQuery(`
+        DELETE FROM watch_share_code_users wsu
+        USING watch_share_codes wsc
+        WHERE wsu.share_code_id = wsc.id
+          AND wsc.owner_user_id = $1
+          AND wsu.viewer_user_id = $2
+        RETURNING wsu.id
+      `, [ownerUserId, viewerUserId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "使用者不存在，或者你没有权限移除。" });
+        return;
+      }
+      sendJson(res, 200, { removed: true });
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "盯盘分享码操作失败。" });
+  }
+}
+
+async function handleWatchShareCodeUseApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const viewerUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const token = String(payload.token || "").trim();
+    if (!token) {
+      sendJson(res, 400, { error: "缺少盯盘码。" });
+      return;
+    }
+    const codeResult = await dbQuery(`
+      SELECT id, owner_user_id, owner_email, allow_view_params, allow_copy
+      FROM watch_share_codes WHERE token = $1 AND enabled = TRUE
+    `, [token]);
+    if (codeResult.rows.length === 0) {
+      sendJson(res, 404, { error: "盯盘码无效或已取消。" });
+      return;
+    }
+    const code = codeResult.rows[0];
+    if (code.owner_user_id === viewerUserId) {
+      sendJson(res, 400, { error: "这是你自己的盯盘码，不需要使用。" });
+      return;
+    }
+    await dbQuery(`
+      INSERT INTO watch_share_code_users (id, share_code_id, viewer_user_id, viewer_email)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (share_code_id, viewer_user_id) DO UPDATE SET
+        viewer_email = EXCLUDED.viewer_email,
+        last_used_at = NOW()
+    `, [randomId("wscu"), code.id, viewerUserId, user.email]);
+    sendJson(res, 200, {
+      accepted: true,
+      ownerEmail: code.owner_email,
+      allowViewParams: Boolean(code.allow_view_params),
+      allowCopy: Boolean(code.allow_copy),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "使用盯盘码失败。" });
+  }
+}
+
+async function handleWatchShareCodeCopyApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const viewerUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const watchId = String(payload.watchId || "").trim();
+    if (!watchId) {
+      sendJson(res, 400, { error: "缺少盯盘 id。" });
+      return;
+    }
+    const sourceResult = await dbQuery(`
+      SELECT sp.id AS preset_id, sp.label, sp.strategy_type, sp.config, sp.meta,
+        sp.original_text, sp.model_text, wsc.allow_copy
+      FROM watch_share_code_users wsu
+      JOIN watch_share_codes wsc ON wsc.id = wsu.share_code_id AND wsc.enabled = TRUE
+      JOIN watch_alerts wa ON wa.owner_user_id = wsc.owner_user_id
+      JOIN strategy_presets sp ON sp.id = wa.preset_id
+      WHERE wsu.viewer_user_id = $1 AND wa.id = $2
+      LIMIT 1
+    `, [viewerUserId, watchId]);
+    const source = sourceResult.rows[0];
+    if (!source || !source.allow_copy) {
+      sendJson(res, 403, { error: "这个盯盘码不允许复制模型。" });
+      return;
+    }
+    const newId = randomId("preset");
+    const newLabel = source.label || "模型";
+    await dbQuery(`
+      INSERT INTO strategy_presets (
+        id, owner_user_id, name, label, strategy_type, config, meta,
+        original_text, model_text, is_legacy, original_model_id, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, FALSE, $10, NOW(), NOW())
+    `, [
+      newId, viewerUserId, normalizePresetKey(newId), newLabel, source.strategy_type,
+      JSON.stringify(source.config || {}), JSON.stringify(source.meta || {}),
+      source.original_text || "", source.model_text || "", source.preset_id,
+    ]);
+    await copyPresetValidationSnapshot(source.preset_id, newId);
+    sendJson(res, 200, { id: newId, label: newLabel });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "复制分享模型失败。" });
   }
 }
 
@@ -6699,6 +6952,21 @@ const server = http.createServer((req, res) => {
     } else {
       handleWatchAlertFollowApi(req, res);
     }
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts/share-code") {
+    handleWatchShareCodeApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts/share-code/use") {
+    handleWatchShareCodeUseApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/watch-alerts/share-code/copy") {
+    handleWatchShareCodeCopyApi(req, res);
     return;
   }
 

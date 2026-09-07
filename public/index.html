@@ -97,6 +97,25 @@
             <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
           </div>
           <div id="watchAlertsAuthNote" class="auth-required-note hidden">设置盯盘提醒需要免费注册、登录并验证电子邮件，提醒会发到验证过的邮箱。</div>
+          <div id="watchShareCodePanel" class="share-code-panel">
+            <div class="share-code-head">
+              <div>
+                <strong>我的全部盯盘分享码</strong>
+                <p class="field-hint">别人使用这个码后，可以看到你当前全部盯盘的买入、卖出、模型文字说明；参数和复制由下面开关控制。</p>
+              </div>
+              <span id="watchShareCodeStatus" class="field-hint"></span>
+            </div>
+            <div class="admin-scan-filter-row">
+              <label><input id="watchShareCodeViewParamsInput" type="checkbox"> 允许查看参数</label>
+              <label><input id="watchShareCodeCopyInput" type="checkbox"> 允许复制模型</label>
+              <button type="button" id="watchShareCodeSaveButton" class="ghost-button">生成/保存分享码</button>
+              <button type="button" id="watchShareCodeCopyButton" class="ghost-button">复制分享链接</button>
+              <button type="button" id="watchShareCodeRegenerateButton" class="ghost-button">重生成</button>
+              <button type="button" id="watchShareCodeDisableButton" class="ghost-button">取消盯盘码</button>
+            </div>
+            <div id="watchShareCodeValue" class="code-preview code-preview--inline">尚未生成</div>
+            <div id="watchShareCodeUsers" class="field-hint">使用者：暂无</div>
+          </div>
           <div id="watchAlertsCreateRow" class="admin-scan-filter-row">
             <label>选择模型
               <select id="watchAlertsPresetSelect"></select>
@@ -137,9 +156,17 @@
             <button type="button" id="watchAlertsFollowButton" class="ghost-button">关注</button>
             <span id="watchAlertsFollowStatus" class="field-hint"></span>
           </div>
+          <div id="watchShareCodeUseRow" class="admin-scan-filter-row">
+            <label>使用别人分享的全部盯盘码
+              <input id="watchShareCodeUseInput" type="text" placeholder="粘贴对方给你的全部盯盘码或链接">
+            </label>
+            <button type="button" id="watchShareCodeUseButton" class="ghost-button">查看全部盯盘</button>
+            <span id="watchShareCodeUseStatus" class="field-hint"></span>
+          </div>
           <div class="auth-tabs">
             <button type="button" id="watchAlertsOwnedTabButton" class="active">我的盯盘提醒</button>
             <button type="button" id="watchAlertsFollowedTabButton">我关注的盯盘</button>
+            <button type="button" id="watchAlertsSharedCodeTabButton">分享码盯盘</button>
           </div>
           <div id="watchAlertsList" class="admin-ranking-list"></div>
         </form>

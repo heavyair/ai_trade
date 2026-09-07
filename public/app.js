@@ -40,6 +40,19 @@ const watchAlertsFollowButton = document.querySelector("#watchAlertsFollowButton
 const watchAlertsFollowStatus = document.querySelector("#watchAlertsFollowStatus");
 const watchAlertsOwnedTabButton = document.querySelector("#watchAlertsOwnedTabButton");
 const watchAlertsFollowedTabButton = document.querySelector("#watchAlertsFollowedTabButton");
+const watchAlertsSharedCodeTabButton = document.querySelector("#watchAlertsSharedCodeTabButton");
+const watchShareCodeViewParamsInput = document.querySelector("#watchShareCodeViewParamsInput");
+const watchShareCodeCopyInput = document.querySelector("#watchShareCodeCopyInput");
+const watchShareCodeSaveButton = document.querySelector("#watchShareCodeSaveButton");
+const watchShareCodeCopyButton = document.querySelector("#watchShareCodeCopyButton");
+const watchShareCodeRegenerateButton = document.querySelector("#watchShareCodeRegenerateButton");
+const watchShareCodeDisableButton = document.querySelector("#watchShareCodeDisableButton");
+const watchShareCodeStatus = document.querySelector("#watchShareCodeStatus");
+const watchShareCodeValue = document.querySelector("#watchShareCodeValue");
+const watchShareCodeUsers = document.querySelector("#watchShareCodeUsers");
+const watchShareCodeUseInput = document.querySelector("#watchShareCodeUseInput");
+const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton");
+const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
 const myModelsDialog = document.querySelector("#myModelsDialog");
 const closeMyModelsButton = document.querySelector("#closeMyModelsButton");
 const myModelsList = document.querySelector("#myModelsList");
@@ -3046,7 +3059,11 @@ if (modelActionViewParamsButton) {
       ...config,
       label: context.label,
       strategyType: context.strategyType || config.strategyType || "wave",
-      meta: { targetSymbol: context.symbol || "通用", originalText: context.reason || "" },
+      meta: {
+        targetSymbol: context.symbol || "通用",
+        originalText: context.originalText || context.reason || "",
+        modelText: context.modelText || context.originalText || context.reason || "",
+      },
     };
     openPresetParamEditor(context.id, {
       preset: viewPreset,
@@ -5045,6 +5062,7 @@ function formatWatchAlertAccountStats(watch) {
 function renderWatchAlertEntry(watch, options = {}) {
   const isIndexWatch = Boolean(watch.indexCode);
   const isFollowerRow = watch.role === "follower";
+  const isSharedCodeRow = watch.role === "shared-code";
   const marketLabel = watch.market === "US" ? "美股" : "A股";
   const signalCell = isIndexWatch
     ? (watch.lastSignalDate
@@ -5063,11 +5081,12 @@ function renderWatchAlertEntry(watch, options = {}) {
   const invalidPart = watch.isInvalid
     ? ` · <span class="down" title="${escapeHtml(watch.invalidReason || "")}">⚠ 模型已失效${watch.enabled ? "（仍有持仓，继续跟踪）" : ""}</span>`
     : "";
-  const modelLink = isFollowerRow
+  const modelLink = isFollowerRow || (isSharedCodeRow && !watch.canViewParams)
     ? `${escapeHtml(watch.presetLabel || "模型")}<span class="field-hint">（关注·不可查看参数）</span>`
     : formatModelNameLink({
       id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
       config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
+      originalText: watch.presetOriginalText, modelText: watch.presetModelText,
       isOwner: false, name: null,
     });
   const targetLabel = isIndexWatch
@@ -5082,6 +5101,12 @@ function renderWatchAlertEntry(watch, options = {}) {
         <button type="button" class="ghost-button watch-alert-unfollow-button" data-watch-id="${escapeHtml(watch.id)}">取消关注</button>
       </div>
     `;
+  } else if (!options.showOwner && isSharedCodeRow) {
+    actionsPart = watch.canCopy ? `
+      <div class="admin-scan-actions">
+        <button type="button" class="ghost-button watch-share-code-copy-model-button" data-watch-id="${escapeHtml(watch.id)}">复制模型</button>
+      </div>
+    ` : "";
   } else if (!options.showOwner) {
     actionsPart = `
       <div class="admin-scan-actions">
@@ -5107,6 +5132,9 @@ function renderWatchAlertEntry(watch, options = {}) {
   const followersPart = (!options.showOwner && !isFollowerRow && Array.isArray(watch.followers))
     ? `<div class="field-hint">关注者（${watch.followers.length}）：${watch.followers.length === 0 ? "暂无" : watch.followers.map((f) => `${escapeHtml(f.followerEmail)} <button type="button" class="ghost-button watch-alert-remove-follower-button" data-watch-id="${escapeHtml(watch.id)}" data-follower-user-id="${escapeHtml(f.followerUserId)}">移除</button>`).join("、 ")}</div>`
     : "";
+  const sharedModelTextPart = isSharedCodeRow
+    ? `<div class="field-hint">模型文字：${escapeHtml(watch.presetModelText || watch.presetOriginalText || "暂无文字说明。")}</div>`
+    : "";
   // 指数盯盘没有单一股票的模拟账户/价格图/订单表——每次检查扫的是当前全部成分股，不是
   // 一支固定的票，跟"从创建那一刻起模拟交易"的单股账户模型不是一回事。
   const bodyPart = isIndexWatch
@@ -5115,6 +5143,7 @@ function renderWatchAlertEntry(watch, options = {}) {
       ${invalidReasonPart}
       ${failureReasonPart}
       ${followersPart}
+      ${sharedModelTextPart}
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
@@ -5132,6 +5161,7 @@ function renderWatchAlertEntry(watch, options = {}) {
 
 let watchAlertsCache = [];
 let adminWatchAlertsCache = [];
+let watchShareCodeState = null;
 
 // Lazy-loads the price chart the first time a watch's <details> row is actually expanded —
 // firing an /api/klines request per row on every list render would be wasteful for a list of
@@ -5175,12 +5205,44 @@ function handleWatchAlertsToggle(event, watchesCache) {
 // rendered, no refetch needed.
 let watchAlertsActiveTab = "owned";
 
+function extractWatchShareCodeToken(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    return url.searchParams.get("watchShare") || url.searchParams.get("watchShareCode") || text;
+  } catch (error) {
+    return text;
+  }
+}
+
+function getWatchShareCodeUrl(token) {
+  return `${location.origin}/?watchShare=${encodeURIComponent(token)}`;
+}
+
+function renderWatchShareCodeState() {
+  const state = watchShareCodeState || null;
+  const token = state && state.enabled ? state.token : "";
+  if (watchShareCodeViewParamsInput) watchShareCodeViewParamsInput.checked = Boolean(state && state.allowViewParams);
+  if (watchShareCodeCopyInput) watchShareCodeCopyInput.checked = Boolean(state && state.allowCopy);
+  if (watchShareCodeValue) watchShareCodeValue.textContent = token ? getWatchShareCodeUrl(token) : "尚未生成";
+  if (watchShareCodeCopyButton) watchShareCodeCopyButton.disabled = !token;
+  if (watchShareCodeRegenerateButton) watchShareCodeRegenerateButton.disabled = !token;
+  if (watchShareCodeDisableButton) watchShareCodeDisableButton.disabled = !token;
+  if (watchShareCodeUsers) {
+    const users = state && Array.isArray(state.users) ? state.users : [];
+    watchShareCodeUsers.innerHTML = users.length === 0
+      ? "使用者：暂无"
+      : `使用者（${users.length}）：${users.map((u) => `${escapeHtml(u.viewerEmail)} <button type="button" class="ghost-button watch-share-code-remove-user-button" data-viewer-user-id="${escapeHtml(u.viewerUserId)}">移除</button>`).join("、 ")}`;
+  }
+}
+
 function renderWatchAlertsList() {
   if (!watchAlertsList) return;
-  const wantRole = watchAlertsActiveTab === "followed" ? "follower" : "owner";
+  const wantRole = watchAlertsActiveTab === "followed" ? "follower" : watchAlertsActiveTab === "shared-code" ? "shared-code" : "owner";
   const visible = watchAlertsCache.filter((watch) => (watch.role || "owner") === wantRole);
   if (visible.length === 0) {
-    watchAlertsList.innerHTML = `<div class="ranking-empty">${wantRole === "follower" ? "还没有关注任何人的盯盘。" : "还没有设置盯盘提醒。"}</div>`;
+    watchAlertsList.innerHTML = `<div class="ranking-empty">${wantRole === "follower" ? "还没有关注任何人的盯盘。" : wantRole === "shared-code" ? "还没有使用任何全部盯盘分享码。" : "还没有设置盯盘提醒。"}</div>`;
     return;
   }
   watchAlertsList.innerHTML = visible.map((watch) => renderWatchAlertEntry(watch)).join("");
@@ -5190,6 +5252,7 @@ function setWatchAlertsActiveTab(tab) {
   watchAlertsActiveTab = tab;
   if (watchAlertsOwnedTabButton) watchAlertsOwnedTabButton.classList.toggle("active", tab === "owned");
   if (watchAlertsFollowedTabButton) watchAlertsFollowedTabButton.classList.toggle("active", tab === "followed");
+  if (watchAlertsSharedCodeTabButton) watchAlertsSharedCodeTabButton.classList.toggle("active", tab === "shared-code");
   renderWatchAlertsList();
 }
 
@@ -5198,6 +5261,9 @@ if (watchAlertsOwnedTabButton) {
 }
 if (watchAlertsFollowedTabButton) {
   watchAlertsFollowedTabButton.addEventListener("click", () => setWatchAlertsActiveTab("followed"));
+}
+if (watchAlertsSharedCodeTabButton) {
+  watchAlertsSharedCodeTabButton.addEventListener("click", () => setWatchAlertsActiveTab("shared-code"));
 }
 
 if (watchAlertsList) {
@@ -5214,6 +5280,8 @@ async function loadMyWatchAlerts(options = {}) {
     const response = await fetch("/api/watch-alerts", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取盯盘提醒失败。");
     watchAlertsCache = Array.isArray(payload.watches) ? payload.watches : [];
+    watchShareCodeState = payload.shareCode || null;
+    renderWatchShareCodeState();
     if (shouldRender) renderWatchAlertsList();
     return watchAlertsCache;
   } catch (error) {
@@ -5450,6 +5518,94 @@ async function removeWatchFollower(watchId, followerUserId) {
   }
 }
 
+async function saveWatchShareCode(options = {}) {
+  if (watchShareCodeStatus) watchShareCodeStatus.textContent = options.disable ? "正在取消..." : "正在保存...";
+  try {
+    const response = await fetch("/api/watch-alerts/share-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allowViewParams: Boolean(watchShareCodeViewParamsInput && watchShareCodeViewParamsInput.checked),
+        allowCopy: Boolean(watchShareCodeCopyInput && watchShareCodeCopyInput.checked),
+        regenerate: Boolean(options.regenerate),
+        disable: Boolean(options.disable),
+      }),
+    });
+    const payload = await readJsonResponse(response, options.disable ? "取消盯盘码失败。" : "保存盯盘码失败。");
+    await loadMyWatchAlerts({ render: false });
+    if (payload.shareCode) watchShareCodeState = { ...(watchShareCodeState || {}), ...payload.shareCode };
+    renderWatchShareCodeState();
+    if (watchShareCodeStatus) watchShareCodeStatus.textContent = options.disable ? "已取消。" : "已保存。";
+    if (!options.disable && watchShareCodeState && watchShareCodeState.token) {
+      try {
+        await navigator.clipboard.writeText(getWatchShareCodeUrl(watchShareCodeState.token));
+        setStatus("全部盯盘分享链接已复制。");
+      } catch (clipboardError) {
+        window.prompt("复制这个全部盯盘分享链接：", getWatchShareCodeUrl(watchShareCodeState.token));
+      }
+    }
+  } catch (error) {
+    if (watchShareCodeStatus) watchShareCodeStatus.textContent = "";
+    setStatus(`${options.disable ? "取消" : "保存"}盯盘码失败：${error.message}`, true);
+  }
+}
+
+async function useWatchShareCode(rawToken) {
+  const token = extractWatchShareCodeToken(rawToken);
+  if (!token) {
+    setStatus("请输入全部盯盘码或链接。", true);
+    return false;
+  }
+  if (watchShareCodeUseStatus) watchShareCodeUseStatus.textContent = "正在打开...";
+  try {
+    const response = await fetch("/api/watch-alerts/share-code/use", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const payload = await readJsonResponse(response, "使用盯盘码失败。");
+    if (watchShareCodeUseStatus) watchShareCodeUseStatus.textContent = `已打开：${payload.ownerEmail || ""} 的全部盯盘`;
+    await loadMyWatchAlerts();
+    setWatchAlertsActiveTab("shared-code");
+    return true;
+  } catch (error) {
+    if (watchShareCodeUseStatus) watchShareCodeUseStatus.textContent = "";
+    setStatus(`使用盯盘码失败：${error.message}`, true);
+    return false;
+  }
+}
+
+async function removeWatchShareCodeUser(viewerUserId) {
+  if (!window.confirm("确定移除这个使用者吗？移除后对方不能再通过这个码查看你的全部盯盘。")) return;
+  try {
+    const response = await fetch("/api/watch-alerts/share-code", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ viewerUserId }),
+    });
+    await readJsonResponse(response, "移除使用者失败。");
+    await loadMyWatchAlerts({ render: false });
+    renderWatchShareCodeState();
+  } catch (error) {
+    setStatus(`移除使用者失败：${error.message}`, true);
+  }
+}
+
+async function copyWatchShareCodeModel(watchId) {
+  try {
+    const response = await fetch("/api/watch-alerts/share-code/copy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchId }),
+    });
+    const payload = await readJsonResponse(response, "复制模型失败。");
+    await loadAccountPresets();
+    setStatus(`已复制模型：${payload.label || ""}`);
+  } catch (error) {
+    setStatus(`复制模型失败：${error.message}`, true);
+  }
+}
+
 async function shareWatchAlert(id, regenerate) {
   try {
     const response = await fetch("/api/watch-alerts/share", {
@@ -5477,6 +5633,48 @@ if (watchAlertsFollowButton) {
     if (ok && watchAlertsFollowTokenInput) watchAlertsFollowTokenInput.value = "";
   });
 }
+if (watchShareCodeSaveButton) {
+  watchShareCodeSaveButton.addEventListener("click", () => saveWatchShareCode());
+}
+if (watchShareCodeRegenerateButton) {
+  watchShareCodeRegenerateButton.addEventListener("click", () => {
+    if (window.confirm("重生成后，原来的全部盯盘分享链接会失效；已经使用过的人仍可继续查看，除非你单独移除。继续吗？")) {
+      saveWatchShareCode({ regenerate: true });
+    }
+  });
+}
+if (watchShareCodeDisableButton) {
+  watchShareCodeDisableButton.addEventListener("click", () => {
+    if (window.confirm("确定取消这个全部盯盘码吗？取消后旧链接不能再使用，已使用者也会失去访问。")) {
+      saveWatchShareCode({ disable: true });
+    }
+  });
+}
+if (watchShareCodeCopyButton) {
+  watchShareCodeCopyButton.addEventListener("click", async () => {
+    const token = watchShareCodeState && watchShareCodeState.enabled ? watchShareCodeState.token : "";
+    if (!token) return;
+    const url = getWatchShareCodeUrl(token);
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus("全部盯盘分享链接已复制。");
+    } catch (error) {
+      window.prompt("复制这个全部盯盘分享链接：", url);
+    }
+  });
+}
+if (watchShareCodeUseButton) {
+  watchShareCodeUseButton.addEventListener("click", async () => {
+    const ok = await useWatchShareCode(watchShareCodeUseInput ? watchShareCodeUseInput.value : "");
+    if (ok && watchShareCodeUseInput) watchShareCodeUseInput.value = "";
+  });
+}
+if (watchShareCodeUsers) {
+  watchShareCodeUsers.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest(".watch-share-code-remove-user-button") : null;
+    if (button) removeWatchShareCodeUser(button.dataset.viewerUserId);
+  });
+}
 
 // A link shared via shareWatchAlert() lands here as ?followWatch=<token>. Called from
 // initializeApp() AFTER fetchAuthSession() resolves, so currentUser is already known one way or
@@ -5484,6 +5682,21 @@ if (watchAlertsFollowButton) {
 // never tries to follow (or re-prompts to log in) a second time.
 function checkAutoFollowFromUrl() {
   const params = new URLSearchParams(location.search);
+  const shareCodeToken = params.get("watchShare") || params.get("watchShareCode");
+  if (shareCodeToken) {
+    params.delete("watchShare");
+    params.delete("watchShareCode");
+    const nextSearch = params.toString();
+    window.history.replaceState({}, "", location.pathname + (nextSearch ? `?${nextSearch}` : "") + location.hash);
+    if (!currentUser) {
+      setStatus("这是一个全部盯盘分享链接，请先登录再重新打开链接。", true);
+      return;
+    }
+    useWatchShareCode(shareCodeToken).then((ok) => {
+      if (ok && watchAlertsDialog) openWatchAlertsDialog();
+    });
+    return;
+  }
   const token = params.get("followWatch");
   if (!token) return;
   params.delete("followWatch");
@@ -5530,6 +5743,11 @@ if (watchAlertsList) {
     const removeFollowerButton = target && target.closest ? target.closest(".watch-alert-remove-follower-button") : null;
     if (removeFollowerButton) {
       removeWatchFollower(removeFollowerButton.dataset.watchId, removeFollowerButton.dataset.followerUserId);
+      return;
+    }
+    const shareCodeCopyModelButton = target && target.closest ? target.closest(".watch-share-code-copy-model-button") : null;
+    if (shareCodeCopyModelButton) {
+      copyWatchShareCodeModel(shareCodeCopyModelButton.dataset.watchId);
     }
   });
 }

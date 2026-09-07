@@ -1004,6 +1004,10 @@ button:disabled {
     flex: 1 1 140px;
   }
 
+  .share-code-head {
+    grid-template-columns: 1fr;
+  }
+
   .model-list-grid,
   .model-list-card-head {
     grid-template-columns: 1fr;
@@ -2224,6 +2228,22 @@ button:disabled {
   font-size: 13px;
 }
 
+.share-code-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dce8ec;
+  border-radius: 8px;
+  background: #f8fbfc;
+}
+
+.share-code-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
 .selected-model-detail > strong {
   font-size: 15px;
 }
@@ -3176,6 +3196,11 @@ textarea:focus {
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.code-preview--inline {
+  max-height: 96px;
+  overflow-wrap: anywhere;
 }
 
 #priceChart {
