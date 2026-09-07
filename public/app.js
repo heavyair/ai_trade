@@ -3177,7 +3177,6 @@ async function openModelActionOptimization(context) {
   const presetName = ensureOptimizablePresetFromContext(context);
   if (!presetName) return;
   const range = getModelContextOptimizationRange(context);
-  setWizardPage("simulation");
   if (codeInput) codeInput.value = context.symbol;
   if (startInput) startInput.value = range.start;
   if (endInput) endInput.value = range.end;
@@ -7450,6 +7449,13 @@ function showDialog(dialog) {
   window.requestAnimationFrame(() => {
     window.scrollTo(scrollLeft, scrollTop);
   });
+}
+
+function scrollDialogToTop(dialog) {
+  if (!dialog) return;
+  dialog.scrollTop = 0;
+  const body = dialog.querySelector(".param-dialog-body");
+  if (body) body.scrollTop = 0;
 }
 
 function closeDialog(dialog) {
@@ -13466,12 +13472,9 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
   if (optimizationSaveNameRow) optimizationSaveNameRow.classList.remove("hidden");
   if (optimizationSaveNameInput) optimizationSaveNameInput.value = optimizationPresetDraft.label || "";
   if (optimizationDialog && !optimizationDialog.open) {
-    if (typeof optimizationDialog.showModal === "function") {
-      optimizationDialog.showModal();
-    } else {
-      optimizationDialog.setAttribute("open", "open");
-    }
+    showDialog(optimizationDialog);
   }
+  scrollDialogToTop(optimizationDialog);
 }
 
 let blockRuleOptimizationState = null;
@@ -13480,6 +13483,8 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   if (!requireSignedInForSave()) return;
   const preset = strategyPresets[presetName];
   if (!preset) return;
+  closeDialog(modelSelectorDialog);
+  closeDialog(dataSelectorDialog);
   const descriptors = discoverOptimizationParameters(preset);
   blockRuleOptimizationState = { presetName, descriptors };
   if (optimizationTitle) optimizationTitle.textContent = `${preset.label || getStrategyTypeLabel(preset.strategyType)} · 设置参数优化范围`;
@@ -13499,12 +13504,9 @@ function openBlockRuleOptimizationRangeEditor(presetName) {
   if (optimizationCombinationSummary) optimizationCombinationSummary.classList.toggle("hidden", descriptors.length === 0);
   refreshOptimizationCombinationSummary();
   if (optimizationDialog && !optimizationDialog.open) {
-    if (typeof optimizationDialog.showModal === "function") {
-      optimizationDialog.showModal();
-    } else {
-      optimizationDialog.setAttribute("open", "open");
-    }
+    showDialog(optimizationDialog);
   }
+  scrollDialogToTop(optimizationDialog);
 }
 
 if (runOptimizationButton) {
@@ -13542,12 +13544,9 @@ function openOptimizationDialog(message) {
   if (optimizationProgress) optimizationProgress.classList.remove("hidden");
   setOptimizationProgress(0, 0);
   if (optimizationDialog && !optimizationDialog.open) {
-    if (typeof optimizationDialog.showModal === "function") {
-      optimizationDialog.showModal();
-    } else {
-      optimizationDialog.setAttribute("open", "open");
-    }
+    showDialog(optimizationDialog);
   }
+  scrollDialogToTop(optimizationDialog);
 }
 
 function optimizePresetParameters(presetName, paramDescriptors, maxCombinations) {

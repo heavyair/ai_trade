@@ -761,3 +761,13 @@ Follow-up fix:
   - The same helper replaces duplicated checkbox-selection code in model-action reload simulation and model-list simulation.
 - `public/index.html`
   - Bumped the static asset query string to `20260907-model-action-optimize-autoselect`.
+
+Second follow-up fix:
+
+- `public/app.js`
+  - Removed `setWizardPage("simulation")` from the model-action "优化参数" entry, because that page switch auto-opens the generic model selector after 80ms.
+  - Added `scrollDialogToTop(dialog)`.
+  - Optimization range/progress/report dialogs now use `showDialog()` and reset their internal scroll position to the top.
+  - Opening the optimization range editor closes any model/data selector dialog first, so the optimization UI is immediately visible.
+- `public/index.html`
+  - Bumped the static asset query string to `20260907-optimization-direct`.
