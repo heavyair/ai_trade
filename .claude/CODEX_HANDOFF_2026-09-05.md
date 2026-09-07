@@ -802,3 +802,13 @@ Optimization mobile scroll/accessibility fix:
   - The dialog body scrolls on mobile.
   - The header and bottom action bar are sticky.
   - The parameter range list has its own max-height and scroll, so the "运行优化" button remains reachable even with many parameter rows.
+
+Optimization ready-state fix:
+
+- `public/app.js`
+  - `loadData(options)` now supports `showLoading: false` and `autoBacktest: false`.
+  - Model-action "优化参数" uses `loadData({ showLoading: false, autoBacktest: false })`.
+  - This prevents the global loading overlay and automatic historical simulation from blocking the optimization parameter inputs/buttons.
+  - `loadData()` now returns `true`/`false`; optimization only opens the editable parameter range state after successful history loading.
+- `public/index.html`
+  - Bumped static asset query string to `20260907-optimization-ready`.

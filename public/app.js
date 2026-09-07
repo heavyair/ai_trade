@@ -3185,10 +3185,17 @@ async function openModelActionOptimization(context) {
   setStatus(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   openOptimizationPreparingDialog(`正在加载 ${context.symbol} 的模型训练+验证区间（${range.label}），准备优化参数...`);
   try {
-    await loadData();
+    const loaded = await loadData({ showLoading: false, autoBacktest: false });
+    if (!loaded) {
+      if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">历史数据加载失败，无法准备优化参数。</div>`;
+      if (optimizationParamPreview) optimizationParamPreview.textContent = "加载失败。";
+      return;
+    }
     openBlockRuleOptimizationRangeEditor(presetName);
   } catch (error) {
     setStatus(`准备优化参数失败：${error.message}`, true);
+    if (optimizationReport) optimizationReport.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "准备优化参数失败。")}</div>`;
+    if (optimizationParamPreview) optimizationParamPreview.textContent = "准备失败。";
   }
 }
 
@@ -15338,7 +15345,8 @@ function renderCompanyInfo(result) {
   companyFields.source.textContent = result.source || "--";
 }
 
-function renderResult(result) {
+function renderResult(result, options = {}) {
+  const shouldAutoBacktest = options.autoBacktest !== false;
   const { rows, summary, name, code } = result;
   const displayName = name ? `${code} ${name}` : code;
   lastRows = rows;
@@ -15373,7 +15381,9 @@ function renderResult(result) {
   renderTable(rows);
   resetBacktest();
   renderSimulationOverview();
-  if (getSelectedComparisonPresetNames().length > 0) {
+  if (!shouldAutoBacktest) {
+    setStatus(`已更新 ${displayName}，数据源：${result.source}。`);
+  } else if (getSelectedComparisonPresetNames().length > 0) {
     setStatus(`已更新 ${displayName}，数据源：${result.source}。正在自动模拟已选择模型...`);
     startBacktest();
   } else {
@@ -15383,7 +15393,9 @@ function renderResult(result) {
   }
 }
 
-async function loadData() {
+async function loadData(options = {}) {
+  const showLoading = options.showLoading !== false;
+  const autoBacktest = options.autoBacktest !== false;
   const symbol = normalizeSymbolInput(codeInput.value);
   codeInput.value = symbol;
   updateSymbolPresetFromInput();
@@ -15394,7 +15406,11 @@ async function loadData() {
     end: endInput.value,
   });
 
-  setLoading(true, "正在加载历史数据，请稍候...");
+  if (showLoading) {
+    setLoading(true, "正在加载历史数据，请稍候...");
+  } else {
+    setLoading(false);
+  }
   setStatus("正在获取行情数据...");
 
   const controller = new AbortController();
@@ -15403,13 +15419,15 @@ async function loadData() {
   try {
     const response = await fetch(`/api/klines?${params.toString()}`, { signal: controller.signal });
     const result = await readJsonResponse(response, "历史行情读取失败。");
-    renderResult(result);
+    renderResult(result, { autoBacktest });
+    return true;
   } catch (error) {
     const message = error.name === "AbortError" ? "请求超时，请重试。" : (error.message || "加载失败。");
     setStatus(message, true);
+    return false;
   } finally {
     window.clearTimeout(timeoutId);
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }
 }
 
