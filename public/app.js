@@ -5423,12 +5423,24 @@ function formatWatchAlertAccountStats(watch) {
   if (watch.accountEquity === null || watch.accountEquity === undefined || watch.accountRowsScored <= 0) {
     return '<span class="field-hint">账户数据尚未计算（等待下一次检查周期）</span>';
   }
-  const returnClass = watch.accountReturnRate >= 0 ? "up" : "down";
+  const cash = Number(watch.accountCash);
+  const shares = Number(watch.accountShares);
+  const equity = Number(watch.accountEquity);
+  const positionRatio = Number(watch.accountPositionRatio);
+  const returnRate = Number(watch.accountReturnRate);
+  const annualizedReturn = Number(watch.accountAnnualizedReturn);
+  const positionValue = Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : null;
+  const returnClass = returnRate >= 0 ? "up" : "down";
+  const startDate = String(watch.createdAt || "").slice(0, 10);
+  const updatedDate = String(watch.accountUpdatedAt || watch.lastCheckedAt || "").slice(0, 10);
   return `
-    <span>账户权益 <strong>${watch.accountEquity.toFixed(0)}</strong></span>
-    <span class="${returnClass}">回报率 ${watch.accountReturnRate.toFixed(1)}%</span>
-    <span class="${returnClass}">年化 ${watch.accountAnnualizedReturn.toFixed(1)}%</span>
-    <span>持仓 ${watch.accountPositionRatio.toFixed(1)}%</span>
+    <span>账户期 ${escapeHtml(startDate || "设置日")} 起${updatedDate ? ` · 更新 ${escapeHtml(updatedDate)}` : ""}</span>
+    <span>现金 <strong>${Number.isFinite(cash) ? formatMoney(cash) : "--"}</strong></span>
+    <span>持仓 ${Number.isFinite(shares) ? `${shares.toFixed(0)}股` : "--"}${Number.isFinite(positionRatio) ? ` · ${positionRatio.toFixed(1)}%` : ""}</span>
+    <span>持仓市值 ${positionValue !== null ? formatMoney(positionValue) : "--"}</span>
+    <span>账户权益 <strong>${Number.isFinite(equity) ? formatMoney(equity) : "--"}</strong></span>
+    <span class="${returnClass}">回报 ${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</span>
+    <span class="${returnClass}">年化回报 ${Number.isFinite(annualizedReturn) ? `${annualizedReturn.toFixed(1)}%` : "--"}</span>
   `;
 }
 
