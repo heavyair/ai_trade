@@ -2732,6 +2732,24 @@ function launchScheduledJob(jobName, { sessionStartedAt, triggeredBy }) {
   });
 }
 
+function getMyModelsValidationJobType(ownerUserId) {
+  return `myModelsValidation_${sha256(ownerUserId).slice(0, 16)}`;
+}
+
+function launchMyModelsValidationJob({ ownerUserId, ownerEmail, sessionStartedAt }) {
+  const jobType = getMyModelsValidationJobType(ownerUserId);
+  launchBackgroundJob({
+    jobType,
+    scriptPath: path.join(__dirname, "scripts", "universe", "run-model-validation-daily.js"),
+    scriptArgs: [`--ownerUserId=${ownerUserId}`, "--subjectTypes=owned_preset"],
+    sessionStartedAt,
+    triggeredBy: ownerEmail,
+    extra: { ownerUserId, subjectTypes: ["owned_preset"] },
+    sharedLock: false,
+  });
+  return jobType;
+}
+
 function launchStockScreenProcess({ runId, presetId, market, ownerUserId, sessionStartedAt, triggeredBy }) {
   const scriptArgs = [`--runId=${runId}`, `--presetId=${presetId}`, `--market=${market}`];
   if (ownerUserId) scriptArgs.push(`--ownerUserId=${ownerUserId}`);
@@ -6424,6 +6442,8 @@ async function handleMyModelsApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
+    const ownerUserId = userIdForEmail(currentUser.email);
+    const jobType = getMyModelsValidationJobType(ownerUserId);
     const result = await dbPool.query(`
       SELECT sp.id, sp.numeric_id, sp.name, sp.label, sp.strategy_type, sp.config, sp.meta, sp.created_at,
         sp.share_public, sp.share_allow_view_params, sp.share_allow_watch, sp.share_allow_copy,
@@ -6431,22 +6451,83 @@ async function handleMyModelsApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
-        pvs.updated_at AS snapshot_updated_at
+        pvs.updated_at AS snapshot_updated_at,
+        mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
+        mvs.validation_start_date AS model_validation_validation_start_date,
+        mvs.original_validation_end_date AS model_validation_original_validation_end_date,
+        mvs.latest_trade_date AS model_validation_latest_trade_date,
+        mvs.cumulative_days AS model_validation_cumulative_days,
+        mvs.cumulative_return_rate AS model_validation_cumulative_return_rate,
+        mvs.cumulative_annualized_return AS model_validation_cumulative_annualized_return,
+        mvs.cumulative_max_drawdown AS model_validation_cumulative_max_drawdown,
+        mvs.cumulative_trades AS model_validation_cumulative_trades,
+        mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
+        mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
+        mvs.incremental_start_date AS model_validation_incremental_start_date,
+        mvs.incremental_days AS model_validation_incremental_days,
+        mvs.incremental_return_rate AS model_validation_incremental_return_rate,
+        mvs.incremental_annualized_return AS model_validation_incremental_annualized_return,
+        mvs.incremental_max_drawdown AS model_validation_incremental_max_drawdown,
+        mvs.incremental_trades AS model_validation_incremental_trades,
+        mvs.target_percent AS model_validation_target_percent,
+        mvs.last_checked_at AS model_validation_last_checked_at,
+        mvs.last_error AS model_validation_last_error
       FROM strategy_presets sp
       INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'owned_preset' AND mvs.subject_id = sp.id
       WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL
       ORDER BY pvs.updated_at DESC
-    `, [userIdForEmail(currentUser.email)]);
+    `, [ownerUserId]);
     const presets = result.rows.map((row) => ({
       ...mapPresetValidationRow(row),
       sharePublic: Boolean(row.share_public),
       shareAllowViewParams: Boolean(row.share_allow_view_params),
       shareAllowWatch: Boolean(row.share_allow_watch),
       shareAllowCopy: Boolean(row.share_allow_copy),
+      dailyValidation: mapModelValidationState(row),
     }));
-    sendJson(res, 200, { presets });
+    sendJson(res, 200, {
+      presets,
+      validationJob: {
+        running: isLightJobRunning(jobType),
+        lastResult: lightJobLastResult.get(jobType) || null,
+      },
+    });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "读取我的模型失败。" });
+  }
+}
+
+async function handleMyModelsValidateAllApi(req, res) {
+  try {
+    const currentUser = await requireCurrentUser(req);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const ownerUserId = userIdForEmail(currentUser.email);
+    const jobType = getMyModelsValidationJobType(ownerUserId);
+    if (isLightJobRunning(jobType)) {
+      sendJson(res, 409, { error: "你的模型正在用最新数据验证中，请等它完成。" });
+      return;
+    }
+    const countResult = await dbPool.query(`
+      SELECT COUNT(*)::int AS count
+      FROM strategy_presets sp
+      JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
+      WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL AND pvs.reached_target = TRUE
+        AND COALESCE(NULLIF(sp.meta->>'targetSymbol', ''), NULLIF(sp.meta->>'symbol', '')) IS NOT NULL
+    `, [ownerUserId]);
+    const count = Number(countResult.rows[0] && countResult.rows[0].count) || 0;
+    if (count === 0) {
+      sendJson(res, 400, { error: "没有可用最新数据验证的达标模型。" });
+      return;
+    }
+    const sessionStartedAt = new Date().toISOString();
+    launchMyModelsValidationJob({ ownerUserId, ownerEmail: currentUser.email, sessionStartedAt });
+    sendJson(res, 200, { started: true, count, sessionStartedAt });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "启动我的模型验证失败。" });
   }
 }
 
@@ -6982,6 +7063,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/my-models") {
     handleMyModelsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/my-models/validate-all") {
+    handleMyModelsValidateAllApi(req, res);
     return;
   }
 

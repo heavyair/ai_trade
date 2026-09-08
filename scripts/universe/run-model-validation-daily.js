@@ -20,6 +20,8 @@ const TRADE_FEE = Number(process.env.MODEL_VALIDATION_TRADE_FEE || 5);
 function parseArgs(argv) {
   const options = {
     symbols: [],
+    ownerUserId: "",
+    subjectTypes: [],
     dryRun: false,
     targetPercent: 50,
     minIncrementalDays: 60,
@@ -27,6 +29,11 @@ function parseArgs(argv) {
   };
   for (const arg of argv) {
     if (arg === "--dryRun") options.dryRun = true;
+    else if (arg.startsWith("--ownerUserId=")) {
+      options.ownerUserId = arg.slice("--ownerUserId=".length).trim();
+    } else if (arg.startsWith("--subjectTypes=")) {
+      options.subjectTypes = arg.slice("--subjectTypes=".length).split(",").map((item) => item.trim()).filter(Boolean);
+    }
     else if (arg.startsWith("--symbols=")) {
       options.symbols = arg.slice("--symbols=".length).split(",").map((item) => item.trim().toUpperCase()).filter(Boolean);
     } else if (arg.startsWith("--targetPercent=")) {
@@ -180,7 +187,14 @@ async function loadCandidates(pool, options) {
   const symbolFilter = options.symbols.length
     ? "AND UPPER(symbol) = ANY($1)"
     : "";
-  const params = options.symbols.length ? [options.symbols] : [];
+  const ownerFilter = options.ownerUserId ? `AND owner_user_id = $${options.symbols.length ? 2 : 1}` : "";
+  const typeFilter = options.subjectTypes.length
+    ? `AND subject_type = ANY($${(options.symbols.length ? 1 : 0) + (options.ownerUserId ? 1 : 0) + 1})`
+    : "";
+  const params = [];
+  if (options.symbols.length) params.push(options.symbols);
+  if (options.ownerUserId) params.push(options.ownerUserId);
+  if (options.subjectTypes.length) params.push(options.subjectTypes);
   const result = await pool.query(`
     WITH ai_models AS (
       SELECT
@@ -254,11 +268,14 @@ async function loadCandidates(pool, options) {
       LEFT JOIN preset_validation_snapshots pvs ON pvs.preset_id = wa.preset_id
       WHERE wa.enabled = TRUE AND wa.index_code IS NULL AND wa.symbol IS NOT NULL
     )
-    SELECT * FROM ai_models WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
+    SELECT * FROM (
+      SELECT * FROM ai_models WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
     UNION ALL
-    SELECT * FROM owned_presets WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
+      SELECT * FROM owned_presets WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
     UNION ALL
-    SELECT * FROM watches WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
+      SELECT * FROM watches WHERE symbol IS NOT NULL AND symbol <> '' ${symbolFilter}
+    ) candidates
+    WHERE TRUE ${ownerFilter} ${typeFilter}
     ORDER BY subject_type, symbol, subject_id
   `, [...params, options.targetPercent]);
   return result.rows;

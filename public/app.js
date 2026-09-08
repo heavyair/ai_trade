@@ -55,6 +55,9 @@ const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton
 const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
 const myModelsDialog = document.querySelector("#myModelsDialog");
 const closeMyModelsButton = document.querySelector("#closeMyModelsButton");
+const validateAllMyModelsButton = document.querySelector("#validateAllMyModelsButton");
+const refreshMyModelsButton = document.querySelector("#refreshMyModelsButton");
+const myModelsValidationStatus = document.querySelector("#myModelsValidationStatus");
 const myModelsList = document.querySelector("#myModelsList");
 const publicModelsDialog = document.querySelector("#publicModelsDialog");
 const closePublicModelsButton = document.querySelector("#closePublicModelsButton");
@@ -3760,6 +3763,24 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
 // validation (see handleMyModelsApi). Reuses renderAiGeneratedPresetTable exactly like the admin
 // AI候选 panels, just with showShareSettings instead of showStatus/showRecommendDiff.
 let myModelsCache = [];
+let myModelsValidationJob = null;
+
+function renderMyModelsValidationJobStatus() {
+  if (!myModelsValidationStatus) return;
+  if (myModelsValidationJob && myModelsValidationJob.running) {
+    myModelsValidationStatus.textContent = "正在用最新数据验证...";
+  } else if (myModelsValidationJob && myModelsValidationJob.lastResult) {
+    const result = myModelsValidationJob.lastResult;
+    myModelsValidationStatus.textContent = result.exitCode === 0
+      ? `最近验证完成：${formatAdminDate(result.endedAt || result.sessionStartedAt)}`
+      : `最近验证失败：${formatAdminDate(result.endedAt || result.sessionStartedAt)}`;
+  } else {
+    myModelsValidationStatus.textContent = "";
+  }
+  if (validateAllMyModelsButton) {
+    validateAllMyModelsButton.disabled = Boolean(myModelsValidationJob && myModelsValidationJob.running);
+  }
+}
 
 async function loadMyModels() {
   if (!myModelsList) return;
@@ -3768,6 +3789,8 @@ async function loadMyModels() {
     const response = await fetch("/api/my-models", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取我的模型失败。");
     myModelsCache = Array.isArray(payload.presets) ? payload.presets : [];
+    myModelsValidationJob = payload.validationJob || null;
+    renderMyModelsValidationJobStatus();
     renderMyModelsDialogList();
   } catch (error) {
     myModelsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
@@ -3793,6 +3816,27 @@ function openMyModelsDialog() {
 
 if (closeMyModelsButton && myModelsDialog) {
   closeMyModelsButton.addEventListener("click", () => closeDialog(myModelsDialog));
+}
+
+if (refreshMyModelsButton) {
+  refreshMyModelsButton.addEventListener("click", () => loadMyModels());
+}
+
+if (validateAllMyModelsButton) {
+  validateAllMyModelsButton.addEventListener("click", async () => {
+    validateAllMyModelsButton.disabled = true;
+    if (myModelsValidationStatus) myModelsValidationStatus.textContent = "正在启动...";
+    try {
+      const response = await fetch("/api/my-models/validate-all", { method: "POST" });
+      const payload = await readJsonResponse(response, "启动验证失败。");
+      myModelsValidationJob = { running: true, lastResult: null };
+      renderMyModelsValidationJobStatus();
+      setStatus(`已启动最新数据验证：${payload.count || 0} 个模型。稍后点刷新查看结果。`);
+    } catch (error) {
+      setStatus(`启动验证失败：${error.message}`, true);
+      await loadMyModels();
+    }
+  });
 }
 
 if (myModelsList) {
