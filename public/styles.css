@@ -2703,17 +2703,24 @@ textarea:focus {
 }
 
 .watch-alerts-dialog .param-dialog-body {
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
   max-height: 100dvh;
-  overflow: hidden;
+  overflow: auto;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
 }
 
 .watch-alerts-dialog .admin-ranking-list {
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
   padding-bottom: 18px;
-  -webkit-overflow-scrolling: touch;
+}
+
+.watch-alerts-dialog .admin-ranking-table th {
+  position: static;
 }
 
 .optimization-dialog .param-dialog-body {
