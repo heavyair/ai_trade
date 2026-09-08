@@ -165,8 +165,11 @@ function computeWindowStats(states, windowStart, windowEnd) {
   const rowsInWindow = endIndex - baselineIndex;
   if (rowsInWindow <= 0 || !(baselineEquity > 0)) return null;
   const returnPct = ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100;
-  const baselineTrades = baselineIndex >= 0 ? states[baselineIndex].trades.length : 0;
-  const trades = states[endIndex].trades.length - baselineTrades;
+  // Buy-hold states (engine.buildBuyHoldStates) carry no .trades array at all — this function is
+  // also called against those (for the per-year buy-hold drawdown reference), so treat a missing
+  // .trades as 0 rather than crashing, same as a real backtest state with no trades yet.
+  const baselineTrades = baselineIndex >= 0 && states[baselineIndex].trades ? states[baselineIndex].trades.length : 0;
+  const trades = (states[endIndex].trades ? states[endIndex].trades.length : 0) - baselineTrades;
 
   let peak = baselineEquity;
   let maxDrawdown = 0;
@@ -571,6 +574,7 @@ async function main() {
       }
     } catch (error) {
       console.error(`[error] ${symbolEntry.code}: ${error.message}`);
+      console.error(error.stack);
       errored += 1;
       writeProgress({ errored });
     }
