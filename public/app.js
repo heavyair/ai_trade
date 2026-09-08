@@ -22,6 +22,9 @@ const newModelDialog = document.querySelector("#newModelDialog");
 const closeNewModelButton = document.querySelector("#closeNewModelButton");
 const watchAlertsDialog = document.querySelector("#watchAlertsDialog");
 const closeWatchAlertsButton = document.querySelector("#closeWatchAlertsButton");
+const openWatchShareDialogButton = document.querySelector("#openWatchShareDialogButton");
+const watchShareDialog = document.querySelector("#watchShareDialog");
+const closeWatchShareDialogButton = document.querySelector("#closeWatchShareDialogButton");
 const watchAlertsAuthNote = document.querySelector("#watchAlertsAuthNote");
 const watchAlertsPresetSelect = document.querySelector("#watchAlertsPresetSelect");
 const watchAlertsModeSelect = document.querySelector("#watchAlertsModeSelect");
@@ -41,6 +44,7 @@ const watchAlertsFollowStatus = document.querySelector("#watchAlertsFollowStatus
 const watchAlertsOwnedTabButton = document.querySelector("#watchAlertsOwnedTabButton");
 const watchAlertsFollowedTabButton = document.querySelector("#watchAlertsFollowedTabButton");
 const watchAlertsSharedCodeTabButton = document.querySelector("#watchAlertsSharedCodeTabButton");
+const watchMarketFilterButtons = Array.from(document.querySelectorAll("[data-watch-market-filter]"));
 const watchShareCodeViewParamsInput = document.querySelector("#watchShareCodeViewParamsInput");
 const watchShareCodeCopyInput = document.querySelector("#watchShareCodeCopyInput");
 const watchShareCodeSaveButton = document.querySelector("#watchShareCodeSaveButton");
@@ -5444,7 +5448,7 @@ function renderWatchAlertEntry(watch, options = {}) {
   const isIndexWatch = Boolean(watch.indexCode);
   const isFollowerRow = watch.role === "follower";
   const isSharedCodeRow = watch.role === "shared-code";
-  const marketLabel = watch.market === "US" ? "美股" : "A股";
+  const marketLabel = watch.market === "US" ? "美股" : watch.market === "HK" ? "港股" : "A股";
   const signalCell = isIndexWatch
     ? (watch.lastSignalDate
       ? `<span class="up" title="${escapeHtml(watch.lastSignalReason || "")}">${escapeHtml(watch.lastSignalDate)} 有成分股触发信号</span>`
@@ -5543,6 +5547,7 @@ function renderWatchAlertEntry(watch, options = {}) {
 let watchAlertsCache = [];
 let adminWatchAlertsCache = [];
 let watchShareCodeState = null;
+let watchAlertsMarketFilter = "";
 
 // Lazy-loads the price chart the first time a watch's <details> row is actually expanded —
 // firing an /api/klines request per row on every list render would be wasteful for a list of
@@ -5621,9 +5626,25 @@ function renderWatchShareCodeState() {
 function renderWatchAlertsList() {
   if (!watchAlertsList) return;
   const wantRole = watchAlertsActiveTab === "followed" ? "follower" : watchAlertsActiveTab === "shared-code" ? "shared-code" : "owner";
-  const visible = watchAlertsCache.filter((watch) => (watch.role || "owner") === wantRole);
+  const roleWatches = watchAlertsCache.filter((watch) => (watch.role || "owner") === wantRole);
+  const counts = { "": roleWatches.length, CN: 0, US: 0, HK: 0 };
+  roleWatches.forEach((watch) => {
+    const market = String(watch.market || "").trim().toUpperCase();
+    if (market === "CN" || market === "US" || market === "HK") counts[market] += 1;
+  });
+  watchMarketFilterButtons.forEach((button) => {
+    const market = String(button.dataset.watchMarketFilter || "");
+    const baseLabel = market === "CN" ? "A股" : market === "US" ? "美股" : market === "HK" ? "港股" : "全部";
+    button.textContent = `${baseLabel} ${counts[market] || 0}`;
+    button.classList.toggle("active", watchAlertsMarketFilter === market);
+  });
+  const visible = watchAlertsMarketFilter
+    ? roleWatches.filter((watch) => String(watch.market || "").trim().toUpperCase() === watchAlertsMarketFilter)
+    : roleWatches;
   if (visible.length === 0) {
-    watchAlertsList.innerHTML = `<div class="ranking-empty">${wantRole === "follower" ? "还没有关注任何人的盯盘。" : wantRole === "shared-code" ? "还没有使用任何全部盯盘分享码。" : "还没有设置盯盘提醒。"}</div>`;
+    const marketLabel = watchAlertsMarketFilter === "CN" ? "A股" : watchAlertsMarketFilter === "US" ? "美股" : watchAlertsMarketFilter === "HK" ? "港股" : "";
+    const suffix = marketLabel ? `没有${marketLabel}盯盘。` : (wantRole === "follower" ? "还没有关注任何人的盯盘。" : wantRole === "shared-code" ? "还没有使用任何全部盯盘分享码。" : "还没有设置盯盘提醒。");
+    watchAlertsList.innerHTML = `<div class="ranking-empty">${suffix}</div>`;
     return;
   }
   watchAlertsList.innerHTML = visible.map((watch) => renderWatchAlertEntry(watch)).join("");
@@ -5646,6 +5667,12 @@ if (watchAlertsFollowedTabButton) {
 if (watchAlertsSharedCodeTabButton) {
   watchAlertsSharedCodeTabButton.addEventListener("click", () => setWatchAlertsActiveTab("shared-code"));
 }
+watchMarketFilterButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    watchAlertsMarketFilter = String(button.dataset.watchMarketFilter || "");
+    renderWatchAlertsList();
+  });
+});
 
 if (watchAlertsList) {
   watchAlertsList.addEventListener("toggle", (event) => handleWatchAlertsToggle(event, watchAlertsCache), true);
@@ -5710,6 +5737,11 @@ function openWatchAlertsDialog() {
   prepareWatchAlertsDialog();
   loadMyWatchAlerts();
   showDialog(watchAlertsDialog);
+}
+
+function openWatchShareDialog() {
+  loadMyWatchAlerts({ render: false });
+  showDialog(watchShareDialog);
 }
 
 function matchesOwnedWatchRequest(watch, request) {
@@ -6055,6 +6087,12 @@ if (watchShareCodeUsers) {
     const button = event.target && event.target.closest ? event.target.closest(".watch-share-code-remove-user-button") : null;
     if (button) removeWatchShareCodeUser(button.dataset.viewerUserId);
   });
+}
+if (openWatchShareDialogButton) {
+  openWatchShareDialogButton.addEventListener("click", () => openWatchShareDialog());
+}
+if (closeWatchShareDialogButton && watchShareDialog) {
+  closeWatchShareDialogButton.addEventListener("click", () => closeDialog(watchShareDialog));
 }
 
 // A link shared via shareWatchAlert() lands here as ?followWatch=<token>. Called from

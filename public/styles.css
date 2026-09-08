@@ -2633,6 +2633,13 @@ button:disabled {
   align-items: flex-start;
 }
 
+.dialog-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .dialog-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2721,6 +2728,37 @@ textarea:focus {
 
 .watch-alerts-dialog .admin-ranking-table th {
   position: static;
+}
+
+.watch-market-tabs {
+  justify-content: flex-start;
+}
+
+.watch-create-details {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.watch-create-details summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.watch-create-details .admin-scan-filter-row {
+  margin: 0;
+  padding: 0 12px 12px;
+}
+
+.watch-share-dialog .param-dialog-body {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: auto;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  -webkit-overflow-scrolling: touch;
 }
 
 .optimization-dialog .param-dialog-body {
@@ -3481,11 +3519,13 @@ tbody tr:last-child td {
 
   .research-actions,
   .dialog-actions,
+  .dialog-head-actions,
   .section-actions {
     width: 100%;
   }
 
   .dialog-actions,
+  .dialog-head-actions,
   .section-actions {
     display: grid;
     grid-template-columns: 1fr;

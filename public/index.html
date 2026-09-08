@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260908-watch-dialog-scroll">
+    <link rel="stylesheet" href="/styles.css?v=20260908-watch-share-filter">
   </head>
   <body>
     <main class="shell">
@@ -91,12 +91,75 @@
         <form method="dialog" class="param-dialog-body">
           <div class="dialog-head">
             <div>
-              <h2>设置盯盘提醒</h2>
-              <p class="field-hint">选择一个已保存的模型，盯一支股票或整个指数的成分股，系统会按设定频率检查最近一个交易日是否触发下单信号，触发后会在这里标记并发邮件通知你（指数盯盘一次邮件会列出所有触发信号的成分股）。单股盯盘从创建那一刻起会自动模拟交易，可以随时展开查看账户、订单和回报率；展开自己的盯盘后可以生成分享链接。指数盯盘不模拟账户。</p>
+              <h2>盯盘列表</h2>
+              <p class="field-hint">查看和管理当前盯盘；单股盯盘可以展开查看账户、订单和回报率。</p>
             </div>
-            <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
+            <div class="dialog-head-actions">
+              <button id="openWatchShareDialogButton" type="button" class="ghost-button">分享/导入</button>
+              <button id="closeWatchAlertsButton" type="button" class="ghost-button">关闭</button>
+            </div>
           </div>
           <div id="watchAlertsAuthNote" class="auth-required-note hidden">设置盯盘提醒需要免费注册、登录并验证电子邮件，提醒会发到验证过的邮箱。</div>
+          <details class="watch-create-details">
+            <summary>添加盯盘</summary>
+            <div id="watchAlertsCreateRow" class="admin-scan-filter-row">
+              <label>选择模型
+                <select id="watchAlertsPresetSelect"></select>
+              </label>
+              <label>盯盘范围
+                <select id="watchAlertsModeSelect">
+                  <option value="symbol" selected>单个股票</option>
+                  <option value="index">整个指数（全市场扫描）</option>
+                </select>
+              </label>
+              <label id="watchAlertsMarketLabel">市场
+                <select id="watchAlertsMarketSelect">
+                  <option value="CN">A股</option>
+                  <option value="US">美股</option>
+                </select>
+              </label>
+              <label id="watchAlertsSymbolLabel">股票代码
+                <input id="watchAlertsSymbolInput" type="text" placeholder="如 600519 或 NVDA">
+              </label>
+              <label id="watchAlertsIndexLabel" class="hidden">指数
+                <select id="watchAlertsIndexSelect"></select>
+              </label>
+              <label>检查频率
+                <select id="watchAlertsFrequencySelect">
+                  <option value="30">每 30 分钟</option>
+                  <option value="60" selected>每 1 小时</option>
+                  <option value="240">每 4 小时</option>
+                  <option value="1440">每天一次</option>
+                </select>
+              </label>
+              <button type="button" id="watchAlertsCreateButton" class="ghost-button">添加提醒</button>
+              <span id="watchAlertsCreateStatus" class="field-hint"></span>
+            </div>
+          </details>
+          <div class="auth-tabs">
+            <button type="button" id="watchAlertsOwnedTabButton" class="active">我的盯盘提醒</button>
+            <button type="button" id="watchAlertsFollowedTabButton">我关注的盯盘</button>
+            <button type="button" id="watchAlertsSharedCodeTabButton">分享码盯盘</button>
+          </div>
+          <div class="model-list-market-tabs watch-market-tabs">
+            <button type="button" class="ghost-button model-list-market-filter active" data-watch-market-filter="">全部</button>
+            <button type="button" class="ghost-button model-list-market-filter" data-watch-market-filter="CN">A股</button>
+            <button type="button" class="ghost-button model-list-market-filter" data-watch-market-filter="US">美股</button>
+            <button type="button" class="ghost-button model-list-market-filter" data-watch-market-filter="HK">港股</button>
+          </div>
+          <div id="watchAlertsList" class="admin-ranking-list"></div>
+        </form>
+      </dialog>
+
+      <dialog id="watchShareDialog" class="param-dialog watch-share-dialog" aria-label="盯盘分享和导入">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>盯盘分享/导入</h2>
+              <p class="field-hint">管理我的全部盯盘分享码，或输入别人发来的单条盯盘链接、全部盯盘码。</p>
+            </div>
+            <button id="closeWatchShareDialogButton" type="button" class="ghost-button">关闭</button>
+          </div>
           <div id="watchShareCodePanel" class="share-code-panel">
             <div class="share-code-head">
               <div>
@@ -116,39 +179,6 @@
             <div id="watchShareCodeValue" class="code-preview code-preview--inline">尚未生成</div>
             <div id="watchShareCodeUsers" class="field-hint">使用者：暂无</div>
           </div>
-          <div id="watchAlertsCreateRow" class="admin-scan-filter-row">
-            <label>选择模型
-              <select id="watchAlertsPresetSelect"></select>
-            </label>
-            <label>盯盘范围
-              <select id="watchAlertsModeSelect">
-                <option value="symbol" selected>单个股票</option>
-                <option value="index">整个指数（全市场扫描）</option>
-              </select>
-            </label>
-            <label id="watchAlertsMarketLabel">市场
-              <select id="watchAlertsMarketSelect">
-                <option value="CN">A股</option>
-                <option value="US">美股</option>
-              </select>
-            </label>
-            <label id="watchAlertsSymbolLabel">股票代码
-              <input id="watchAlertsSymbolInput" type="text" placeholder="如 600519 或 NVDA">
-            </label>
-            <label id="watchAlertsIndexLabel" class="hidden">指数
-              <select id="watchAlertsIndexSelect"></select>
-            </label>
-            <label>检查频率
-              <select id="watchAlertsFrequencySelect">
-                <option value="30">每 30 分钟</option>
-                <option value="60" selected>每 1 小时</option>
-                <option value="240">每 4 小时</option>
-                <option value="1440">每天一次</option>
-              </select>
-            </label>
-            <button type="button" id="watchAlertsCreateButton" class="ghost-button">添加提醒</button>
-            <span id="watchAlertsCreateStatus" class="field-hint"></span>
-          </div>
           <div id="watchAlertsFollowRow" class="admin-scan-filter-row">
             <label>关注别人分享的盯盘
               <input id="watchAlertsFollowTokenInput" type="text" placeholder="粘贴对方给你的邀请码或链接">
@@ -163,12 +193,6 @@
             <button type="button" id="watchShareCodeUseButton" class="ghost-button">查看全部盯盘</button>
             <span id="watchShareCodeUseStatus" class="field-hint"></span>
           </div>
-          <div class="auth-tabs">
-            <button type="button" id="watchAlertsOwnedTabButton" class="active">我的盯盘提醒</button>
-            <button type="button" id="watchAlertsFollowedTabButton">我关注的盯盘</button>
-            <button type="button" id="watchAlertsSharedCodeTabButton">分享码盯盘</button>
-          </div>
-          <div id="watchAlertsList" class="admin-ranking-list"></div>
         </form>
       </dialog>
 
@@ -1614,6 +1638,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260908-watch-dialog-scroll"></script>
+    <script src="/app.js?v=20260908-watch-share-filter"></script>
   </body>
 </html>
