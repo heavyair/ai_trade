@@ -182,6 +182,8 @@ function yearBreakdownPasses(years, { requireTarget = false, targetPercent = 50,
     const annualized = Number(year.annualizedReturn);
     if (!Number.isFinite(annualized)) return false;
     if (requireTarget && annualized < targetPercent) return false;
+    if ((Number(year.rows) || 0) < MIN_UPSIDE_GATE_ROWS) return false;
+    if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
     const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
     if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
     const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);

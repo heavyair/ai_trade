@@ -109,7 +109,7 @@ function buildWindowBreakdown({ allRows, states, start, end, upsideThresholdPerc
       start, end, annualizedReturn: null, returnRate: null, trades: null, rows: 0,
       maxDrawdown: null, buyHoldMaxDrawdown, upsideDeviation, requiredAnnualizedReturn,
       allowedMaxDrawdown, passesTargetGate: targetPercent === null,
-      passesUpsideGate: requiredAnnualizedReturn === null,
+      passesUpsideGate: false,
       passesDrawdownGate: allowedMaxDrawdown === null,
     };
   }
@@ -135,7 +135,7 @@ function buildWindowBreakdown({ allRows, states, start, end, upsideThresholdPerc
     maxDrawdown, buyHoldMaxDrawdown, upsideDeviation, requiredAnnualizedReturn,
     allowedMaxDrawdown,
     passesTargetGate: targetPercent === null || (annualizedReturn !== null && annualizedReturn >= targetPercent),
-    passesUpsideGate: requiredAnnualizedReturn === null || (annualizedReturn !== null && annualizedReturn >= requiredAnnualizedReturn),
+    passesUpsideGate: requiredAnnualizedReturn !== null && annualizedReturn !== null && annualizedReturn >= requiredAnnualizedReturn,
     passesDrawdownGate: allowedMaxDrawdown === null || maxDrawdown < allowedMaxDrawdown,
   };
 }
@@ -198,6 +198,8 @@ function yearBreakdownPasses(years, options = {}) {
     const annualized = Number(year.annualizedReturn);
     if (!Number.isFinite(annualized)) return false;
     if (requireTarget && annualized < targetPercent) return false;
+    if ((Number(year.rows) || 0) < MIN_UPSIDE_GATE_ROWS) return false;
+    if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
     const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
     if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
     const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
