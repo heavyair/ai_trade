@@ -3768,7 +3768,21 @@ let myModelsValidationJob = null;
 function renderMyModelsValidationJobStatus() {
   if (!myModelsValidationStatus) return;
   if (myModelsValidationJob && myModelsValidationJob.running) {
-    myModelsValidationStatus.textContent = "正在用最新数据验证...";
+    const progress = myModelsValidationJob.progress || {};
+    const summary = progress.summary || {};
+    const current = progress.currentSymbol
+      ? `${progress.currentIndex || progress.processed || 0}/${progress.totalCandidates || "?"} ${progress.currentSymbol} ${progress.currentModelLabel || ""}`
+      : `${progress.processed || 0}/${progress.totalCandidates || "?"}`;
+    myModelsValidationStatus.innerHTML = `
+      <span>正在用最新数据验证：${escapeHtml(current)}</span>
+      <span>已完成 ${Number(progress.processed) || 0}/${progress.totalCandidates || "?"}</span>
+      <span class="up">有效 ${Number(summary.valid) || 0}</span>
+      <span>观察 ${Number(summary.watching) || 0}</span>
+      <span>预警 ${Number(summary.warning) || 0}</span>
+      <span class="down">失效 ${Number(summary.invalid) || 0}</span>
+      <span class="down">错误 ${Number(summary.error) || 0}</span>
+      ${progress.currentReason ? `<span>${escapeHtml(progress.currentReason)}</span>` : ""}
+    `;
   } else if (myModelsValidationJob && myModelsValidationJob.lastResult) {
     const result = myModelsValidationJob.lastResult;
     myModelsValidationStatus.textContent = result.exitCode === 0
@@ -3782,6 +3796,27 @@ function renderMyModelsValidationJobStatus() {
   }
 }
 
+let myModelsValidationPollTimer = null;
+
+function stopMyModelsValidationPoll() {
+  if (myModelsValidationPollTimer) {
+    window.clearInterval(myModelsValidationPollTimer);
+    myModelsValidationPollTimer = null;
+  }
+}
+
+function scheduleMyModelsValidationPoll() {
+  if (myModelsValidationPollTimer) return;
+  myModelsValidationPollTimer = window.setInterval(async () => {
+    if (!myModelsDialog || !myModelsDialog.open) {
+      stopMyModelsValidationPoll();
+      return;
+    }
+    await loadMyModels();
+    if (!myModelsValidationJob || !myModelsValidationJob.running) stopMyModelsValidationPoll();
+  }, 3000);
+}
+
 async function loadMyModels() {
   if (!myModelsList) return;
   myModelsList.innerHTML = '<div class="ranking-empty">正在读取我的模型...</div>';
@@ -3791,6 +3826,7 @@ async function loadMyModels() {
     myModelsCache = Array.isArray(payload.presets) ? payload.presets : [];
     myModelsValidationJob = payload.validationJob || null;
     renderMyModelsValidationJobStatus();
+    if (myModelsValidationJob && myModelsValidationJob.running) scheduleMyModelsValidationPoll();
     renderMyModelsDialogList();
   } catch (error) {
     myModelsList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
@@ -3799,7 +3835,7 @@ async function loadMyModels() {
 
 function renderMyModelsDialogList() {
   if (!myModelsList) return;
-  myModelsList.innerHTML = renderAiGeneratedPresetTable(myModelsCache, {
+  const table = renderAiGeneratedPresetTable(myModelsCache, {
     sortKey: "updatedAt",
     sortDirection: "desc",
     sortAttr: "my-models-sort-key",
@@ -3807,6 +3843,40 @@ function renderMyModelsDialogList() {
     isOwner: true,
     isAiCandidate: false,
   });
+  const audit = myModelsCache.length === 0 ? "" : `
+    <div class="model-list-sections">
+      <section class="model-list-section">
+        <h3>完整验证信息</h3>
+        <div class="model-list-grid">
+          ${myModelsCache.map((model) => `
+            <article class="model-list-card">
+              <div class="model-list-card-head">
+                <div class="model-list-title">
+                  <strong>${escapeHtml(model.label || "模型")}</strong>
+                  <small>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}${model.targetSymbol ? ` · ${escapeHtml(model.targetSymbol)}` : ""}${model.numericId ? ` · #${escapeHtml(model.numericId)}` : ""}</small>
+                </div>
+                <div class="model-list-meta">
+                  <span>${Number(model.watchCount) || 0} 个盯盘${Number(model.activeWatchCount) ? `，启用 ${Number(model.activeWatchCount)}` : ""}</span>
+                  <span>${escapeHtml(model.watchTargets || "暂无盯盘目标")}</span>
+                </div>
+              </div>
+              ${renderModelListValidation({ validation: model })}
+              ${renderModelListDailyValidation(model)}
+              <div class="watchable-audit-cell">
+                <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 目标 ${formatPercent(model.targetPercent)} · 上行门槛 ${formatPercent(model.upsideThresholdPercent)} · 回撤容差 ${formatPercent(model.drawdownTolerancePercent)}</div>
+                ${renderWatchableTrainAudit(model)}
+              </div>
+              <div class="watchable-audit-cell">
+                <div class="field-hint">验证逐年明细</div>
+                ${renderWatchableValidationAudit(model)}
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
+    </div>
+  `;
+  myModelsList.innerHTML = `${table}${audit}`;
 }
 
 function openMyModelsDialog() {
@@ -3815,7 +3885,10 @@ function openMyModelsDialog() {
 }
 
 if (closeMyModelsButton && myModelsDialog) {
-  closeMyModelsButton.addEventListener("click", () => closeDialog(myModelsDialog));
+  closeMyModelsButton.addEventListener("click", () => {
+    stopMyModelsValidationPoll();
+    closeDialog(myModelsDialog);
+  });
 }
 
 if (refreshMyModelsButton) {
@@ -3831,6 +3904,7 @@ if (validateAllMyModelsButton) {
       const payload = await readJsonResponse(response, "启动验证失败。");
       myModelsValidationJob = { running: true, lastResult: null };
       renderMyModelsValidationJobStatus();
+      scheduleMyModelsValidationPoll();
       setStatus(`已启动最新数据验证：${payload.count || 0} 个模型。稍后点刷新查看结果。`);
     } catch (error) {
       setStatus(`启动验证失败：${error.message}`, true);
@@ -11326,20 +11400,44 @@ function findModelListModel(role, id) {
   return (Array.isArray(list) ? list : []).find((model) => String(model.id || "") === String(id || ""));
 }
 
+// Same per-年 上行标准差 audit as the admin "可建盯盘AI模型" table
+// (renderWatchableTrainAudit/renderWatchableAuditYear) — "我的模型" reuses those exact
+// functions/CSS classes instead of a parallel, less detailed rendering, so a model owner sees the
+// identical per-year return-vs-30%上行σ comparison an admin deciding whether to watch it would.
+function renderModelListValidationAudit(validation) {
+  const trainYears = Array.isArray(validation.trainYearBreakdown) ? validation.trainYearBreakdown : [];
+  const validationYears = Array.isArray(validation.validationYearBreakdown) ? validation.validationYearBreakdown : [];
+  if (trainYears.length === 0 && validationYears.length === 0) {
+    // Older snapshot saved before train_year_breakdown/validation_year_breakdown existed — no
+    // per-year upside-deviation data to show, fall back to the plain aggregate line.
+    const year1Class = validation.testYear1AnnualizedReturn >= 0 ? "up" : "down";
+    const year2Class = validation.testYear2AnnualizedReturn >= 0 ? "up" : "down";
+    const trainClass = validation.trainAnnualizedReturn >= 0 ? "up" : "down";
+    return `
+      <span class="${trainClass}">训练年化 ${formatPercent(validation.trainAnnualizedReturn)}</span>
+      <span class="${year1Class}">验证1年 ${formatPercent(validation.testYear1AnnualizedReturn)} / ${Number(validation.testYear1Trades) || 0} 次</span>
+      <span class="${year2Class}">验证2年 ${formatPercent(validation.testYear2AnnualizedReturn)} / ${Number(validation.testYear2Trades) || 0} 次</span>
+    `;
+  }
+  const trainAuditHtml = trainYears.length > 0
+    ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)}</div>${renderWatchableTrainAudit(validation)}</div>`
+    : "";
+  const validationAuditHtml = validationYears.length > 0
+    ? `<div class="watchable-audit-cell"><div class="field-hint">目标 ${formatPercent(validation.targetPercent)} · 上行门槛 ${formatPercent(validation.upsideThresholdPercent)} · 回撤容差 ${formatPercent(validation.drawdownTolerancePercent)}</div>${validationYears.map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, { upsideThresholdPercent: validation.upsideThresholdPercent })).join("")}</div>`
+    : `<span class="${validation.testYear1AnnualizedReturn >= 0 ? "up" : "down"}">验证1年 ${formatPercent(validation.testYear1AnnualizedReturn)} / ${Number(validation.testYear1Trades) || 0} 次</span>
+       <span class="${validation.testYear2AnnualizedReturn >= 0 ? "up" : "down"}">验证2年 ${formatPercent(validation.testYear2AnnualizedReturn)} / ${Number(validation.testYear2Trades) || 0} 次</span>`;
+  return trainAuditHtml + validationAuditHtml;
+}
+
 function renderModelListValidation(model) {
   const validation = model && model.validation;
   if (!validation) {
     return '<div class="model-list-validation model-list-muted">暂无验证记录。</div>';
   }
-  const year1Class = validation.testYear1AnnualizedReturn >= 0 ? "up" : "down";
-  const year2Class = validation.testYear2AnnualizedReturn >= 0 ? "up" : "down";
-  const trainClass = validation.trainAnnualizedReturn >= 0 ? "up" : "down";
   return `
     <div class="model-list-validation">
       <span>验证记录 ${escapeHtml(formatAdminDate(validation.updatedAt || validation.lastRecheckedAt))}</span>
-      <span class="${trainClass}">训练年化 ${formatPercent(validation.trainAnnualizedReturn)}</span>
-      <span class="${year1Class}">验证1年 ${formatPercent(validation.testYear1AnnualizedReturn)} / ${Number(validation.testYear1Trades) || 0} 次</span>
-      <span class="${year2Class}">验证2年 ${formatPercent(validation.testYear2AnnualizedReturn)} / ${Number(validation.testYear2Trades) || 0} 次</span>
+      ${renderModelListValidationAudit(validation)}
     </div>
   `;
 }

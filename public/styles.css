@@ -891,7 +891,7 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .model-list-validation span,
