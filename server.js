@@ -6651,7 +6651,16 @@ async function handleModelListApi(req, res) {
     `, [ownerUserId]);
     const ownModels = ownModelsResult.rows.map((row) => (
       mapModelListPresetRow(row, ownedWatchesByPreset.get(row.id) || [], { ownerEmail: currentUser.email })
-    ));
+    )).filter((model) => {
+      const validation = model.validation;
+      if (!validation || !validation.reachedTarget) return false;
+      if (!scanYearBreakdownPasses(validation.trainYearBreakdown, { minYears: 4 })) return false;
+      return scanYearBreakdownPasses(validation.validationYearBreakdown, {
+        requireTarget: true,
+        targetPercent: validation.targetPercent,
+        minYears: 2,
+      });
+    });
 
     const followedResult = await dbPool.query(`
       SELECT watch_alerts.*, sp.id AS source_preset_id, sp.numeric_id AS source_numeric_id,

@@ -484,6 +484,8 @@ let rankingRecords = [];
 let publicRankingRecords = [];
 let rankingPageByPeriod = {};
 let modelListCache = { ownModels: [], followedModels: [] };
+let modelListOwnMarketFilter = "";
+const selectedOwnModelIds = new Set();
 
 const i18n = {
   zh: {
@@ -3766,6 +3768,8 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
 // AI候选 panels, just with showShareSettings instead of showStatus/showRecommendDiff.
 let myModelsCache = [];
 let myModelsValidationJob = null;
+let myModelsMarketFilter = "";
+const selectedMyModelIds = new Set();
 
 function renderMyModelsValidationJobStatus() {
   if (!myModelsValidationStatus) return;
@@ -3912,8 +3916,16 @@ function renderMyModelWatchableRow(model) {
     : '<span class="field-hint">未建盯盘</span>';
   const market = model.market || inferMarketFromSymbol(model.targetSymbol || "");
   const shareText = model.sharePublic ? '<span class="up">已公开</span>' : "未公开";
+  const selected = selectedMyModelIds.has(String(model.id || ""));
+  const canSelect = Boolean(model.targetSymbol);
   return `
     <tr>
+      <td>
+        <label class="model-list-select">
+          <input type="checkbox" data-my-model-select="${escapeHtml(model.id || "")}" ${selected ? "checked" : ""} ${canSelect ? "" : "disabled"}>
+          <span>选择</span>
+        </label>
+      </td>
       <td><strong>${escapeHtml(model.recommendationTier || metrics.recommendationTier)}</strong><br><span class="field-hint">评分 ${Math.round(Number(model.recommendationScore) || metrics.recommendationScore || 0)}</span></td>
       <td>${escapeHtml(market || "")}</td>
       <td>${escapeHtml(model.targetSymbol || "")}</td>
@@ -3967,10 +3979,49 @@ function renderMyModelWatchableRow(model) {
   `;
 }
 
+function getMyModelMarket(model) {
+  return model && model.market ? String(model.market).toUpperCase() : inferMarketFromSymbol(model && model.targetSymbol || "");
+}
+
+function getFilteredMyModels() {
+  const models = Array.isArray(myModelsCache) ? myModelsCache : [];
+  if (!myModelsMarketFilter) return models;
+  return models.filter((model) => getMyModelMarket(model) === myModelsMarketFilter);
+}
+
+function renderMyModelsToolbar(models) {
+  const counts = { ALL: models.length, CN: 0, US: 0 };
+  models.forEach((model) => {
+    const market = getMyModelMarket(model);
+    if (market === "CN") counts.CN += 1;
+    else if (market === "US") counts.US += 1;
+  });
+  const selectedCount = [...selectedMyModelIds].filter((id) => models.some((model) => String(model.id || "") === id)).length;
+  const button = (market, label, count) => `
+    <button type="button" class="ghost-button model-list-market-filter${myModelsMarketFilter === market ? " active" : ""}" data-my-model-market-filter="${escapeHtml(market)}">${escapeHtml(label)} ${count}</button>
+  `;
+  return `
+    <div class="model-list-toolbar">
+      <div class="model-list-market-tabs">
+        ${button("", "全部", counts.ALL)}
+        ${button("CN", "A股", counts.CN)}
+        ${button("US", "美股", counts.US)}
+      </div>
+      <div class="model-list-bulk-actions">
+        <button type="button" class="ghost-button" data-my-model-bulk-action="select-visible">全选当前</button>
+        <button type="button" class="ghost-button" data-my-model-bulk-action="clear-selection">清除选择</button>
+        <button type="button" class="ghost-button" data-my-model-bulk-action="watch-selected" ${selectedCount > 0 ? "" : "disabled"}>为选中模型建立盯盘</button>
+        <span class="field-hint">已选 ${selectedCount}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderMyModelsWatchableTable(models) {
   const visible = Array.isArray(models) ? [...models] : [];
+  const toolbar = renderMyModelsToolbar(Array.isArray(myModelsCache) ? myModelsCache : []);
   if (visible.length === 0) {
-    return '<div class="ranking-empty">还没有相关记录。</div>';
+    return `${toolbar}<div class="ranking-empty">还没有相关记录。</div>`;
   }
   visible.sort((a, b) => {
     const ma = getWatchableRecommendation(a);
@@ -3982,10 +4033,12 @@ function renderMyModelsWatchableTable(models) {
     return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
   });
   return `
+    ${toolbar}
     <div class="ranking-table-wrap">
       <table class="admin-ranking-table admin-watchable-ai-table">
         <thead>
           <tr>
+            <th>选择</th>
             <th>推荐</th>
             <th>市场</th>
             <th>股票</th>
@@ -4008,7 +4061,46 @@ function renderMyModelsWatchableTable(models) {
 
 function renderMyModelsDialogList() {
   if (!myModelsList) return;
-  myModelsList.innerHTML = renderMyModelsWatchableTable(myModelsCache);
+  myModelsList.innerHTML = renderMyModelsWatchableTable(getFilteredMyModels());
+}
+
+async function createWatchesForSelectedMyModels() {
+  if (!requireSignedInForSave()) return;
+  const selectedModels = getFilteredMyModels().filter((model) => selectedMyModelIds.has(String(model.id || "")));
+  if (selectedModels.length === 0) {
+    setStatus("请先选择要建立盯盘的模型。", true);
+    return;
+  }
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const model of selectedModels) {
+    const symbol = String(model.targetSymbol || "").trim().toUpperCase();
+    if (!symbol) {
+      failed += 1;
+      continue;
+    }
+    if ((Number(model.watchCount) || 0) > 0) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const response = await fetch("/api/watch-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presetId: model.id, market: getMyModelMarket(model), symbol, frequencyMinutes: 60 }),
+      });
+      await readJsonResponse(response, "添加盯盘提醒失败。");
+      created += 1;
+    } catch (error) {
+      failed += 1;
+    }
+  }
+  selectedMyModelIds.clear();
+  await loadMyModels();
+  await loadModelList({ silent: true });
+  await loadMyWatchAlerts({ render: false });
+  setStatus(`批量盯盘完成：新建 ${created} 个，跳过已有 ${skipped} 个${failed ? `，失败 ${failed} 个` : ""}。`, failed > 0);
 }
 
 function openMyModelsDialog() {
@@ -4046,7 +4138,43 @@ if (validateAllMyModelsButton) {
 }
 
 if (myModelsList) {
+  myModelsList.addEventListener("change", (event) => {
+    const input = event.target && event.target.closest ? event.target.closest("[data-my-model-select]") : null;
+    if (!input) return;
+    const id = String(input.dataset.myModelSelect || "");
+    if (!id) return;
+    if (input.checked) selectedMyModelIds.add(id);
+    else selectedMyModelIds.delete(id);
+    renderMyModelsDialogList();
+  });
+
   myModelsList.addEventListener("click", async (event) => {
+    const marketFilterButton = event.target && event.target.closest ? event.target.closest("[data-my-model-market-filter]") : null;
+    if (marketFilterButton) {
+      myModelsMarketFilter = marketFilterButton.dataset.myModelMarketFilter || "";
+      renderMyModelsDialogList();
+      return;
+    }
+    const bulkActionButton = event.target && event.target.closest ? event.target.closest("[data-my-model-bulk-action]") : null;
+    if (bulkActionButton) {
+      const action = bulkActionButton.dataset.myModelBulkAction;
+      if (action === "select-visible") {
+        getFilteredMyModels().forEach((model) => {
+          if (model.targetSymbol) selectedMyModelIds.add(String(model.id || ""));
+        });
+        renderMyModelsDialogList();
+        return;
+      }
+      if (action === "clear-selection") {
+        selectedMyModelIds.clear();
+        renderMyModelsDialogList();
+        return;
+      }
+      if (action === "watch-selected") {
+        await createWatchesForSelectedMyModels();
+        return;
+      }
+    }
     const button = event.target && event.target.closest ? event.target.closest("[data-action]") : null;
     if (!button) return;
     const presetId = button.dataset.presetId;
@@ -11585,6 +11713,11 @@ function getModelListPrimarySymbol(model) {
   return watch ? String(watch.symbol).trim().toUpperCase() : "";
 }
 
+function getModelListMarket(model) {
+  const symbol = getModelListPrimarySymbol(model);
+  return model && model.market ? String(model.market).toUpperCase() : inferMarketFromSymbol(symbol);
+}
+
 function findModelListModel(role, id) {
   const list = role === "followed" ? modelListCache.followedModels : modelListCache.ownModels;
   return (Array.isArray(list) ? list : []).find((model) => String(model.id || "") === String(id || ""));
@@ -11711,11 +11844,57 @@ function renderModelListWatchState(watches) {
   `;
 }
 
-function renderModelListSection(title, models, role) {
+function modelHasOwnedWatchForPrimarySymbol(model) {
+  const symbol = getModelListPrimarySymbol(model);
+  const market = getModelListMarket(model);
+  return Array.isArray(model && model.watches) && model.watches.some((watch) => (
+    watch && watch.role === "owner"
+    && String(watch.presetId || "") === String(model.id || "")
+    && normalizeSymbolInput(watch.symbol || "") === normalizeSymbolInput(symbol || "")
+    && String(watch.market || "").toUpperCase() === String(market || "").toUpperCase()
+  ));
+}
+
+function getFilteredOwnModelsForModelList() {
+  const models = Array.isArray(modelListCache.ownModels) ? modelListCache.ownModels : [];
+  if (!modelListOwnMarketFilter) return models;
+  return models.filter((model) => getModelListMarket(model) === modelListOwnMarketFilter);
+}
+
+function renderModelListMarketToolbar(models) {
+  const counts = { ALL: models.length, CN: 0, US: 0 };
+  models.forEach((model) => {
+    const market = getModelListMarket(model);
+    if (market === "CN") counts.CN += 1;
+    else if (market === "US") counts.US += 1;
+  });
+  const button = (market, label, count) => `
+    <button type="button" class="ghost-button model-list-market-filter${modelListOwnMarketFilter === market ? " active" : ""}" data-model-market-filter="${escapeHtml(market)}">${escapeHtml(label)} ${count}</button>
+  `;
+  const selectedCount = [...selectedOwnModelIds].filter((id) => models.some((model) => String(model.id || "") === id)).length;
+  return `
+    <div class="model-list-toolbar">
+      <div class="model-list-market-tabs">
+        ${button("", "全部", counts.ALL)}
+        ${button("CN", "A股", counts.CN)}
+        ${button("US", "美股", counts.US)}
+      </div>
+      <div class="model-list-bulk-actions">
+        <button type="button" class="ghost-button" data-model-list-bulk-action="select-visible">全选当前</button>
+        <button type="button" class="ghost-button" data-model-list-bulk-action="clear-selection">清除选择</button>
+        <button type="button" class="ghost-button" data-model-list-bulk-action="watch-selected" ${selectedCount > 0 ? "" : "disabled"}>为选中模型建立盯盘</button>
+        <span class="field-hint">已选 ${selectedCount}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderModelListSection(title, models, role, headerHtml = "") {
   if (!Array.isArray(models) || models.length === 0) {
     return `
       <section class="model-list-section">
         <h3>${escapeHtml(title)}</h3>
+        ${headerHtml}
         <div class="ranking-empty">${role === "followed" ? "还没有跟盘模型。" : "还没有自己的模型。"}</div>
       </section>
     `;
@@ -11723,9 +11902,12 @@ function renderModelListSection(title, models, role) {
   return `
     <section class="model-list-section">
       <h3>${escapeHtml(title)}</h3>
+      ${headerHtml}
       <div class="model-list-grid">
         ${models.map((model) => {
           const symbol = getModelListPrimarySymbol(model);
+          const selected = selectedOwnModelIds.has(String(model.id || ""));
+          const canSelect = role === "own" && Boolean(symbol);
           const localPreset = model.name && strategyPresets[model.name] ? strategyPresets[model.name] : null;
           const modelLink = localPreset
             ? formatModelNameLink({
@@ -11754,8 +11936,14 @@ function renderModelListSection(title, models, role) {
             <article class="model-list-card" data-model-role="${role}" data-model-id="${escapeHtml(model.id || "")}">
               <div class="model-list-card-head">
                 <div class="model-list-title">
+                  ${role === "own" ? `
+                    <label class="model-list-select">
+                      <input type="checkbox" data-model-list-select="own" data-model-id="${escapeHtml(model.id || "")}" ${selected ? "checked" : ""} ${canSelect ? "" : "disabled"}>
+                      <span>选择</span>
+                    </label>
+                  ` : ""}
                   <strong>${modelLink}</strong>
-                  <small>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}${symbol ? ` · ${escapeHtml(symbol)}` : ""}${model.numericId ? ` · #${escapeHtml(model.numericId)}` : ""}</small>
+                  <small>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}${symbol ? ` · ${escapeHtml(symbol)}` : ""}${model.numericId ? ` · #${escapeHtml(model.numericId)}` : ""}${role === "own" && modelHasOwnedWatchForPrimarySymbol(model) ? " · 已有盯盘" : ""}</small>
                 </div>
                 <div class="model-list-actions">${role === "followed" ? followedActions : ownActions}</div>
               </div>
@@ -11780,12 +11968,54 @@ function renderModelRanking() {
     rankingPresetList.innerHTML = '<div class="ranking-empty">登录后可以查看我的模型和跟盘模型。</div>';
     return;
   }
+  const ownModels = getFilteredOwnModelsForModelList();
+  const ownMarketToolbar = renderModelListMarketToolbar(Array.isArray(modelListCache.ownModels) ? modelListCache.ownModels : []);
   rankingPresetList.innerHTML = `
     <div class="model-list-sections">
-      ${renderModelListSection("我的模型", modelListCache.ownModels, "own")}
+      ${renderModelListSection("我的模型", ownModels, "own", ownMarketToolbar)}
       ${renderModelListSection("跟盘模型", modelListCache.followedModels, "followed")}
     </div>
   `;
+}
+
+async function createWatchesForSelectedOwnModels() {
+  if (!requireSignedInForSave()) return;
+  const selectedModels = getFilteredOwnModelsForModelList().filter((model) => selectedOwnModelIds.has(String(model.id || "")));
+  if (selectedModels.length === 0) {
+    setStatus("请先选择要建立盯盘的模型。", true);
+    return;
+  }
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const model of selectedModels) {
+    const symbol = getModelListPrimarySymbol(model);
+    if (!symbol) {
+      failed += 1;
+      continue;
+    }
+    const market = getModelListMarket(model);
+    if (modelHasOwnedWatchForPrimarySymbol(model)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const response = await fetch("/api/watch-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presetId: model.id, market, symbol, frequencyMinutes: 60 }),
+      });
+      await readJsonResponse(response, "添加盯盘提醒失败。");
+      created += 1;
+    } catch (error) {
+      failed += 1;
+    }
+  }
+  selectedOwnModelIds.clear();
+  await loadModelList({ silent: true });
+  await loadMyWatchAlerts({ render: false });
+  renderModelRanking();
+  setStatus(`批量盯盘完成：新建 ${created} 个，跳过已有 ${skipped} 个${failed ? `，失败 ${failed} 个` : ""}。`, failed > 0);
 }
 
 async function createWatchFromModelList(model) {
@@ -16366,7 +16596,43 @@ if (forgotPasswordButton) {
 }
 
 if (rankingPresetList) {
+  rankingPresetList.addEventListener("change", (event) => {
+    const selectInput = event.target && event.target.closest ? event.target.closest("[data-model-list-select='own']") : null;
+    if (!selectInput) return;
+    const id = String(selectInput.dataset.modelId || "");
+    if (!id) return;
+    if (selectInput.checked) selectedOwnModelIds.add(id);
+    else selectedOwnModelIds.delete(id);
+    renderModelRanking();
+  });
+
   rankingPresetList.addEventListener("click", async (event) => {
+    const marketFilterButton = event.target && event.target.closest ? event.target.closest("[data-model-market-filter]") : null;
+    if (marketFilterButton) {
+      modelListOwnMarketFilter = marketFilterButton.dataset.modelMarketFilter || "";
+      renderModelRanking();
+      return;
+    }
+    const bulkActionButton = event.target && event.target.closest ? event.target.closest("[data-model-list-bulk-action]") : null;
+    if (bulkActionButton) {
+      const action = bulkActionButton.dataset.modelListBulkAction;
+      if (action === "select-visible") {
+        getFilteredOwnModelsForModelList().forEach((model) => {
+          if (getModelListPrimarySymbol(model)) selectedOwnModelIds.add(String(model.id || ""));
+        });
+        renderModelRanking();
+        return;
+      }
+      if (action === "clear-selection") {
+        selectedOwnModelIds.clear();
+        renderModelRanking();
+        return;
+      }
+      if (action === "watch-selected") {
+        await createWatchesForSelectedOwnModels();
+        return;
+      }
+    }
     const modelListButton = event.target && event.target.closest ? event.target.closest("[data-model-list-action]") : null;
     if (modelListButton) {
       const role = modelListButton.dataset.modelRole || "own";

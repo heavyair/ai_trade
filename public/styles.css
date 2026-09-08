@@ -814,6 +814,28 @@ button:disabled {
   font-size: 16px;
 }
 
+.model-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.model-list-market-tabs,
+.model-list-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-list-market-filter.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .model-list-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -841,6 +863,19 @@ button:disabled {
   display: grid;
   gap: 3px;
   min-width: 0;
+}
+
+.model-list-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-list-select input {
+  width: 16px;
+  height: 16px;
 }
 
 .model-list-title strong,
