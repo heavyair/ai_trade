@@ -5,6 +5,8 @@
 // that same fixed validation start through the newest stored trading day. A separate incremental
 // segment records only data that arrived after the original validation end date.
 
+const fs = require("fs");
+const path = require("path");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
@@ -16,12 +18,26 @@ const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "po
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
 const INITIAL_CASH = Number(process.env.MODEL_VALIDATION_INITIAL_CASH || 2000000);
 const TRADE_FEE = Number(process.env.MODEL_VALIDATION_TRADE_FEE || 5);
+const DEFAULT_PROGRESS_FILE = path.join(__dirname, "..", "..", "data", "model-validation-progress.json");
+let progressState = {};
+
+function writeProgress(filePath, patch) {
+  if (!filePath) return;
+  progressState = { ...progressState, ...patch, updatedAt: new Date().toISOString() };
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(progressState));
+  } catch (error) {
+    // Best-effort only; progress reporting must not fail the validation job.
+  }
+}
 
 function parseArgs(argv) {
   const options = {
     symbols: [],
     ownerUserId: "",
     subjectTypes: [],
+    progressFile: DEFAULT_PROGRESS_FILE,
     dryRun: false,
     targetPercent: 50,
     minIncrementalDays: 60,
@@ -33,6 +49,8 @@ function parseArgs(argv) {
       options.ownerUserId = arg.slice("--ownerUserId=".length).trim();
     } else if (arg.startsWith("--subjectTypes=")) {
       options.subjectTypes = arg.slice("--subjectTypes=".length).split(",").map((item) => item.trim()).filter(Boolean);
+    } else if (arg.startsWith("--progressFile=")) {
+      options.progressFile = arg.slice("--progressFile=".length).trim();
     }
     else if (arg.startsWith("--symbols=")) {
       options.symbols = arg.slice("--symbols=".length).split(",").map((item) => item.trim().toUpperCase()).filter(Boolean);
@@ -437,11 +455,38 @@ async function main() {
     const candidates = await loadCandidates(pool, options);
     console.log(`[model-validation] candidates=${candidates.length} dryRun=${options.dryRun}`);
     const summary = { valid: 0, watching: 0, warning: 0, invalid: 0, insufficient: 0, error: 0 };
-    for (const candidate of candidates) {
+    writeProgress(options.progressFile, {
+      status: "running",
+      dryRun: options.dryRun,
+      totalCandidates: candidates.length,
+      processed: 0,
+      summary,
+      currentSubjectType: "",
+      currentSubjectId: "",
+      currentSymbol: "",
+      currentModelLabel: "",
+      currentReason: candidates.length === 0 ? "没有需要验证的模型。" : "开始验证。",
+      startedAt: new Date().toISOString(),
+    });
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      writeProgress(options.progressFile, {
+        currentIndex: index + 1,
+        currentSubjectType: candidate.subject_type || "",
+        currentSubjectId: candidate.subject_id || "",
+        currentSymbol: candidate.symbol || "",
+        currentModelLabel: candidate.model_label || "",
+        currentReason: "正在拉取最新数据并验证。",
+      });
       try {
         const result = await processCandidate(pool, candidate, options);
         summary[result.status] = (summary[result.status] || 0) + 1;
         console.log(`[${result.status}] ${result.subjectType}:${result.subjectId} ${result.symbol} latest=${result.latestTradeDate} cumulative=${result.cumulative.days}d/${result.cumulative.trades}t incremental=${result.incremental.days}d/${result.incremental.trades}t`);
+        writeProgress(options.progressFile, {
+          processed: index + 1,
+          summary,
+          currentReason: `${result.symbol}：${result.status}，累计${result.cumulative.days}天/${result.cumulative.trades}笔，新增${result.incremental.days}天/${result.incremental.trades}笔。`,
+        });
       } catch (error) {
         summary.error += 1;
         const enriched = { ...candidate, dbMarket: inferDbMarket(candidate.symbol, candidate.market) };
@@ -449,9 +494,21 @@ async function main() {
           await saveError(pool, enriched, error.message || "validation failed");
         }
         console.error(`[error] ${candidate.subject_type}:${candidate.subject_id} ${candidate.symbol || ""}: ${error.message}`);
+        writeProgress(options.progressFile, {
+          processed: index + 1,
+          summary,
+          currentReason: `${candidate.symbol || ""}：验证失败，${error.message || ""}`.slice(0, 500),
+        });
       }
     }
     console.log(`[model-validation] done ${JSON.stringify(summary)}`);
+    writeProgress(options.progressFile, {
+      status: "completed",
+      processed: candidates.length,
+      summary,
+      currentReason: "验证完成。",
+      endedAt: new Date().toISOString(),
+    });
   } finally {
     await pool.end();
   }
