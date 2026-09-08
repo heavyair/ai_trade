@@ -11423,7 +11423,7 @@ function renderModelListValidationAudit(validation) {
     ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)}</div>${renderWatchableTrainAudit(validation)}</div>`
     : "";
   const validationAuditHtml = validationYears.length > 0
-    ? `<div class="watchable-audit-cell"><div class="field-hint">目标 ${formatPercent(validation.targetPercent)} · 上行门槛 ${formatPercent(validation.upsideThresholdPercent)} · 回撤容差 ${formatPercent(validation.drawdownTolerancePercent)}</div>${validationYears.map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, { upsideThresholdPercent: validation.upsideThresholdPercent })).join("")}</div>`
+    ? `<div class="watchable-audit-cell"><div class="field-hint">目标 ${formatPercent(validation.targetPercent)} · 上行门槛 ${formatPercent(validation.upsideThresholdPercent)} · 回撤容差 ${formatPercent(validation.drawdownTolerancePercent)}</div>${validationYears.map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, { upsideThresholdPercent: validation.upsideThresholdPercent, targetPercent: validation.targetPercent })).join("")}</div>`
     : `<span class="${validation.testYear1AnnualizedReturn >= 0 ? "up" : "down"}">验证1年 ${formatPercent(validation.testYear1AnnualizedReturn)} / ${Number(validation.testYear1Trades) || 0} 次</span>
        <span class="${validation.testYear2AnnualizedReturn >= 0 ? "up" : "down"}">验证2年 ${formatPercent(validation.testYear2AnnualizedReturn)} / ${Number(validation.testYear2Trades) || 0} 次</span>`;
   return trainAuditHtml + validationAuditHtml;

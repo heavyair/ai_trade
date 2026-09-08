@@ -6553,6 +6553,8 @@ async function handleMyModelsApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.train_year_breakdown, pvs.validation_year_breakdown,
+        pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
