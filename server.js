@@ -2311,7 +2311,7 @@ async function resolveScanTrainYearBreakdown(row, rowsForSymbol = null) {
 
 function scanYearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1 } = {}) {
   if (!Array.isArray(years) || years.length < minYears) return false;
-  return years.every((year) => {
+  return years.slice(0, minYears).every((year) => {
     if (!year || year.annualizedReturn === null || year.annualizedReturn === undefined) return false;
     if ((Number(year.rows) || 0) < REVALIDATE_MIN_UPSIDE_GATE_ROWS) return false;
     const annualized = Number(year.annualizedReturn);
@@ -2345,6 +2345,7 @@ async function resolveScanValidationYearBreakdown(row, rowsForSymbol = null) {
         annualizedReturn: Number(row.test_year1_annualized_return) || 0,
         returnRate: Number(row.test_year1_return_rate) || 0,
         trades: row.test_year1_trades || 0,
+        rows: row.test_year1_rows_tested === null || row.test_year1_rows_tested === undefined ? null : Number(row.test_year1_rows_tested),
         maxDrawdown: Number(row.test_year1_max_drawdown) || 0,
         upsideDeviation: row.test_year1_upside_deviation === null || row.test_year1_upside_deviation === undefined ? null : Number(row.test_year1_upside_deviation),
       },
@@ -2354,6 +2355,7 @@ async function resolveScanValidationYearBreakdown(row, rowsForSymbol = null) {
         annualizedReturn: Number(row.test_year2_annualized_return) || 0,
         returnRate: Number(row.test_year2_return_rate) || 0,
         trades: row.test_year2_trades || 0,
+        rows: row.test_year2_rows_tested === null || row.test_year2_rows_tested === undefined ? null : Number(row.test_year2_rows_tested),
         maxDrawdown: Number(row.test_year2_max_drawdown) || 0,
         upsideDeviation: row.test_year2_upside_deviation === null || row.test_year2_upside_deviation === undefined ? null : Number(row.test_year2_upside_deviation),
       },
@@ -2376,6 +2378,7 @@ async function resolveScanValidationYearBreakdown(row, rowsForSymbol = null) {
       }
       return {
         ...window,
+        rows: Number.isFinite(Number(window.rows)) && Number(window.rows) > 0 ? Number(window.rows) : yearRows.length,
         buyHoldMaxDrawdown,
         upsideDeviation,
         requiredAnnualizedReturn,
@@ -3201,9 +3204,10 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
           osr.train_annualized_return, osr.train_start_date, osr.train_end_date,
           osr.test_year1_annualized_return, osr.test_year1_start_date, osr.test_year1_end_date,
           osr.test_year1_return_rate, osr.test_year1_max_drawdown, osr.test_year1_trades,
+          osr.test_year1_rows_tested,
           osr.test_year2_annualized_return, osr.test_year2_start_date,
           osr.test_year2_end_date, osr.test_year2_return_rate, osr.test_year2_max_drawdown,
-          osr.test_year2_trades, osr.annualized_diff_year1,
+          osr.test_year2_trades, osr.test_year2_rows_tested, osr.annualized_diff_year1,
           osr.annualized_diff_year2, osr.test_year1_upside_deviation, osr.test_year2_upside_deviation,
           osr.train_year_breakdown, osr.target_percent, osr.upside_threshold_percent, osr.drawdown_tolerance_percent,
           osr.best_trades, osr.tested_candidates,
