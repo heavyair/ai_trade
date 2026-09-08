@@ -6780,7 +6780,15 @@ async function handleMyModelsApi(req, res) {
       watchCount: row.watch_count || 0,
       activeWatchCount: row.active_watch_count || 0,
       watchTargets: row.watch_targets || "",
-    }));
+    })).filter((preset) => {
+      if (!preset.reachedTarget) return false;
+      if (!scanYearBreakdownPasses(preset.trainYearBreakdown, { minYears: 4 })) return false;
+      return scanYearBreakdownPasses(preset.validationYearBreakdown, {
+        requireTarget: true,
+        targetPercent: preset.targetPercent,
+        minYears: 2,
+      });
+    });
     sendJson(res, 200, {
       presets,
       validationJob: {
