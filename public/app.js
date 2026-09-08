@@ -3833,50 +3833,180 @@ async function loadMyModels() {
   }
 }
 
-function renderMyModelsDialogList() {
-  if (!myModelsList) return;
-  const table = renderAiGeneratedPresetTable(myModelsCache, {
-    sortKey: "updatedAt",
-    sortDirection: "desc",
-    sortAttr: "my-models-sort-key",
-    showShareSettings: true,
-    isOwner: true,
-    isAiCandidate: false,
+function getWatchableRecommendation(model) {
+  const totalTestTrades = Number(model.totalTestTrades);
+  const totalTrades = Number.isFinite(totalTestTrades)
+    ? totalTestTrades
+    : ((Number(model.testYear1Trades) || 0) + (Number(model.testYear2Trades) || 0));
+  const year1Return = Number(model.testYear1AnnualizedReturn) || 0;
+  const year2Return = Number(model.testYear2AnnualizedReturn) || 0;
+  const worstYearReturn = Math.min(year1Return, year2Return);
+  const avgYearReturn = (year1Return + year2Return) / 2;
+  const maxAnnualizedDiff = Math.max(Number(model.annualizedDiffYear1) || 0, Number(model.annualizedDiffYear2) || 0);
+  const tradeDiff = Math.abs((Number(model.testYear1Trades) || 0) - (Number(model.testYear2Trades) || 0));
+  const validationStatus = model.validationStatus || (model.dailyValidation && model.dailyValidation.status) || (model.reachedTarget ? "valid" : "invalid");
+  const statusScore = validationStatus === "valid" ? 1000 : validationStatus === "watching" ? 780 : 0;
+  const tradeScore = totalTrades >= 11 && totalTrades <= 60 ? 220
+    : totalTrades >= 61 && totalTrades <= 120 ? 180
+      : totalTrades >= 6 && totalTrades <= 10 ? 130
+        : totalTrades > 120 ? 90
+          : totalTrades >= 3 && totalTrades <= 5 ? 60
+            : 0;
+  const strategyScores = {
+    "block-rules": 90,
+    wave: 80,
+    "local-high-ladder": 75,
+    "order-grid": 55,
+    "score-rules": 45,
+    "stagnation-reversal": 30,
+    "ma-rsi-band": 20,
+  };
+  const strategyScore = strategyScores[model.strategyType] || 10;
+  const recommendationScore = statusScore
+    + tradeScore
+    + strategyScore
+    + Math.min(Math.max(worstYearReturn, 0), 300)
+    - Math.min(maxAnnualizedDiff, 300) * 0.15
+    - Math.min(tradeDiff, 200) * 0.25;
+  const recommendationTier = validationStatus === "watching" ? "观察中"
+    : (totalTrades >= 11 && totalTrades <= 60 && ["block-rules", "wave", "local-high-ladder"].includes(model.strategyType) && worstYearReturn >= 80) ? "优先"
+      : (totalTrades >= 6 && worstYearReturn >= 60) ? "可用"
+        : "谨慎";
+  return { totalTrades, worstYearReturn, avgYearReturn, maxAnnualizedDiff, tradeDiff, validationStatus, recommendationScore, recommendationTier };
+}
+
+function renderMyModelDailyValidationCell(model) {
+  const validation = model && model.dailyValidation;
+  const status = model.validationStatus || (validation && validation.status) || (model.reachedTarget ? "valid" : "invalid");
+  const statusLabels = {
+    valid: "有效",
+    watching: "观察中",
+    warning: "预警",
+    invalid: "失效",
+    insufficient: "样本不足",
+    error: "验证失败",
+  };
+  const statusClass = status === "valid" ? "up" : status === "watching" ? "field-hint" : (status === "invalid" || status === "error" ? "down" : "model-list-status-warn");
+  if (!validation) {
+    return `<span class="${statusClass}">${escapeHtml(statusLabels[status] || status || "未知")}</span><br><span class="field-hint">等待每日累计验证</span>`;
+  }
+  const parts = [
+    validation.latestTradeDate ? `到 ${validation.latestTradeDate}` : "",
+    `${Number(validation.cumulativeDays) || 0}天`,
+    `累计年化 ${Number.isFinite(Number(validation.cumulativeAnnualizedReturn)) ? formatPercent(Number(validation.cumulativeAnnualizedReturn)) : "--"}`,
+    `累计交易 ${Number(validation.cumulativeTrades) || 0}次`,
+    `新增 ${Number(validation.incrementalDays) || 0}天`,
+    `新增交易 ${Number(validation.incrementalTrades) || 0}次`,
+  ].filter(Boolean).join(" · ");
+  return `<span class="${statusClass}">${escapeHtml(statusLabels[status] || status || "未知")}</span><br><span class="field-hint">${escapeHtml(parts)}</span>${validation.reason ? `<br><span class="field-hint">${escapeHtml(validation.reason)}</span>` : ""}`;
+}
+
+function renderMyModelWatchableRow(model) {
+  const metrics = getWatchableRecommendation(model);
+  const watchCount = Number(model.watchCount) || 0;
+  const activeWatchCount = Number(model.activeWatchCount) || 0;
+  const watchText = watchCount > 0
+    ? `<span class="up">已有 ${watchCount} 个盯盘</span>${activeWatchCount !== watchCount ? `（启用 ${activeWatchCount}）` : ""}`
+    : '<span class="field-hint">未建盯盘</span>';
+  const market = model.market || inferMarketFromSymbol(model.targetSymbol || "");
+  const shareText = model.sharePublic ? '<span class="up">已公开</span>' : "未公开";
+  return `
+    <tr>
+      <td><strong>${escapeHtml(model.recommendationTier || metrics.recommendationTier)}</strong><br><span class="field-hint">评分 ${Math.round(Number(model.recommendationScore) || metrics.recommendationScore || 0)}</span></td>
+      <td>${escapeHtml(market || "")}</td>
+      <td>${escapeHtml(model.targetSymbol || "")}</td>
+      <td>${formatModelNameLink({
+        id: model.id,
+        numericId: model.numericId,
+        label: model.label || "",
+        config: model.bestConfig,
+        strategyType: model.strategyType,
+        symbol: model.targetSymbol,
+        reason: model.reason,
+        trainStartDate: model.trainStartDate,
+        trainEndDate: model.trainEndDate,
+        testYear1StartDate: model.testYear1StartDate,
+        testYear1EndDate: model.testYear1EndDate,
+        testYear2StartDate: model.testYear2StartDate,
+        testYear2EndDate: model.testYear2EndDate,
+        testYear1AnnualizedReturn: model.testYear1AnnualizedReturn,
+        testYear1Trades: model.testYear1Trades,
+        testYear2AnnualizedReturn: model.testYear2AnnualizedReturn,
+        testYear2Trades: model.testYear2Trades,
+        testYear1MaxDrawdown: model.testYear1MaxDrawdown,
+        testYear2MaxDrawdown: model.testYear2MaxDrawdown,
+        testYear1UpsideDeviation: model.testYear1UpsideDeviation,
+        testYear2UpsideDeviation: model.testYear2UpsideDeviation,
+        isOwner: true,
+        name: model.name || null,
+        isAiCandidate: false,
+        validation: model,
+        dailyValidation: model.dailyValidation || null,
+      })}</td>
+      <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
+      <td class="watchable-audit-cell">
+        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)}</div>
+        ${renderWatchableTrainAudit(model)}
+      </td>
+      <td class="watchable-audit-cell">
+        <div class="field-hint">目标 ${formatPercent(model.targetPercent)} · 上行门槛 ${formatPercent(model.upsideThresholdPercent)} · 回撤容差 ${formatPercent(model.drawdownTolerancePercent)}</div>
+        ${renderWatchableValidationAudit(model)}
+      </td>
+      <td>${metrics.totalTrades} 笔<br><span class="field-hint">最差年 ${formatPercent(metrics.worstYearReturn)} · 差异 ${formatPercent(metrics.maxAnnualizedDiff)}</span></td>
+      <td>${renderMyModelDailyValidationCell(model)}</td>
+      <td>${watchText}<br><span class="field-hint">${escapeHtml(model.watchTargets || "")}</span></td>
+      <td>${escapeHtml(formatAdminDate(model.updatedAt))}</td>
+      <td class="admin-row-actions">
+        <span class="field-hint">${shareText}</span>
+        <button type="button" class="ghost-button" data-action="share-settings" data-preset-id="${escapeHtml(model.id)}">分享设置</button>
+        <button type="button" class="ghost-button" data-action="delete-snapshot" data-preset-id="${escapeHtml(model.id)}">删除验证结果</button>
+      </td>
+    </tr>
+  `;
+}
+
+function renderMyModelsWatchableTable(models) {
+  const visible = Array.isArray(models) ? [...models] : [];
+  if (visible.length === 0) {
+    return '<div class="ranking-empty">还没有相关记录。</div>';
+  }
+  visible.sort((a, b) => {
+    const ma = getWatchableRecommendation(a);
+    const mb = getWatchableRecommendation(b);
+    const scoreDiff = mb.recommendationScore - ma.recommendationScore;
+    if (scoreDiff !== 0) return scoreDiff;
+    const worstDiff = mb.worstYearReturn - ma.worstYearReturn;
+    if (worstDiff !== 0) return worstDiff;
+    return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
   });
-  const audit = myModelsCache.length === 0 ? "" : `
-    <div class="model-list-sections">
-      <section class="model-list-section">
-        <h3>完整验证信息</h3>
-        <div class="model-list-grid">
-          ${myModelsCache.map((model) => `
-            <article class="model-list-card">
-              <div class="model-list-card-head">
-                <div class="model-list-title">
-                  <strong>${escapeHtml(model.label || "模型")}</strong>
-                  <small>${escapeHtml(getStrategyTypeLabel(model.strategyType || "wave"))}${model.targetSymbol ? ` · ${escapeHtml(model.targetSymbol)}` : ""}${model.numericId ? ` · #${escapeHtml(model.numericId)}` : ""}</small>
-                </div>
-                <div class="model-list-meta">
-                  <span>${Number(model.watchCount) || 0} 个盯盘${Number(model.activeWatchCount) ? `，启用 ${Number(model.activeWatchCount)}` : ""}</span>
-                  <span>${escapeHtml(model.watchTargets || "暂无盯盘目标")}</span>
-                </div>
-              </div>
-              ${renderModelListValidation({ validation: model })}
-              ${renderModelListDailyValidation(model)}
-              <div class="watchable-audit-cell">
-                <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 目标 ${formatPercent(model.targetPercent)} · 上行门槛 ${formatPercent(model.upsideThresholdPercent)} · 回撤容差 ${formatPercent(model.drawdownTolerancePercent)}</div>
-                ${renderWatchableTrainAudit(model)}
-              </div>
-              <div class="watchable-audit-cell">
-                <div class="field-hint">验证逐年明细</div>
-                ${renderWatchableValidationAudit(model)}
-              </div>
-            </article>
-          `).join("")}
-        </div>
-      </section>
+  return `
+    <div class="ranking-table-wrap">
+      <table class="admin-ranking-table admin-watchable-ai-table">
+        <thead>
+          <tr>
+            <th>推荐</th>
+            <th>市场</th>
+            <th>股票</th>
+            <th>模型</th>
+            <th>策略</th>
+            <th>训练逐年指标</th>
+            <th>验证逐年指标</th>
+            <th>交易样本</th>
+            <th>每日验证</th>
+            <th>盯盘状态</th>
+            <th>更新时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>${visible.map(renderMyModelWatchableRow).join("")}</tbody>
+      </table>
     </div>
   `;
-  myModelsList.innerHTML = `${table}${audit}`;
+}
+
+function renderMyModelsDialogList() {
+  if (!myModelsList) return;
+  myModelsList.innerHTML = renderMyModelsWatchableTable(myModelsCache);
 }
 
 function openMyModelsDialog() {
