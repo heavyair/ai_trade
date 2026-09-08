@@ -11,7 +11,7 @@ const { postJsonToResend } = require("./scripts/shared/send-email.js");
 const { runAkshareBridge } = require("./scripts/shared/akshare-client.js");
 const { ensureIndexCatalogTable, listIndexCatalog, resolveIndexConstituents } = require("./scripts/shared/index-catalog.js");
 const { loadRowsForSymbol } = require("./scripts/shared/load-rows.js");
-const { splitTrainTestWindows, shiftYears, toIsoDate: shiftedDateToIso } = require("./scripts/shared/train-test-window.js");
+const { splitTrainTestWindows, splitFixedStartWindows, shiftYears, toIsoDate: shiftedDateToIso } = require("./scripts/shared/train-test-window.js");
 const { annualizedReturnRate } = require("./scripts/shared/annualize.js");
 const { annualizedUpsideDeviation } = require("./scripts/shared/volatility.js");
 const { ensureModelValidationStateTable } = require("./scripts/shared/model-validation-state.js");
@@ -191,6 +191,11 @@ async function initializeDatabase() {
       reached_target BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS train_year_breakdown JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS validation_year_breakdown JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS target_percent DOUBLE PRECISION NOT NULL DEFAULT 50;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS upside_threshold_percent DOUBLE PRECISION NOT NULL DEFAULT 30;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS drawdown_tolerance_percent DOUBLE PRECISION NOT NULL DEFAULT 5;
 
     -- name/label are just display text now, not identity — id (an opaque randomId("preset"),
     -- never recomputed from owner+name) is the only thing that has to stay unique. Dropped in
@@ -1113,7 +1118,10 @@ async function backfillPresetValidationSnapshotsFromScanResults(ownerUserId, pre
       train_annualized_return, train_start_date, train_end_date,
       test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
       test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
-      annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+      annualized_diff_year1, annualized_diff_year2, reached_target,
+      train_year_breakdown, validation_year_breakdown,
+      target_percent, upside_threshold_percent, drawdown_tolerance_percent,
+      updated_at
     )
     SELECT
       sp.id,
@@ -1130,7 +1138,10 @@ async function backfillPresetValidationSnapshotsFromScanResults(ownerUserId, pre
       osr.train_annualized_return, osr.train_start_date, osr.train_end_date,
       osr.test_year1_annualized_return, osr.test_year1_return_rate, osr.test_year1_max_drawdown, osr.test_year1_trades, osr.test_year1_start_date, osr.test_year1_end_date,
       osr.test_year2_annualized_return, osr.test_year2_return_rate, osr.test_year2_max_drawdown, osr.test_year2_trades, osr.test_year2_start_date, osr.test_year2_end_date,
-      osr.annualized_diff_year1, osr.annualized_diff_year2, osr.reached_target, NOW()
+      osr.annualized_diff_year1, osr.annualized_diff_year2, osr.reached_target,
+      COALESCE(osr.train_year_breakdown, '[]'::jsonb), '[]'::jsonb,
+      COALESCE(osr.target_percent, 50), COALESCE(osr.upside_threshold_percent, 30), COALESCE(osr.drawdown_tolerance_percent, 5),
+      NOW()
     FROM strategy_presets sp
     JOIN optimization_scan_results osr ON osr.id = sp.original_model_id
     LEFT JOIN preset_validation_snapshots existing ON existing.preset_id = sp.id
@@ -1156,14 +1167,20 @@ async function copyPresetValidationSnapshot(sourcePresetId, targetPresetId) {
       train_annualized_return, train_start_date, train_end_date,
       test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
       test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
-      annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+      annualized_diff_year1, annualized_diff_year2, reached_target,
+      train_year_breakdown, validation_year_breakdown,
+      target_percent, upside_threshold_percent, drawdown_tolerance_percent,
+      updated_at
     )
     SELECT
       $2, train_years, test_years,
       train_annualized_return, train_start_date, train_end_date,
       test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
       test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
-      annualized_diff_year1, annualized_diff_year2, reached_target, NOW()
+      annualized_diff_year1, annualized_diff_year2, reached_target,
+      train_year_breakdown, validation_year_breakdown,
+      target_percent, upside_threshold_percent, drawdown_tolerance_percent,
+      NOW()
     FROM preset_validation_snapshots
     WHERE preset_id = $1
     ON CONFLICT (preset_id) DO NOTHING
@@ -2654,6 +2671,18 @@ function readQualifiedRecheckProgress() {
   }
 }
 
+function getMyModelsValidationProgressFile(ownerUserId) {
+  return path.join(DATA_DIR, `my-models-validation-${sha256(ownerUserId).slice(0, 16)}.json`);
+}
+
+function readJsonFileOrNull(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
 // 达标复查: re-scores every already-qualified (source='validated-search', reached_target=TRUE)
 // row's frozen config against fresh data — shares the same heavy-batch-job lock as
 // validatedSearch/autoGenerate/scan/stockScreen/validation since it does real per-symbol
@@ -2738,10 +2767,16 @@ function getMyModelsValidationJobType(ownerUserId) {
 
 function launchMyModelsValidationJob({ ownerUserId, ownerEmail, sessionStartedAt }) {
   const jobType = getMyModelsValidationJobType(ownerUserId);
+  const progressFile = getMyModelsValidationProgressFile(ownerUserId);
+  try {
+    fs.unlinkSync(progressFile);
+  } catch (error) {
+    // fine if a previous progress file does not exist
+  }
   launchBackgroundJob({
     jobType,
     scriptPath: path.join(__dirname, "scripts", "universe", "run-model-validation-daily.js"),
-    scriptArgs: [`--ownerUserId=${ownerUserId}`, "--subjectTypes=owned_preset"],
+    scriptArgs: [`--ownerUserId=${ownerUserId}`, "--subjectTypes=owned_preset", `--progressFile=${progressFile}`],
     sessionStartedAt,
     triggeredBy: ownerEmail,
     extra: { ownerUserId, subjectTypes: ["owned_preset"] },
@@ -5915,7 +5950,27 @@ async function handlePresetRevalidateApi(req, res) {
     }
 
     const allRows = await loadRowsForSymbol(dbPool, symbol, market);
-    const { trainRows, trainStartDate, trainEndDate, testWindows } = splitTrainTestWindows(allRows, trainYears, testYears);
+    // Re-validating an already-saved preset uses a FIXED origin (the preset's own first-ever
+    // trainStartDate) instead of re-anchoring the whole train/test span to "today" — only the
+    // final test window's end date grows. The very first validation (no prior snapshot row, or a
+    // request with a different trainYears/testYears shape than what was last saved) still falls
+    // through to the rolling splitTrainTestWindows, which is what establishes that origin.
+    let existingSnapshot = null;
+    if (presetId) {
+      const snapshotCheck = await dbPool.query(
+        `SELECT train_start_date, train_years, test_years FROM preset_validation_snapshots WHERE preset_id = $1`,
+        [presetId]
+      );
+      existingSnapshot = snapshotCheck.rows[0] || null;
+    }
+    const { trainRows, trainStartDate, trainEndDate, testWindows } = existingSnapshot
+      && existingSnapshot.train_years === trainYears && existingSnapshot.test_years === testYears
+      ? splitFixedStartWindows(
+          allRows, trainYears, testYears,
+          new Date(existingSnapshot.train_start_date).toISOString().slice(0, 10),
+          today
+        )
+      : splitTrainTestWindows(allRows, trainYears, testYears);
     const testWindowRowCounts = testWindows.map(
       (window) => allRows.filter((row) => row.date >= window.startDate && row.date < window.endDate).length
     );
@@ -5968,13 +6023,14 @@ async function handlePresetRevalidateApi(req, res) {
       const yearTrades = trainStates[endIndex].trades.length - baselineTrades;
 
       let upsideDev = null;
+      let requiredAnnualizedReturn = null;
       let passesUpside = true;
       if (yearRows.length >= REVALIDATE_MIN_UPSIDE_GATE_ROWS) {
         upsideDev = annualizedUpsideDeviation(yearRows);
         if (upsideDev !== null && yearReturn !== null) {
-          const required = (upsideThresholdPercent / 100) * upsideDev;
-          passesUpside = yearReturn >= required;
-          if (!passesUpside) failingTrainYears.push({ start: yearStart, end: yearEnd, yearReturn, required });
+          requiredAnnualizedReturn = (upsideThresholdPercent / 100) * upsideDev;
+          passesUpside = yearReturn >= requiredAnnualizedReturn;
+          if (!passesUpside) failingTrainYears.push({ start: yearStart, end: yearEnd, yearReturn, required: requiredAnnualizedReturn });
         }
       }
 
@@ -5986,11 +6042,12 @@ async function handlePresetRevalidateApi(req, res) {
         modelYearMaxDD = Math.max(modelYearMaxDD, peak > 0 ? ((peak - equity) / peak) * 100 : 0);
       }
       let buyHoldYearDD = null;
+      let allowedYearDD = null;
       let passesDrawdown = true;
       if (yearRows.length > 0) {
         const buyHoldYearStates = engine.buildBuyHoldStates(yearRows, initialCash, tradeFee);
         buyHoldYearDD = buyHoldYearStates[buyHoldYearStates.length - 1].maxDrawdown;
-        const allowedYearDD = buyHoldYearDD * (1 + drawdownTolerancePercent / 100);
+        allowedYearDD = buyHoldYearDD * (1 + drawdownTolerancePercent / 100);
         passesDrawdown = modelYearMaxDD < allowedYearDD;
         if (!passesDrawdown) {
           failingTrainDrawdownYears.push({ start: yearStart, end: yearEnd, modelYearMaxDD, buyHoldYearDD, allowedYearDD });
@@ -6001,6 +6058,7 @@ async function handlePresetRevalidateApi(req, res) {
         start: yearStart, end: yearEnd,
         annualizedReturn: yearReturn, trades: yearTrades, maxDrawdown: modelYearMaxDD,
         buyHoldMaxDrawdown: buyHoldYearDD, upsideDeviation: upsideDev,
+        requiredAnnualizedReturn, allowedMaxDrawdown: allowedYearDD,
         passesUpsideGate: passesUpside, passesDrawdownGate: passesDrawdown,
       });
     }
@@ -6026,6 +6084,30 @@ async function handlePresetRevalidateApi(req, res) {
     const buyHoldTestDD2 = buyHoldTestYear2States.length > 0 ? buyHoldTestYear2States[buyHoldTestYear2States.length - 1].maxDrawdown : null;
     const passesDrawdownYear1 = buyHoldTestDD1 === null || scoredYear1.maxDrawdown < buyHoldTestDD1 * (1 + drawdownTolerancePercent / 100);
     const passesDrawdownYear2 = buyHoldTestDD2 === null || scoredYear2.maxDrawdown < buyHoldTestDD2 * (1 + drawdownTolerancePercent / 100);
+    const validationYearBreakdown = [
+      {
+        start: testWindows[0].startDate, end: testWindows[0].endDate,
+        annualizedReturn: testYear1AnnualizedReturn, returnRate: scoredYear1.returnRate,
+        trades: scoredYear1.trades.length, maxDrawdown: scoredYear1.maxDrawdown,
+        buyHoldMaxDrawdown: buyHoldTestDD1, upsideDeviation: testUpsideDev1,
+        requiredAnnualizedReturn: testUpsideDev1 === null ? null : (upsideThresholdPercent / 100) * testUpsideDev1,
+        allowedMaxDrawdown: buyHoldTestDD1 === null ? null : buyHoldTestDD1 * (1 + drawdownTolerancePercent / 100),
+        passesTargetGate: testYear1AnnualizedReturn >= targetPercent,
+        passesUpsideGate: passesUpsideYear1,
+        passesDrawdownGate: passesDrawdownYear1,
+      },
+      {
+        start: testWindows[1].startDate, end: testWindows[1].endDate,
+        annualizedReturn: testYear2AnnualizedReturn, returnRate: scoredYear2.returnRate,
+        trades: scoredYear2.trades.length, maxDrawdown: scoredYear2.maxDrawdown,
+        buyHoldMaxDrawdown: buyHoldTestDD2, upsideDeviation: testUpsideDev2,
+        requiredAnnualizedReturn: testUpsideDev2 === null ? null : (upsideThresholdPercent / 100) * testUpsideDev2,
+        allowedMaxDrawdown: buyHoldTestDD2 === null ? null : buyHoldTestDD2 * (1 + drawdownTolerancePercent / 100),
+        passesTargetGate: testYear2AnnualizedReturn >= targetPercent,
+        passesUpsideGate: passesUpsideYear2,
+        passesDrawdownGate: passesDrawdownYear2,
+      },
+    ];
 
     const reachedTarget = testYear1AnnualizedReturn >= targetPercent && testYear2AnnualizedReturn >= targetPercent
       && passesTrainUpsideGate && passesUpsideYear1 && passesUpsideYear2
@@ -6050,9 +6132,12 @@ async function handlePresetRevalidateApi(req, res) {
             train_annualized_return, train_start_date, train_end_date,
             test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
             test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
-            annualized_diff_year1, annualized_diff_year2, reached_target, updated_at
+            annualized_diff_year1, annualized_diff_year2, reached_target,
+            train_year_breakdown, validation_year_breakdown,
+            target_percent, upside_threshold_percent, drawdown_tolerance_percent,
+            updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, NOW())
+          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, NOW())
           ON CONFLICT (preset_id) DO UPDATE SET
             train_years = EXCLUDED.train_years,
             test_years = EXCLUDED.test_years,
@@ -6074,6 +6159,11 @@ async function handlePresetRevalidateApi(req, res) {
             annualized_diff_year1 = EXCLUDED.annualized_diff_year1,
             annualized_diff_year2 = EXCLUDED.annualized_diff_year2,
             reached_target = EXCLUDED.reached_target,
+            train_year_breakdown = EXCLUDED.train_year_breakdown,
+            validation_year_breakdown = EXCLUDED.validation_year_breakdown,
+            target_percent = EXCLUDED.target_percent,
+            upside_threshold_percent = EXCLUDED.upside_threshold_percent,
+            drawdown_tolerance_percent = EXCLUDED.drawdown_tolerance_percent,
             updated_at = NOW()
         `, [
           presetId, trainYears, testYears,
@@ -6081,6 +6171,8 @@ async function handlePresetRevalidateApi(req, res) {
           testYear1AnnualizedReturn, scoredYear1.returnRate, scoredYear1.maxDrawdown, scoredYear1.trades.length, testWindows[0].startDate, testWindows[0].endDate,
           testYear2AnnualizedReturn, scoredYear2.returnRate, scoredYear2.maxDrawdown, scoredYear2.trades.length, testWindows[1].startDate, testWindows[1].endDate,
           annualizedDiffYear1, annualizedDiffYear2, reachedTarget,
+          JSON.stringify(trainYearBreakdown), JSON.stringify(validationYearBreakdown),
+          targetPercent, upsideThresholdPercent, drawdownTolerancePercent,
         ]);
       }
     }
@@ -6094,6 +6186,7 @@ async function handlePresetRevalidateApi(req, res) {
       trainEndDate,
       trainAnnualizedReturn,
       trainYearBreakdown,
+      validationYearBreakdown,
       testYear1: {
         startDate: testWindows[0].startDate,
         endDate: testWindows[0].endDate,
@@ -6164,6 +6257,11 @@ function mapPresetValidationRow(row) {
     annualizedDiffYear2: Number(row.annualized_diff_year2) || 0,
     bestTrades: Math.max(row.test_year1_trades || 0, row.test_year2_trades || 0),
     testedCandidates: 0,
+    trainYearBreakdown: normalizeYearBreakdownItems(row.train_year_breakdown),
+    validationYearBreakdown: normalizeYearBreakdownItems(row.validation_year_breakdown),
+    targetPercent: row.target_percent === null || row.target_percent === undefined ? 50 : Number(row.target_percent),
+    upsideThresholdPercent: row.upside_threshold_percent === null || row.upside_threshold_percent === undefined ? 30 : Number(row.upside_threshold_percent),
+    drawdownTolerancePercent: row.drawdown_tolerance_percent === null || row.drawdown_tolerance_percent === undefined ? 5 : Number(row.drawdown_tolerance_percent),
     reachedTarget: Boolean(row.reached_target),
     lastRecheckedAt: row.snapshot_updated_at ? new Date(row.snapshot_updated_at).toISOString() : "",
     recheckStillQualifies: null,
@@ -6341,6 +6439,8 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.train_year_breakdown, pvs.validation_year_breakdown,
+        pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -6384,6 +6484,8 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_annualized_return, pvs.test_year1_return_rate, pvs.test_year1_max_drawdown, pvs.test_year1_trades, pvs.test_year1_start_date, pvs.test_year1_end_date,
         pvs.test_year2_annualized_return, pvs.test_year2_return_rate, pvs.test_year2_max_drawdown, pvs.test_year2_trades, pvs.test_year2_start_date, pvs.test_year2_end_date,
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
+        pvs.train_year_breakdown, pvs.validation_year_breakdown,
+        pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -6471,10 +6573,21 @@ async function handleMyModelsApi(req, res) {
         mvs.incremental_trades AS model_validation_incremental_trades,
         mvs.target_percent AS model_validation_target_percent,
         mvs.last_checked_at AS model_validation_last_checked_at,
-        mvs.last_error AS model_validation_last_error
+        mvs.last_error AS model_validation_last_error,
+        COALESCE(w.watch_count, 0) AS watch_count,
+        COALESCE(w.active_watch_count, 0) AS active_watch_count,
+        COALESCE(w.watch_targets, '') AS watch_targets
       FROM strategy_presets sp
       INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id
       LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'owned_preset' AND mvs.subject_id = sp.id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS watch_count,
+          COUNT(*) FILTER (WHERE wa.enabled)::int AS active_watch_count,
+          STRING_AGG(DISTINCT COALESCE(NULLIF(wa.symbol, ''), NULLIF(wa.index_name, ''), NULLIF(wa.index_code, ''), '未知'), ', ' ORDER BY COALESCE(NULLIF(wa.symbol, ''), NULLIF(wa.index_name, ''), NULLIF(wa.index_code, ''), '未知')) AS watch_targets
+        FROM watch_alerts wa
+        WHERE wa.preset_id = sp.id AND wa.owner_user_id = sp.owner_user_id
+      ) w ON TRUE
       WHERE sp.owner_user_id = $1 AND sp.hidden_at IS NULL
       ORDER BY pvs.updated_at DESC
     `, [ownerUserId]);
@@ -6485,12 +6598,16 @@ async function handleMyModelsApi(req, res) {
       shareAllowWatch: Boolean(row.share_allow_watch),
       shareAllowCopy: Boolean(row.share_allow_copy),
       dailyValidation: mapModelValidationState(row),
+      watchCount: row.watch_count || 0,
+      activeWatchCount: row.active_watch_count || 0,
+      watchTargets: row.watch_targets || "",
     }));
     sendJson(res, 200, {
       presets,
       validationJob: {
         running: isLightJobRunning(jobType),
         lastResult: lightJobLastResult.get(jobType) || null,
+        progress: readJsonFileOrNull(getMyModelsValidationProgressFile(ownerUserId)),
       },
     });
   } catch (error) {

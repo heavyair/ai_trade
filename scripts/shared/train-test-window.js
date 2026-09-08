@@ -43,4 +43,33 @@ function splitTrainTestWindows(rows, trainYears, testYears) {
   return { trainRows, trainStartDate, trainEndDate, testWindows };
 }
 
-module.exports = { shiftYears, toIsoDate, splitTrainTestWindows };
+// Fixed-start variant for RE-validating an already-saved preset (server.js's
+// handlePresetRevalidateApi) — every boundary is anchored to the preset's own original
+// trainStartDate (frozen forever once first recorded) instead of re-anchoring the whole span to
+// "today" the way splitTrainTestWindows does; only the final test window's end date is extended
+// forward to latestDate. This is what makes a model's pass/fail status stop flipping purely
+// because the rolling window silently slid a few days and picked up different boundary data —
+// same "fixed start, grow the end" idea as scripts/universe/run-model-validation-daily.js, just
+// applied to the manual 重新验证 path's train/test1/test2 window shape instead of a single
+// cumulative window. Only ever called when a prior snapshot already exists for the preset AND its
+// trainYears/testYears match the current request — splitTrainTestWindows still handles the first
+// validation (which establishes the origin) and any request with a different window shape.
+function splitFixedStartWindows(rows, trainYears, testYears, trainStartDate, latestDate) {
+  const start = new Date(trainStartDate);
+  const trainEndDate = toIsoDate(shiftYears(start, trainYears));
+  const trainRows = rows.filter((row) => row.date >= trainStartDate && row.date < trainEndDate);
+
+  const testWindows = [];
+  for (let i = 0; i < testYears; i += 1) {
+    const isLast = i === testYears - 1;
+    testWindows.push({
+      yearIndex: i + 1,
+      startDate: toIsoDate(shiftYears(start, trainYears + i)),
+      endDate: isLast ? latestDate : toIsoDate(shiftYears(start, trainYears + i + 1)),
+    });
+  }
+
+  return { trainRows, trainStartDate, trainEndDate, testWindows };
+}
+
+module.exports = { shiftYears, toIsoDate, splitTrainTestWindows, splitFixedStartWindows };
