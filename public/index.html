@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260908-model-list-watch-bulk">
+    <link rel="stylesheet" href="/styles.css?v=20260908-watchable-bulk-watch">
   </head>
   <body>
     <main class="shell">
@@ -459,7 +459,10 @@
                 隐藏已有盯盘
               </label>
               <button type="button" id="adminWatchableAiReloadButton" class="ghost-button">刷新</button>
+              <button type="button" id="adminWatchableAiSelectAllButton" class="ghost-button">全选当前</button>
+              <button type="button" id="adminWatchableAiClearSelectionButton" class="ghost-button">清除选择</button>
               <button type="button" id="adminWatchableAiSaveSelectedButton" class="ghost-button">另存选中为我的模型</button>
+              <button type="button" id="adminWatchableAiCreateWatchSelectedButton" class="ghost-button">建立选中到盯盘</button>
               <span id="adminWatchableAiSaveStatus" class="field-hint"></span>
               <span id="adminWatchableAiSummary" class="field-hint"></span>
             </div>
@@ -1611,6 +1614,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260908-model-list-watch-bulk"></script>
+    <script src="/app.js?v=20260908-watchable-bulk-watch"></script>
   </body>
 </html>

@@ -3373,6 +3373,13 @@ function buildScanPresetLabel(row) {
   ].filter(Boolean).join(" ").slice(0, 100);
 }
 
+function scanMarketToWatchMarket(market, symbol) {
+  const normalized = String(market || "").trim().toUpperCase();
+  if (normalized === "US") return "US";
+  if (normalized === "CN" || normalized === "0" || normalized === "1") return "CN";
+  return isChinaCode(String(symbol || "").trim()) ? "CN" : "US";
+}
+
 async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
   try {
     const admin = await requireAdminUser(req);
@@ -3386,12 +3393,18 @@ async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
     const requestedIds = Array.isArray(payload.scanIds)
       ? [...new Set(payload.scanIds.map((id) => String(id || "").trim()).filter(Boolean))]
       : [];
+    const createWatches = Boolean(payload.createWatches);
+    const frequencyMinutes = Math.round(Number(payload.frequencyMinutes)) || 60;
     if (requestedIds.length === 0) {
       sendJson(res, 400, { error: "请选择至少一个 AI 模型。" });
       return;
     }
     if (requestedIds.length > 300) {
       sendJson(res, 400, { error: "一次最多另存 300 个模型。" });
+      return;
+    }
+    if (createWatches && !WATCH_ALERT_FREQUENCY_OPTIONS.has(frequencyMinutes)) {
+      sendJson(res, 400, { error: "检查频率不合法。" });
       return;
     }
 
@@ -3407,101 +3420,138 @@ async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
     const missing = requestedIds.filter((id) => !foundById.has(id));
     const saved = [];
     const skipped = [];
+    const watchCreated = [];
+    const watchSkipped = [];
     const failed = missing.map((id) => ({ id, reason: "模型不存在或不是已达标 AI 搜索结果" }));
 
     for (const row of result.rows) {
       try {
         const exists = await dbPool.query(`
-          SELECT id, label
+          SELECT id, label, strategy_type, config
           FROM strategy_presets
           WHERE owner_user_id = $1 AND original_model_id = $2 AND hidden_at IS NULL
           LIMIT 1
         `, [ownerUserId, row.id]);
+        let presetId = "";
+        let label = "";
+        let strategyType = "";
+        let configPayload = {};
         if (exists.rows.length > 0) {
-          skipped.push({ id: row.id, presetId: exists.rows[0].id, label: exists.rows[0].label, reason: "已在我的模型" });
-          continue;
+          presetId = exists.rows[0].id;
+          label = exists.rows[0].label || row.preset_label || "AI 模型";
+          strategyType = exists.rows[0].strategy_type || row.strategy_type || "wave";
+          configPayload = exists.rows[0].config && typeof exists.rows[0].config === "object" ? exists.rows[0].config : {};
+          skipped.push({ id: row.id, presetId, label, symbol: row.symbol || "", reason: "已在我的模型" });
+        } else {
+          const rowsForSymbol = await loadRowsForSymbol(dbPool, row.symbol, row.market);
+          const trainYearBreakdown = await resolveScanTrainYearBreakdown(row, rowsForSymbol);
+          const validationYearBreakdown = await resolveScanValidationYearBreakdown(row, rowsForSymbol);
+          const targetPercent = Number(row.target_percent) || 50;
+          if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4 })) {
+            failed.push({ id: row.id, label: row.preset_label, reason: "训练逐年标准不达标" });
+            continue;
+          }
+          if (!scanYearBreakdownPasses(validationYearBreakdown, { requireTarget: true, targetPercent, minYears: 2 })) {
+            failed.push({ id: row.id, label: row.preset_label, reason: "验证逐年标准不达标" });
+            continue;
+          }
+
+          presetId = randomId("preset");
+          const rawConfig = row.best_config && typeof row.best_config === "object" ? row.best_config : {};
+          strategyType = row.strategy_type || rawConfig.strategyType || "wave";
+          configPayload = {
+            ...rawConfig,
+            strategyType,
+          };
+          label = buildScanPresetLabel(row) || row.preset_label || "AI 模型";
+          const today = new Date().toISOString().slice(0, 10);
+          const meta = {
+            targetSymbol: row.symbol || "通用",
+            provedPeriod: `${row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "?"}至${row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "?"}`,
+            creator: "auto",
+            createdAt: today,
+            updatedAt: today,
+            originalText: row.model_reason || "",
+            modelText: row.model_reason || "",
+            ownerEmail: admin.email,
+            isOwner: true,
+            isPublic: false,
+            isLegacy: false,
+            originalModelId: row.id,
+            originalModelLabel: row.preset_label || "",
+            originalModelNumericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
+          };
+
+          await dbPool.query(`
+            INSERT INTO strategy_presets (
+              id, owner_user_id, name, label, strategy_type, config, meta,
+              original_text, model_text, is_legacy, original_model_id, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, FALSE, $10, NOW(), NOW())
+          `, [
+            presetId, ownerUserId, normalizePresetKey(presetId), label, strategyType,
+            JSON.stringify(configPayload), JSON.stringify(meta),
+            row.model_reason || "", row.model_reason || "", row.id,
+          ]);
+
+          const trainYears = row.train_start_date && row.train_end_date && row.train_end_date > row.train_start_date
+            ? Math.max(1, Math.round((new Date(row.train_end_date) - new Date(row.train_start_date)) / 86400000 / 365.25))
+            : 4;
+          const testYears = row.test_year1_start_date && row.test_year2_end_date && row.test_year2_end_date > row.test_year1_start_date
+            ? Math.max(1, Math.round((new Date(row.test_year2_end_date) - new Date(row.test_year1_start_date)) / 86400000 / 365.25))
+            : 2;
+          await dbPool.query(`
+            INSERT INTO preset_validation_snapshots (
+              preset_id, train_years, test_years,
+              train_annualized_return, train_start_date, train_end_date,
+              test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
+              test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
+              annualized_diff_year1, annualized_diff_year2, reached_target,
+              train_year_breakdown, validation_year_breakdown,
+              target_percent, upside_threshold_percent, drawdown_tolerance_percent,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, TRUE, $21::jsonb, $22::jsonb, $23, $24, $25, NOW())
+          `, [
+            presetId, trainYears, testYears,
+            Number(row.train_annualized_return) || 0, row.train_start_date, row.train_end_date,
+            Number(row.test_year1_annualized_return) || 0, Number(row.test_year1_return_rate) || 0, Number(row.test_year1_max_drawdown) || 0, row.test_year1_trades || 0, row.test_year1_start_date, row.test_year1_end_date,
+            Number(row.test_year2_annualized_return) || 0, Number(row.test_year2_return_rate) || 0, Number(row.test_year2_max_drawdown) || 0, row.test_year2_trades || 0, row.test_year2_start_date, row.test_year2_end_date,
+            Number(row.annualized_diff_year1) || 0, Number(row.annualized_diff_year2) || 0,
+            JSON.stringify(trainYearBreakdown), JSON.stringify(validationYearBreakdown),
+            targetPercent, Number(row.upside_threshold_percent) || 30, Number(row.drawdown_tolerance_percent) || 5,
+          ]);
+
+          saved.push({ id: row.id, presetId, label, symbol: row.symbol || "" });
         }
 
-        const rowsForSymbol = await loadRowsForSymbol(dbPool, row.symbol, row.market);
-        const trainYearBreakdown = await resolveScanTrainYearBreakdown(row, rowsForSymbol);
-        const validationYearBreakdown = await resolveScanValidationYearBreakdown(row, rowsForSymbol);
-        const targetPercent = Number(row.target_percent) || 50;
-        if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4 })) {
-          failed.push({ id: row.id, label: row.preset_label, reason: "训练逐年标准不达标" });
-          continue;
+        if (createWatches) {
+          const symbol = normalizeCode(row.symbol);
+          const watchMarket = scanMarketToWatchMarket(row.market, symbol);
+          const existingWatch = await dbPool.query(`
+            SELECT id
+            FROM watch_alerts
+            WHERE owner_user_id = $1 AND preset_id = $2 AND symbol = $3 AND market = $4
+            LIMIT 1
+          `, [ownerUserId, presetId, symbol, watchMarket]);
+          if (existingWatch.rows.length > 0) {
+            watchSkipped.push({ id: row.id, presetId, watchId: existingWatch.rows[0].id, symbol, reason: "已存在盯盘" });
+          } else {
+            const watchId = randomId("watch");
+            const watchResult = await dbPool.query(`
+              INSERT INTO watch_alerts (
+                id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market,
+                frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12)
+              RETURNING id
+            `, [
+              watchId, ownerUserId, admin.email, presetId, label, symbol, row.symbol_name || symbol, watchMarket,
+              frequencyMinutes, strategyType, JSON.stringify(configPayload || {}), label,
+            ]);
+            watchCreated.push({ id: row.id, presetId, watchId: watchResult.rows[0].id, symbol });
+          }
         }
-        if (!scanYearBreakdownPasses(validationYearBreakdown, { requireTarget: true, targetPercent, minYears: 2 })) {
-          failed.push({ id: row.id, label: row.preset_label, reason: "验证逐年标准不达标" });
-          continue;
-        }
-
-        const newId = randomId("preset");
-        const rawConfig = row.best_config && typeof row.best_config === "object" ? row.best_config : {};
-        const strategyType = row.strategy_type || rawConfig.strategyType || "wave";
-        const configPayload = {
-          ...rawConfig,
-          strategyType,
-        };
-        const label = buildScanPresetLabel(row) || row.preset_label || "AI 模型";
-        const today = new Date().toISOString().slice(0, 10);
-        const meta = {
-          targetSymbol: row.symbol || "通用",
-          provedPeriod: `${row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "?"}至${row.test_year2_end_date ? new Date(row.test_year2_end_date).toISOString().slice(0, 10) : "?"}`,
-          creator: "auto",
-          createdAt: today,
-          updatedAt: today,
-          originalText: row.model_reason || "",
-          modelText: row.model_reason || "",
-          ownerEmail: admin.email,
-          isOwner: true,
-          isPublic: false,
-          isLegacy: false,
-          originalModelId: row.id,
-          originalModelLabel: row.preset_label || "",
-          originalModelNumericId: row.numeric_id !== null && row.numeric_id !== undefined ? Number(row.numeric_id) : null,
-        };
-
-        await dbPool.query(`
-          INSERT INTO strategy_presets (
-            id, owner_user_id, name, label, strategy_type, config, meta,
-            original_text, model_text, is_legacy, original_model_id, created_at, updated_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, FALSE, $10, NOW(), NOW())
-        `, [
-          newId, ownerUserId, normalizePresetKey(newId), label, strategyType,
-          JSON.stringify(configPayload), JSON.stringify(meta),
-          row.model_reason || "", row.model_reason || "", row.id,
-        ]);
-
-        const trainYears = row.train_start_date && row.train_end_date && row.train_end_date > row.train_start_date
-          ? Math.max(1, Math.round((new Date(row.train_end_date) - new Date(row.train_start_date)) / 86400000 / 365.25))
-          : 4;
-        const testYears = row.test_year1_start_date && row.test_year2_end_date && row.test_year2_end_date > row.test_year1_start_date
-          ? Math.max(1, Math.round((new Date(row.test_year2_end_date) - new Date(row.test_year1_start_date)) / 86400000 / 365.25))
-          : 2;
-        await dbPool.query(`
-          INSERT INTO preset_validation_snapshots (
-            preset_id, train_years, test_years,
-            train_annualized_return, train_start_date, train_end_date,
-            test_year1_annualized_return, test_year1_return_rate, test_year1_max_drawdown, test_year1_trades, test_year1_start_date, test_year1_end_date,
-            test_year2_annualized_return, test_year2_return_rate, test_year2_max_drawdown, test_year2_trades, test_year2_start_date, test_year2_end_date,
-            annualized_diff_year1, annualized_diff_year2, reached_target,
-            train_year_breakdown, validation_year_breakdown,
-            target_percent, upside_threshold_percent, drawdown_tolerance_percent,
-            updated_at
-          )
-          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, TRUE, $21::jsonb, $22::jsonb, $23, $24, $25, NOW())
-        `, [
-          newId, trainYears, testYears,
-          Number(row.train_annualized_return) || 0, row.train_start_date, row.train_end_date,
-          Number(row.test_year1_annualized_return) || 0, Number(row.test_year1_return_rate) || 0, Number(row.test_year1_max_drawdown) || 0, row.test_year1_trades || 0, row.test_year1_start_date, row.test_year1_end_date,
-          Number(row.test_year2_annualized_return) || 0, Number(row.test_year2_return_rate) || 0, Number(row.test_year2_max_drawdown) || 0, row.test_year2_trades || 0, row.test_year2_start_date, row.test_year2_end_date,
-          Number(row.annualized_diff_year1) || 0, Number(row.annualized_diff_year2) || 0,
-          JSON.stringify(trainYearBreakdown), JSON.stringify(validationYearBreakdown),
-          targetPercent, Number(row.upside_threshold_percent) || 30, Number(row.drawdown_tolerance_percent) || 5,
-        ]);
-
-        saved.push({ id: row.id, presetId: newId, label, symbol: row.symbol || "" });
       } catch (error) {
         failed.push({ id: row.id, label: row.preset_label || "", reason: error.message || "保存失败" });
       }
@@ -3510,9 +3560,13 @@ async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
     sendJson(res, 200, {
       saved: saved.length,
       skipped: skipped.length,
+      watchCreated: watchCreated.length,
+      watchSkipped: watchSkipped.length,
       failed: failed.length,
       savedItems: saved,
       skippedItems: skipped,
+      watchCreatedItems: watchCreated,
+      watchSkippedItems: watchSkipped,
       failedItems: failed,
     });
   } catch (error) {

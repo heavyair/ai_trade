@@ -221,7 +221,10 @@ const adminWatchableAiPanel = document.querySelector("#adminWatchableAiPanel");
 const adminWatchableAiMarketSelect = document.querySelector("#adminWatchableAiMarketSelect");
 const adminWatchableAiHideWatchedInput = document.querySelector("#adminWatchableAiHideWatchedInput");
 const adminWatchableAiReloadButton = document.querySelector("#adminWatchableAiReloadButton");
+const adminWatchableAiSelectAllButton = document.querySelector("#adminWatchableAiSelectAllButton");
+const adminWatchableAiClearSelectionButton = document.querySelector("#adminWatchableAiClearSelectionButton");
 const adminWatchableAiSaveSelectedButton = document.querySelector("#adminWatchableAiSaveSelectedButton");
+const adminWatchableAiCreateWatchSelectedButton = document.querySelector("#adminWatchableAiCreateWatchSelectedButton");
 const adminWatchableAiSaveStatus = document.querySelector("#adminWatchableAiSaveStatus");
 const adminWatchableAiSummary = document.querySelector("#adminWatchableAiSummary");
 const adminWatchableAiList = document.querySelector("#adminWatchableAiList");
@@ -6207,6 +6210,13 @@ if (adminWatchAlertsList) {
 let adminWatchableAiCache = [];
 let adminWatchableAiSelection = new Set();
 
+function updateAdminWatchableAiSelectionUi() {
+  const selectedCount = adminWatchableAiSelection.size;
+  if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = selectedCount > 0 ? `已选 ${selectedCount} 个` : "";
+  if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = selectedCount === 0;
+  if (adminWatchableAiCreateWatchSelectedButton) adminWatchableAiCreateWatchSelectedButton.disabled = selectedCount === 0;
+}
+
 function formatNullablePercent(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value))
     ? "--"
@@ -6306,7 +6316,7 @@ function renderWatchableAiModelRow(model) {
     <tr>
       <td>
         <label class="compact-check">
-          <input type="checkbox" data-action="select-watchable-ai-model" data-scan-id="${escapeHtml(model.id)}" ${isChecked ? "checked" : ""} ${savedForCurrentUser ? "disabled" : ""}>
+          <input type="checkbox" data-action="select-watchable-ai-model" data-scan-id="${escapeHtml(model.id)}" ${isChecked ? "checked" : ""}>
           <span>${savedForCurrentUser ? "已在我的模型" : "选择"}</span>
         </label>
       </td>
@@ -6357,15 +6367,14 @@ function renderWatchableAiModelRow(model) {
 function renderAdminWatchableAiModels(payload) {
   const models = Array.isArray(payload.models) ? payload.models : [];
   adminWatchableAiCache = models;
-  const availableIds = new Set(models.filter((model) => !model.savedForCurrentUser).map((model) => String(model.id)));
+  const availableIds = new Set(models.map((model) => String(model.id)));
   adminWatchableAiSelection = new Set([...adminWatchableAiSelection].filter((id) => availableIds.has(id)));
   if (adminWatchableAiSummary) {
     const watched = Number(payload.watchedModels) || models.filter((m) => Number(m.watchCount) > 0).length;
     const saved = models.filter((m) => m.savedForCurrentUser).length;
     adminWatchableAiSummary.textContent = `共 ${models.length} 个候选，${watched} 个已有盯盘，${saved} 个已在我的模型。`;
   }
-  if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = adminWatchableAiSelection.size > 0 ? `已选 ${adminWatchableAiSelection.size} 个` : "";
-  if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
+  updateAdminWatchableAiSelectionUi();
   if (!adminWatchableAiList) return;
   if (models.length === 0) {
     adminWatchableAiList.innerHTML = '<div class="ranking-empty">没有满足条件的可建盯盘 AI 搜索模型。</div>';
@@ -6421,6 +6430,18 @@ if (adminWatchableAiTabButton) {
 if (adminWatchableAiReloadButton) {
   adminWatchableAiReloadButton.addEventListener("click", () => loadAdminWatchableAiModels());
 }
+if (adminWatchableAiSelectAllButton) {
+  adminWatchableAiSelectAllButton.addEventListener("click", () => {
+    adminWatchableAiSelection = new Set(adminWatchableAiCache.map((model) => String(model.id || "")).filter(Boolean));
+    renderAdminWatchableAiModels({ models: adminWatchableAiCache });
+  });
+}
+if (adminWatchableAiClearSelectionButton) {
+  adminWatchableAiClearSelectionButton.addEventListener("click", () => {
+    adminWatchableAiSelection.clear();
+    renderAdminWatchableAiModels({ models: adminWatchableAiCache });
+  });
+}
 if (adminWatchableAiMarketSelect) {
   adminWatchableAiMarketSelect.addEventListener("change", () => loadAdminWatchableAiModels());
 }
@@ -6435,8 +6456,7 @@ if (adminWatchableAiList) {
     if (!scanId) return;
     if (input.checked) adminWatchableAiSelection.add(scanId);
     else adminWatchableAiSelection.delete(scanId);
-    if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = adminWatchableAiSelection.size > 0 ? `已选 ${adminWatchableAiSelection.size} 个` : "";
-    if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
+    updateAdminWatchableAiSelectionUi();
   });
 }
 if (adminWatchableAiSaveSelectedButton) {
@@ -6466,7 +6486,43 @@ if (adminWatchableAiSaveSelectedButton) {
       setStatus(`另存选中模型失败：${error.message}`, true);
       if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = "";
     } finally {
-      adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
+      updateAdminWatchableAiSelectionUi();
+    }
+  });
+}
+if (adminWatchableAiCreateWatchSelectedButton) {
+  adminWatchableAiCreateWatchSelectedButton.addEventListener("click", async () => {
+    const scanIds = [...adminWatchableAiSelection];
+    if (scanIds.length === 0) {
+      setStatus("请先选择要建立盯盘的 AI 模型。", true);
+      return;
+    }
+    adminWatchableAiCreateWatchSelectedButton.disabled = true;
+    if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = true;
+    if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = `正在另存并建立 ${scanIds.length} 个盯盘...`;
+    try {
+      const response = await fetch("/api/admin/watchable-ai-models/save-selected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scanIds, createWatches: true, frequencyMinutes: 60 }),
+      });
+      const payload = await readJsonResponse(response, "建立选中盯盘失败。");
+      adminWatchableAiSelection.clear();
+      const watchCreated = Number(payload.watchCreated) || 0;
+      const watchSkipped = Number(payload.watchSkipped) || 0;
+      const failed = Number(payload.failed) || 0;
+      if (adminWatchableAiSaveStatus) {
+        adminWatchableAiSaveStatus.textContent = `已建盯盘 ${watchCreated} 个，跳过已有 ${watchSkipped} 个${failed ? `，失败 ${failed} 个` : ""}。`;
+      }
+      setStatus(`AI 可盯盘模型已处理：另存 ${payload.saved || 0} 个，盯盘新建 ${watchCreated} 个，跳过已有 ${watchSkipped} 个${failed ? `，失败 ${failed} 个` : ""}。`, failed > 0);
+      await loadAdminWatchableAiModels();
+      await loadModelList({ silent: true });
+      await loadMyWatchAlerts({ render: false });
+    } catch (error) {
+      setStatus(`建立选中盯盘失败：${error.message}`, true);
+      if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = "";
+    } finally {
+      updateAdminWatchableAiSelectionUi();
     }
   });
 }
