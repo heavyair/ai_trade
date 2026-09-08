@@ -156,6 +156,22 @@ def fetch_klines(ak, payload):
     return {"source": source, "name": code, "rows": rows}
 
 
+def fetch_stock_names(ak, payload):
+    # Bulk-resolves A-share codes to their Chinese display name via one full-market snapshot
+    # fetch (stock_zh_a_spot_em covers every listed A-share in a single call — far cheaper than
+    # looking codes up one at a time), then filters down to just the requested codes. Used to
+    # backfill optimization_scan_results.symbol_name for rows saved before that column was ever
+    # populated (it silently defaulted to the code itself for every A-share row).
+    codes = {str(code).strip().zfill(6) for code in payload.get("codes", []) if str(code).strip()}
+    frame = ak.stock_info_a_code_name()
+    names = {}
+    for _, item in frame.iterrows():
+        code = str(item.get("code", "")).strip()
+        if code in codes:
+            names[code] = str(item.get("name", "")).strip()
+    return {"source": "AKShare stock_info_a_code_name", "names": names}
+
+
 def fetch_index_constituents(ak, payload):
     # index_stock_cons works uniformly across indices published by different companies — 中证
     # 指数公司 (CSI, e.g. 沪深300/中证人工智能主题指数), 国证指数/深圳证券信息有限公司 (e.g.
@@ -191,6 +207,8 @@ def main():
         result = fetch_klines(ak, payload)
     elif mode == "index_cons":
         result = fetch_index_constituents(ak, payload)
+    elif mode == "stock_names":
+        result = fetch_stock_names(ak, payload)
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
