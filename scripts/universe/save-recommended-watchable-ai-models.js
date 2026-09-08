@@ -21,10 +21,16 @@ function parseArgs(argv) {
     dryRun: false,
     ownerEmail: ADMIN_EMAIL,
     limit: 0,
+    all: false,
+    symbols: [],
   };
   for (const arg of argv) {
     if (arg === "--dryRun") options.dryRun = true;
+    else if (arg === "--all") options.all = true;
     else if (arg.startsWith("--ownerEmail=")) options.ownerEmail = arg.slice("--ownerEmail=".length).trim().toLowerCase();
+    else if (arg.startsWith("--symbols=")) {
+      options.symbols = arg.slice("--symbols=".length).split(",").map((value) => value.trim().toUpperCase()).filter(Boolean);
+    }
     else if (arg.startsWith("--limit=")) {
       const value = Math.round(Number(arg.slice("--limit=".length)));
       if (Number.isFinite(value) && value > 0) options.limit = value;
@@ -339,7 +345,11 @@ async function main() {
     ssl: DATABASE_SSL ? { rejectUnauthorized: false } : false,
   });
   try {
-    const rawCandidates = await loadRawCandidates(pool);
+    const requestedSymbols = new Set(options.symbols);
+    const rawCandidates = (await loadRawCandidates(pool)).filter((row) => {
+      if (requestedSymbols.size === 0) return true;
+      return requestedSymbols.has(String(row.symbol || "").trim().toUpperCase());
+    });
     const eligible = [];
     let rejected = 0;
     for (const row of rawCandidates) {
@@ -366,16 +376,21 @@ async function main() {
       }
     }
 
-    const bestBySymbolStrategy = new Map();
-    for (const item of eligible) {
-      const key = `${item.row.symbol}::${item.row.strategy_type}`;
-      const existing = bestBySymbolStrategy.get(key);
-      if (!existing || item.score > existing.score) bestBySymbolStrategy.set(key, item);
+    let selected;
+    if (options.all) {
+      selected = [...eligible].sort((a, b) => b.score - a.score);
+    } else {
+      const bestBySymbolStrategy = new Map();
+      for (const item of eligible) {
+        const key = `${item.row.symbol}::${item.row.strategy_type}`;
+        const existing = bestBySymbolStrategy.get(key);
+        if (!existing || item.score > existing.score) bestBySymbolStrategy.set(key, item);
+      }
+      selected = [...bestBySymbolStrategy.values()].sort((a, b) => b.score - a.score);
     }
-    let selected = [...bestBySymbolStrategy.values()].sort((a, b) => b.score - a.score);
     if (options.limit > 0) selected = selected.slice(0, options.limit);
 
-    console.log(`[save-recommended-watchable-ai] raw=${rawCandidates.length} eligible=${eligible.length} selected=${selected.length} rejected=${rejected} owner=${options.ownerEmail} dryRun=${options.dryRun}`);
+    console.log(`[save-recommended-watchable-ai] raw=${rawCandidates.length} eligible=${eligible.length} selected=${selected.length} rejected=${rejected} owner=${options.ownerEmail} dryRun=${options.dryRun} all=${options.all}`);
     let saved = 0;
     let skipped = 0;
     let failed = 0;
