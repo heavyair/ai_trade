@@ -221,6 +221,8 @@ const adminWatchableAiPanel = document.querySelector("#adminWatchableAiPanel");
 const adminWatchableAiMarketSelect = document.querySelector("#adminWatchableAiMarketSelect");
 const adminWatchableAiHideWatchedInput = document.querySelector("#adminWatchableAiHideWatchedInput");
 const adminWatchableAiReloadButton = document.querySelector("#adminWatchableAiReloadButton");
+const adminWatchableAiSaveSelectedButton = document.querySelector("#adminWatchableAiSaveSelectedButton");
+const adminWatchableAiSaveStatus = document.querySelector("#adminWatchableAiSaveStatus");
 const adminWatchableAiSummary = document.querySelector("#adminWatchableAiSummary");
 const adminWatchableAiList = document.querySelector("#adminWatchableAiList");
 const adminValidatedSearchTabButton = document.querySelector("#adminValidatedSearchTabButton");
@@ -6075,6 +6077,7 @@ if (adminWatchAlertsList) {
 }
 
 let adminWatchableAiCache = [];
+let adminWatchableAiSelection = new Set();
 
 function formatNullablePercent(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value))
@@ -6166,11 +6169,19 @@ function renderWatchableAiModelRow(model) {
   const activeWatchCount = Number(model.activeWatchCount) || 0;
   const status = model.validationStatus || "valid";
   const statusClass = status === "valid" ? "up" : status === "watching" ? "field-hint" : "down";
+  const savedForCurrentUser = Boolean(model.savedForCurrentUser);
+  const isChecked = adminWatchableAiSelection.has(String(model.id));
   const watchText = watchCount > 0
     ? `<span class="up">已有 ${watchCount} 个盯盘</span>${activeWatchCount !== watchCount ? `（启用 ${activeWatchCount}）` : ""}`
     : '<span class="field-hint">未建盯盘</span>';
   return `
     <tr>
+      <td>
+        <label class="compact-check">
+          <input type="checkbox" data-action="select-watchable-ai-model" data-scan-id="${escapeHtml(model.id)}" ${isChecked ? "checked" : ""} ${savedForCurrentUser ? "disabled" : ""}>
+          <span>${savedForCurrentUser ? "已在我的模型" : "选择"}</span>
+        </label>
+      </td>
       <td><strong>${escapeHtml(model.recommendationTier || "")}</strong><br><span class="field-hint">评分 ${Math.round(Number(model.recommendationScore) || 0)}</span></td>
       <td>${escapeHtml(model.market || "")}</td>
       <td>${escapeHtml(model.targetSymbol || "")}</td>
@@ -6218,10 +6229,15 @@ function renderWatchableAiModelRow(model) {
 function renderAdminWatchableAiModels(payload) {
   const models = Array.isArray(payload.models) ? payload.models : [];
   adminWatchableAiCache = models;
+  const availableIds = new Set(models.filter((model) => !model.savedForCurrentUser).map((model) => String(model.id)));
+  adminWatchableAiSelection = new Set([...adminWatchableAiSelection].filter((id) => availableIds.has(id)));
   if (adminWatchableAiSummary) {
     const watched = Number(payload.watchedModels) || models.filter((m) => Number(m.watchCount) > 0).length;
-    adminWatchableAiSummary.textContent = `共 ${models.length} 个候选，${watched} 个已有盯盘。`;
+    const saved = models.filter((m) => m.savedForCurrentUser).length;
+    adminWatchableAiSummary.textContent = `共 ${models.length} 个候选，${watched} 个已有盯盘，${saved} 个已在我的模型。`;
   }
+  if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = adminWatchableAiSelection.size > 0 ? `已选 ${adminWatchableAiSelection.size} 个` : "";
+  if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
   if (!adminWatchableAiList) return;
   if (models.length === 0) {
     adminWatchableAiList.innerHTML = '<div class="ranking-empty">没有满足条件的可建盯盘 AI 搜索模型。</div>';
@@ -6231,6 +6247,7 @@ function renderAdminWatchableAiModels(payload) {
     <table class="admin-ranking-table admin-watchable-ai-table">
       <thead>
         <tr>
+          <th>选择</th>
           <th>推荐</th>
           <th>市场</th>
           <th>股票</th>
@@ -6281,6 +6298,49 @@ if (adminWatchableAiMarketSelect) {
 }
 if (adminWatchableAiHideWatchedInput) {
   adminWatchableAiHideWatchedInput.addEventListener("change", () => loadAdminWatchableAiModels());
+}
+if (adminWatchableAiList) {
+  adminWatchableAiList.addEventListener("change", (event) => {
+    const input = event.target && event.target.closest ? event.target.closest('[data-action="select-watchable-ai-model"]') : null;
+    if (!input) return;
+    const scanId = String(input.dataset.scanId || "");
+    if (!scanId) return;
+    if (input.checked) adminWatchableAiSelection.add(scanId);
+    else adminWatchableAiSelection.delete(scanId);
+    if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = adminWatchableAiSelection.size > 0 ? `已选 ${adminWatchableAiSelection.size} 个` : "";
+    if (adminWatchableAiSaveSelectedButton) adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
+  });
+}
+if (adminWatchableAiSaveSelectedButton) {
+  adminWatchableAiSaveSelectedButton.addEventListener("click", async () => {
+    const scanIds = [...adminWatchableAiSelection];
+    if (scanIds.length === 0) {
+      setStatus("请先选择要另存的 AI 模型。", true);
+      return;
+    }
+    adminWatchableAiSaveSelectedButton.disabled = true;
+    if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = `正在另存 ${scanIds.length} 个...`;
+    try {
+      const response = await fetch("/api/admin/watchable-ai-models/save-selected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scanIds }),
+      });
+      const payload = await readJsonResponse(response, "另存选中模型失败。");
+      adminWatchableAiSelection.clear();
+      if (adminWatchableAiSaveStatus) {
+        adminWatchableAiSaveStatus.textContent = `已另存 ${payload.saved || 0} 个，跳过 ${payload.skipped || 0} 个。`;
+      }
+      setStatus(`AI 可盯盘模型已处理：另存 ${payload.saved || 0} 个，跳过 ${payload.skipped || 0} 个。`);
+      await loadAdminWatchableAiModels();
+      await loadModelList({ silent: true });
+    } catch (error) {
+      setStatus(`另存选中模型失败：${error.message}`, true);
+      if (adminWatchableAiSaveStatus) adminWatchableAiSaveStatus.textContent = "";
+    } finally {
+      adminWatchableAiSaveSelectedButton.disabled = adminWatchableAiSelection.size === 0;
+    }
+  });
 }
 
 function openAdminValidationParamViewer(sourceScanResultId) {

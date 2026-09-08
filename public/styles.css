@@ -2141,6 +2141,23 @@ button:disabled {
   gap: 6px;
 }
 
+.compact-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 86px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.compact-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .admin-ranking-table td.down {
   color: #c0392b;
   font-weight: 700;
