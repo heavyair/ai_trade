@@ -5430,7 +5430,7 @@ function formatWatchAlertAccountStats(watch) {
   const returnRate = Number(watch.accountReturnRate);
   const annualizedReturn = Number(watch.accountAnnualizedReturn);
   const positionValue = Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : null;
-  const returnClass = returnRate >= 0 ? "up" : "down";
+  const returnClass = Number.isFinite(returnRate) ? (returnRate >= 0 ? "up" : "down") : "";
   const startDate = String(watch.createdAt || "").slice(0, 10);
   const updatedDate = String(watch.accountUpdatedAt || watch.lastCheckedAt || "").slice(0, 10);
   return `
@@ -5560,6 +5560,7 @@ let watchAlertsCache = [];
 let adminWatchAlertsCache = [];
 let watchShareCodeState = null;
 let watchAlertsMarketFilter = "";
+let watchAlertsSortState = { key: "createdAt", direction: "desc" };
 
 // Lazy-loads the price chart the first time a watch's <details> row is actually expanded —
 // firing an /api/klines request per row on every list render would be wasteful for a list of
@@ -5594,6 +5595,153 @@ function handleWatchAlertsToggle(event, watchesCache) {
   const watch = watchesCache.find((item) => item.id === watchId);
   const svgEl = details.querySelector(".watch-alert-chart-svg");
   if (watch && svgEl) loadWatchAlertChart(watch, svgEl);
+}
+
+const watchAlertTableColumns = [
+  { key: "model", label: "模型", type: "text" },
+  { key: "target", label: "标的", type: "text" },
+  { key: "market", label: "市场", type: "text" },
+  { key: "createdAt", label: "设置日期", type: "date" },
+  { key: "cash", label: "资金", type: "number" },
+  { key: "shares", label: "仓位", type: "number" },
+  { key: "positionValue", label: "持仓市值", type: "number" },
+  { key: "equity", label: "账户权益", type: "number" },
+  { key: "returnRate", label: "回报", type: "number" },
+  { key: "annualizedReturn", label: "年化回报", type: "number" },
+  { key: "signal", label: "最近信号", type: "text" },
+];
+
+function getWatchAlertSortValue(watch, key) {
+  if (key === "model") return String(watch.presetLabel || "").toLowerCase();
+  if (key === "target") return String(watch.indexName || watch.indexCode || watch.symbolName || watch.symbol || "").toLowerCase();
+  if (key === "market") return String(watch.market || "");
+  if (key === "createdAt") return Date.parse(watch.createdAt || "") || 0;
+  if (key === "cash") return Number(watch.accountCash);
+  if (key === "shares") return Number(watch.accountShares);
+  if (key === "positionValue") {
+    const equity = Number(watch.accountEquity);
+    const cash = Number(watch.accountCash);
+    return Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : NaN;
+  }
+  if (key === "equity") return Number(watch.accountEquity);
+  if (key === "returnRate") return Number(watch.accountReturnRate);
+  if (key === "annualizedReturn") return Number(watch.accountAnnualizedReturn);
+  if (key === "signal") return String(watch.lastSignalDate || "");
+  return "";
+}
+
+function sortWatchAlerts(watches) {
+  const column = watchAlertTableColumns.find((item) => item.key === watchAlertsSortState.key) || watchAlertTableColumns[3];
+  const direction = watchAlertsSortState.direction === "asc" ? 1 : -1;
+  return [...watches].sort((a, b) => {
+    const av = getWatchAlertSortValue(a, column.key);
+    const bv = getWatchAlertSortValue(b, column.key);
+    const aMissing = av === "" || av === null || av === undefined || (typeof av === "number" && !Number.isFinite(av));
+    const bMissing = bv === "" || bv === null || bv === undefined || (typeof bv === "number" && !Number.isFinite(bv));
+    if (aMissing && bMissing) return 0;
+    if (aMissing) return 1;
+    if (bMissing) return -1;
+    if (column.type === "number" || column.type === "date") return direction * (Number(av) - Number(bv));
+    return direction * String(av).localeCompare(String(bv), "zh-CN");
+  });
+}
+
+function renderWatchAlertSortHeader(column) {
+  const active = watchAlertsSortState.key === column.key;
+  const arrow = active ? (watchAlertsSortState.direction === "asc" ? " ↑" : " ↓") : "";
+  return `<th class="admin-scan-sort-header${active ? " active" : ""}" data-watch-alert-sort-key="${escapeHtml(column.key)}">${escapeHtml(column.label)}${arrow}</th>`;
+}
+
+function renderWatchAlertActionsCell(watch) {
+  const isFollowerRow = watch.role === "follower";
+  const isSharedCodeRow = watch.role === "shared-code";
+  if (isFollowerRow) {
+    return `<button type="button" class="ghost-button watch-alert-unfollow-button" data-watch-id="${escapeHtml(watch.id)}">取消关注</button>`;
+  }
+  if (isSharedCodeRow) {
+    return watch.canCopy
+      ? `<button type="button" class="ghost-button watch-share-code-copy-model-button" data-watch-id="${escapeHtml(watch.id)}">复制模型</button>`
+      : '<span class="field-hint">不可复制</span>';
+  }
+  return `
+    <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
+    <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
+    <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
+    ${watch.inviteToken ? `<button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="1">重生成</button>` : ""}
+  `;
+}
+
+function renderWatchAlertTradesCell(watch) {
+  if (watch.indexCode) {
+    return `<span class="field-hint">${watch.lastSignalReason ? escapeHtml(watch.lastSignalReason) : "指数盯盘不模拟账户。"}</span>`;
+  }
+  const trades = Array.isArray(watch.accountTrades) ? watch.accountTrades : [];
+  return `
+    <details class="watch-trade-details" data-watch-id="${escapeHtml(watch.id)}">
+      <summary>${trades.length ? `${trades.length} 笔` : "暂无交易"}</summary>
+      <div class="trade-price-wrap trade-price-wrap--compact">
+        <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
+      </div>
+      ${renderWatchAlertOrdersTable(trades)}
+    </details>
+  `;
+}
+
+function renderWatchAlertTableRow(watch) {
+  const isIndexWatch = Boolean(watch.indexCode);
+  const isFollowerRow = watch.role === "follower";
+  const isSharedCodeRow = watch.role === "shared-code";
+  const marketLabel = watch.market === "US" ? "美股" : watch.market === "HK" ? "港股" : "A股";
+  const modelCell = isFollowerRow || (isSharedCodeRow && !watch.canViewParams)
+    ? `${escapeHtml(watch.presetLabel || "模型")}<br><span class="field-hint">不可查看参数</span>`
+    : formatModelNameLink({
+      id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
+      config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
+      originalText: watch.presetOriginalText, modelText: watch.presetModelText,
+      isOwner: false, name: null,
+    });
+  const targetCell = isIndexWatch
+    ? `${escapeHtml(watch.indexName || watch.indexCode)}<br><span class="field-hint">全指数</span>`
+    : `${escapeHtml(watch.symbolName || watch.symbol)}<br><span class="field-hint">${escapeHtml(watch.symbol || "")}</span>`;
+  const cash = Number(watch.accountCash);
+  const shares = Number(watch.accountShares);
+  const equity = Number(watch.accountEquity);
+  const positionRatio = Number(watch.accountPositionRatio);
+  const returnRate = Number(watch.accountReturnRate);
+  const annualizedReturn = Number(watch.accountAnnualizedReturn);
+  const positionValue = Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : null;
+  const returnClass = Number.isFinite(returnRate) ? (returnRate >= 0 ? "up" : "down") : "";
+  const signalCell = isIndexWatch
+    ? (watch.lastSignalDate ? `${escapeHtml(watch.lastSignalDate)}<br><span class="up">有信号</span>` : '<span class="field-hint">暂无信号</span>')
+    : (watch.lastSignalDate ? `${escapeHtml(watch.lastSignalDate)}<br><span class="${watch.lastSignalAction === "buy" ? "up" : "down"}">${watch.lastSignalAction === "buy" ? "买入" : "卖出"}</span>` : '<span class="field-hint">暂无信号</span>');
+  const statusBits = [
+    watch.enabled ? '<span class="up">启用</span>' : '<span class="down">停用</span>',
+    watch.isInvalid ? `<span class="down" title="${escapeHtml(watch.invalidReason || "")}">模型已失效</span>` : "",
+    watch.consecutiveFailures > 0 ? `<span class="down" title="${escapeHtml(watch.lastError || "")}">失败 ${watch.consecutiveFailures}</span>` : "",
+  ].filter(Boolean).join("<br>");
+  const followersPart = Array.isArray(watch.followers)
+    ? `<div class="field-hint">关注者 ${watch.followers.length}${watch.followers.length ? `：${watch.followers.map((f) => `${escapeHtml(f.followerEmail)} <button type="button" class="ghost-button watch-alert-remove-follower-button" data-watch-id="${escapeHtml(watch.id)}" data-follower-user-id="${escapeHtml(f.followerUserId)}">移除</button>`).join("、 ")}` : ""}</div>`
+    : "";
+  const sharedTextPart = isSharedCodeRow
+    ? `<div class="field-hint">模型文字：${escapeHtml(watch.presetModelText || watch.presetOriginalText || "暂无文字说明。")}</div>`
+    : "";
+  return `
+    <tr>
+      <td class="watch-table-model-cell">${modelCell}${sharedTextPart}</td>
+      <td>${targetCell}</td>
+      <td>${marketLabel}</td>
+      <td>${escapeHtml(String(watch.createdAt || "").slice(0, 10) || "--")}<br><span class="field-hint">${watch.accountUpdatedAt ? `更新 ${escapeHtml(String(watch.accountUpdatedAt).slice(0, 10))}` : ""}</span></td>
+      <td>${Number.isFinite(cash) ? formatMoney(cash) : "--"}</td>
+      <td>${Number.isFinite(shares) ? `${shares.toFixed(0)}股` : "--"}<br><span class="field-hint">${Number.isFinite(positionRatio) ? `${positionRatio.toFixed(1)}%` : ""}</span></td>
+      <td>${positionValue !== null ? formatMoney(positionValue) : "--"}</td>
+      <td>${Number.isFinite(equity) ? formatMoney(equity) : "--"}</td>
+      <td class="${returnClass}">${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</td>
+      <td class="${returnClass}">${Number.isFinite(annualizedReturn) ? `${annualizedReturn.toFixed(1)}%` : "--"}</td>
+      <td>${signalCell}<br>${statusBits}</td>
+      <td class="watch-table-trades-cell">${renderWatchAlertTradesCell(watch)}</td>
+      <td class="admin-row-actions">${renderWatchAlertActionsCell(watch)}${followersPart}</td>
+    </tr>
+  `;
 }
 
 // "我的" shows watches this account owns (role="owner"); "关注的" shows watches someone else
@@ -5659,7 +5807,19 @@ function renderWatchAlertsList() {
     watchAlertsList.innerHTML = `<div class="ranking-empty">${suffix}</div>`;
     return;
   }
-  watchAlertsList.innerHTML = visible.map((watch) => renderWatchAlertEntry(watch)).join("");
+  const sorted = sortWatchAlerts(visible);
+  watchAlertsList.innerHTML = `
+    <table class="admin-ranking-table watch-alert-table">
+      <thead>
+        <tr>
+          ${watchAlertTableColumns.map(renderWatchAlertSortHeader).join("")}
+          <th>交易记录</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>${sorted.map((watch) => renderWatchAlertTableRow(watch)).join("")}</tbody>
+    </table>
+  `;
 }
 
 function setWatchAlertsActiveTab(tab) {
@@ -6151,6 +6311,17 @@ if (closeWatchAlertsButton && watchAlertsDialog) {
 if (watchAlertsList) {
   watchAlertsList.addEventListener("click", (event) => {
     const target = event.target;
+    const sortHeader = target && target.closest ? target.closest(".admin-scan-sort-header[data-watch-alert-sort-key]") : null;
+    if (sortHeader) {
+      const key = sortHeader.dataset.watchAlertSortKey;
+      if (watchAlertsSortState.key === key) {
+        watchAlertsSortState.direction = watchAlertsSortState.direction === "asc" ? "desc" : "asc";
+      } else {
+        watchAlertsSortState = { key, direction: key === "model" || key === "target" || key === "market" ? "asc" : "desc" };
+      }
+      renderWatchAlertsList();
+      return;
+    }
     const toggleButton = target && target.closest ? target.closest(".watch-alert-toggle-button") : null;
     if (toggleButton) {
       toggleWatchAlert(toggleButton.dataset.watchId, toggleButton.dataset.enabled === "1");

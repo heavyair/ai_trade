@@ -2730,6 +2730,45 @@ textarea:focus {
   position: static;
 }
 
+.watch-alert-table td {
+  vertical-align: top;
+}
+
+.watch-alert-table th,
+.watch-alert-table td {
+  white-space: nowrap;
+}
+
+.watch-alert-table .watch-table-model-cell,
+.watch-alert-table .watch-table-trades-cell,
+.watch-alert-table .admin-row-actions {
+  min-width: 220px;
+  max-width: 360px;
+  white-space: normal;
+}
+
+.watch-alert-table .admin-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.watch-trade-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.watch-table-trades-cell .trade-price-wrap--compact {
+  width: min(520px, 76vw);
+  margin: 8px 0;
+}
+
+.watch-table-trades-cell .admin-ranking-table {
+  min-width: 420px;
+}
+
 .watch-market-tabs {
   justify-content: flex-start;
 }
