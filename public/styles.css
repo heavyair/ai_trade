@@ -2714,20 +2714,35 @@ textarea:focus {
   flex-direction: column;
   height: 100dvh;
   max-height: 100dvh;
-  overflow: auto;
+  overflow: hidden;
   padding-bottom: calc(18px + env(safe-area-inset-bottom));
-  -webkit-overflow-scrolling: touch;
+}
+
+.watch-alerts-dialog .dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -18px -18px 0;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
 }
 
 .watch-alerts-dialog .admin-ranking-list {
+  flex: 1 1 auto;
   min-height: 0;
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: auto;
   padding-bottom: 18px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.watch-alerts-dialog .admin-ranking-table {
+  min-width: 1280px;
 }
 
 .watch-alerts-dialog .admin-ranking-table th {
-  position: static;
+  top: 0;
+  z-index: 2;
 }
 
 .watch-alert-table td {
@@ -2774,9 +2789,13 @@ textarea:focus {
 }
 
 .watch-create-details {
+  flex: 0 0 auto;
+  max-height: min(42dvh, 360px);
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fbfcff;
+  -webkit-overflow-scrolling: touch;
 }
 
 .watch-create-details summary {

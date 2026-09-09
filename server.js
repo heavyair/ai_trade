@@ -4623,13 +4623,38 @@ async function handleWatchShareCodeApi(req, res) {
 async function handleWatchShareCodeUseApi(req, res) {
   try {
     const user = await requireCurrentUser(req);
+    const viewerUserId = userIdForEmail(user.email);
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+
+    if (req.method === "DELETE") {
+      const watchId = String(payload.watchId || "").trim();
+      if (!watchId) {
+        sendJson(res, 400, { error: "缺少盯盘 id。" });
+        return;
+      }
+      const result = await dbQuery(`
+        DELETE FROM watch_share_code_users wsu
+        USING watch_share_codes wsc, watch_alerts wa
+        WHERE wsu.share_code_id = wsc.id
+          AND wa.id = $2
+          AND wa.owner_user_id = wsc.owner_user_id
+          AND wsu.viewer_user_id = $1
+        RETURNING wsu.id, wsc.owner_email
+      `, [viewerUserId, watchId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "分享码访问关系不存在，或者你没有权限退出。" });
+        return;
+      }
+      sendJson(res, 200, { removed: true, ownerEmail: result.rows[0].owner_email || "" });
+      return;
+    }
+
     if (req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
-    const viewerUserId = userIdForEmail(user.email);
-    const body = await readRequestBody(req);
-    const payload = body ? JSON.parse(body) : {};
+
     const token = String(payload.token || "").trim();
     if (!token) {
       sendJson(res, 400, { error: "缺少盯盘码。" });

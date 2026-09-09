@@ -5660,8 +5660,10 @@ function renderWatchAlertActionsCell(watch) {
   }
   if (isSharedCodeRow) {
     return watch.canCopy
-      ? `<button type="button" class="ghost-button watch-share-code-copy-model-button" data-watch-id="${escapeHtml(watch.id)}">复制模型</button>`
-      : '<span class="field-hint">不可复制</span>';
+      ? `<button type="button" class="ghost-button watch-share-code-copy-model-button" data-watch-id="${escapeHtml(watch.id)}">复制模型</button>
+        <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`
+      : `<span class="field-hint">不可复制</span>
+        <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`;
   }
   return `
     <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
@@ -6191,6 +6193,23 @@ async function copyWatchShareCodeModel(watchId) {
   }
 }
 
+async function leaveWatchShareCode(watchId) {
+  if (!window.confirm("确定退出这个全部盯盘分享码吗？退出后，这个分享码下的盯盘会从你的列表消失。")) return;
+  try {
+    const response = await fetch("/api/watch-alerts/share-code/use", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchId }),
+    });
+    const payload = await readJsonResponse(response, "退出分享码失败。");
+    await loadMyWatchAlerts();
+    setWatchAlertsActiveTab("shared-code");
+    setStatus(`已退出${payload.ownerEmail ? ` ${payload.ownerEmail} 的` : ""}全部盯盘分享码。`);
+  } catch (error) {
+    setStatus(`退出分享码失败：${error.message}`, true);
+  }
+}
+
 async function shareWatchAlert(id, regenerate) {
   try {
     const response = await fetch("/api/watch-alerts/share", {
@@ -6350,6 +6369,11 @@ if (watchAlertsList) {
     const shareCodeCopyModelButton = target && target.closest ? target.closest(".watch-share-code-copy-model-button") : null;
     if (shareCodeCopyModelButton) {
       copyWatchShareCodeModel(shareCodeCopyModelButton.dataset.watchId);
+      return;
+    }
+    const shareCodeLeaveButton = target && target.closest ? target.closest(".watch-share-code-leave-button") : null;
+    if (shareCodeLeaveButton) {
+      leaveWatchShareCode(shareCodeLeaveButton.dataset.watchId);
     }
   });
 }
