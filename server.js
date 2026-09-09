@@ -577,7 +577,7 @@ async function initializeDatabase() {
       account_id TEXT NOT NULL DEFAULT '',
       trading_mode TEXT NOT NULL DEFAULT 'paper',
       host TEXT NOT NULL DEFAULT '127.0.0.1',
-      port INTEGER NOT NULL DEFAULT 7497,
+      port INTEGER NOT NULL DEFAULT 4002,
       client_id INTEGER NOT NULL DEFAULT 77,
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
       auto_trade_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -7319,7 +7319,7 @@ function mapBrokerConnectionRow(row) {
       provider: "ibkr-tws",
       tradingMode: "paper",
       host: "127.0.0.1",
-      port: 7497,
+      port: 4002,
       clientId: 77,
       accountId: "",
       enabled: false,
@@ -7337,7 +7337,7 @@ function mapBrokerConnectionRow(row) {
     provider: row.provider || "ibkr-tws",
     tradingMode: row.trading_mode || "paper",
     host: row.host || "127.0.0.1",
-    port: Number(row.port) || 7497,
+    port: Number(row.port) || 4002,
     clientId: Number(row.client_id) || 77,
     accountId: row.account_id || "",
     enabled: Boolean(row.enabled),
@@ -7432,7 +7432,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
       sendJson(res, 400, { error: "交易模式只能是 paper 或 live。" });
       return;
     }
-    const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? 7497 : 7496));
+    const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? 4002 : 4001));
     const clientId = Math.round(toFiniteNumber(payload.clientId, 77));
     if (port <= 0 || port > 65535) {
       sendJson(res, 400, { error: "TWS 端口不合法。" });

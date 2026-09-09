@@ -6228,7 +6228,7 @@ function renderBrokerSettings(connection, meta = {}) {
   if (brokerAccountIdInput) brokerAccountIdInput.value = cfg.accountId || "";
   if (brokerTradingModeSelect) brokerTradingModeSelect.value = cfg.tradingMode || "paper";
   if (brokerHostInput) brokerHostInput.value = cfg.host || "127.0.0.1";
-  if (brokerPortInput) brokerPortInput.value = cfg.port || (cfg.tradingMode === "live" ? 7496 : 7497);
+  if (brokerPortInput) brokerPortInput.value = cfg.port || (cfg.tradingMode === "live" ? 4001 : 4002);
   if (brokerClientIdInput) brokerClientIdInput.value = cfg.clientId || 77;
   if (brokerMaxOrderValueInput) brokerMaxOrderValueInput.value = cfg.maxOrderValue || 0;
   if (brokerEnabledInput) brokerEnabledInput.checked = Boolean(cfg.enabled);
@@ -6266,7 +6266,7 @@ async function saveBrokerSettings() {
         accountId: brokerAccountIdInput ? brokerAccountIdInput.value : "",
         tradingMode: brokerTradingModeSelect ? brokerTradingModeSelect.value : "paper",
         host: brokerHostInput ? brokerHostInput.value : "127.0.0.1",
-        port: brokerPortInput ? Number(brokerPortInput.value) : 7497,
+        port: brokerPortInput ? Number(brokerPortInput.value) : 4002,
         clientId: brokerClientIdInput ? Number(brokerClientIdInput.value) : 77,
         maxOrderValue: brokerMaxOrderValueInput ? Number(brokerMaxOrderValueInput.value) : 0,
         enabled: Boolean(brokerEnabledInput && brokerEnabledInput.checked),
@@ -6451,8 +6451,8 @@ if (watchShareCodeUsers) {
 }
 if (brokerTradingModeSelect) {
   brokerTradingModeSelect.addEventListener("change", () => {
-    if (brokerPortInput && (!brokerPortInput.value || brokerPortInput.value === "7496" || brokerPortInput.value === "7497")) {
-      brokerPortInput.value = brokerTradingModeSelect.value === "live" ? "7496" : "7497";
+    if (brokerPortInput && (!brokerPortInput.value || brokerPortInput.value === "7496" || brokerPortInput.value === "7497" || brokerPortInput.value === "4001" || brokerPortInput.value === "4002")) {
+      brokerPortInput.value = brokerTradingModeSelect.value === "live" ? "4001" : "4002";
     }
   });
 }

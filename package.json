@@ -9,9 +9,10 @@
     "optimize": "node scripts/optimize-strategies.js"
   },
   "engines": {
-    "node": ">=12"
+    "node": ">=18"
   },
   "dependencies": {
+    "@stoqey/ib": "^1.6.9",
     "pg": "^8.11.5"
   }
 }

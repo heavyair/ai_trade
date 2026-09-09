@@ -1,10 +1,14 @@
 const http = require("http");
+const { IBApi, EventName, SecType, OrderAction, OrderType } = require("@stoqey/ib");
 
 const PORT = Number(process.env.TWS_AGENT_PORT || 7077);
 const TWS_HOST = process.env.TWS_HOST || "127.0.0.1";
-const TWS_PORT = Number(process.env.TWS_PORT || 7497);
+const TWS_PORT = Number(process.env.TWS_PORT || 4002);
 const TWS_CLIENT_ID = Number(process.env.TWS_CLIENT_ID || 77);
 const EXECUTION_ENABLED = String(process.env.TWS_AGENT_EXECUTION_ENABLED || "").toLowerCase() === "true";
+const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 10000);
+const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
+const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload || {});
@@ -58,6 +62,191 @@ function normalizeOrderIntent(raw) {
   };
 }
 
+function createIbClient() {
+  return new IBApi({
+    host: TWS_HOST,
+    port: TWS_PORT,
+    clientId: TWS_CLIENT_ID,
+  });
+}
+
+function disconnectQuietly(ib) {
+  try {
+    ib.disconnect();
+  } catch (error) {
+    // Best effort cleanup after socket errors/timeouts.
+  }
+}
+
+function withTimeout(ms, message, cleanup) {
+  let timer;
+  const promise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (cleanup) cleanup();
+      reject(new Error(message));
+    }, ms);
+  });
+  return {
+    promise,
+    cancel() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+function checkTwsConnection() {
+  const ib = createIbClient();
+  const timeout = withTimeout(TWS_CONNECT_TIMEOUT_MS, `Timed out connecting to IB Gateway at ${TWS_HOST}:${TWS_PORT}`, () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.currentTime);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.once(EventName.error, (err, code, reqId) => {
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.once(EventName.currentTime, (time) => {
+      cleanup();
+      resolve({
+        ok: true,
+        serverTime: time,
+        tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+      });
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqCurrentTime();
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+function submitLimitStockOrder(order) {
+  const ib = createIbClient();
+  const timeout = withTimeout(TWS_ORDER_TIMEOUT_MS, `Timed out submitting order to IB Gateway at ${TWS_HOST}:${TWS_PORT}`, () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    let submittedOrderId = null;
+    let resolved = false;
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.nextValidId);
+      ib.removeAllListeners(EventName.orderStatus);
+      ib.removeAllListeners(EventName.openOrder);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(payload);
+    };
+
+    ib.once(EventName.error, (err, code, reqId) => {
+      if (submittedOrderId !== null && reqId !== submittedOrderId && code) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.once(EventName.nextValidId, (orderId) => {
+      submittedOrderId = Number(orderId);
+      const contract = {
+        symbol: order.symbol,
+        secType: SecType.STK,
+        exchange: "SMART",
+        currency: "USD",
+      };
+      const ibOrder = {
+        orderId: submittedOrderId,
+        action: order.side === "BUY" ? OrderAction.BUY : OrderAction.SELL,
+        orderType: OrderType.LMT,
+        totalQuantity: order.quantity,
+        lmtPrice: order.limitPrice,
+        tif: order.timeInForce,
+        outsideRth: order.outsideRth,
+        transmit: true,
+        orderRef: order.id ? `ai_trade:${order.id}` : "ai_trade",
+      };
+      if (order.accountId) ibOrder.account = order.accountId;
+      ib.placeOrder(submittedOrderId, contract, ibOrder);
+    });
+    ib.on(EventName.openOrder, (orderId) => {
+      if (Number(orderId) === submittedOrderId) {
+        finish({ orderId: String(orderId), status: "OpenOrderAccepted" });
+      }
+    });
+    ib.on(EventName.orderStatus, (orderId, status) => {
+      if (Number(orderId) === submittedOrderId) {
+        finish({ orderId: String(orderId), status: String(status || "Submitted") });
+      }
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqIds(1);
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+function cancelOrder(orderId) {
+  const numericOrderId = Math.floor(Number(orderId));
+  if (!(numericOrderId > 0)) throw new Error("orderId must be positive");
+  const ib = createIbClient();
+  const timeout = withTimeout(TWS_CANCEL_TIMEOUT_MS, `Timed out cancelling order ${numericOrderId} at IB Gateway`, () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    let resolved = false;
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.orderStatus);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    const finish = (payload) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(payload);
+    };
+
+    ib.once(EventName.error, (err, code, reqId) => {
+      if (Number(reqId) === numericOrderId && Number(code) === 202) {
+        finish({ orderId: String(numericOrderId), status: "Cancelled" });
+        return;
+      }
+      if (Number(reqId) !== numericOrderId && code) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.on(EventName.orderStatus, (seenOrderId, status) => {
+      if (Number(seenOrderId) === numericOrderId && String(status || "").toLowerCase() === "cancelled") {
+        finish({ orderId: String(seenOrderId), status: String(status || "Cancelled") });
+      }
+    });
+    ib.once(EventName.connected, () => {
+      ib.cancelOrder(numericOrderId);
+      setTimeout(() => finish({ orderId: String(numericOrderId), status: "CancelRequested" }), 5000);
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+async function handleTwsHealth(req, res) {
+  const result = await checkTwsConnection();
+  sendJson(res, 200, {
+    ...result,
+    executionEnabled: EXECUTION_ENABLED,
+  });
+}
+
 async function handleOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
@@ -70,11 +259,22 @@ async function handleOrder(req, res) {
     });
     return;
   }
-  sendJson(res, 501, {
-    error: "TWS socket adapter is not installed in this agent yet.",
-    order,
-    tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
-  });
+  const brokerOrder = await submitLimitStockOrder(order);
+  sendJson(res, 200, brokerOrder);
+}
+
+async function handleCancelOrder(req, res) {
+  const body = await readBody(req);
+  const payload = body ? JSON.parse(body) : {};
+  if (!EXECUTION_ENABLED) {
+    sendJson(res, 409, {
+      error: "TWS agent execution is disabled. Set TWS_AGENT_EXECUTION_ENABLED=true only after paper-account testing.",
+      tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+    });
+    return;
+  }
+  const result = await cancelOrder(payload.orderId);
+  sendJson(res, 200, result);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -88,8 +288,16 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (req.method === "GET" && url.pathname === "/tws-health") {
+      await handleTwsHealth(req, res);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/orders") {
       await handleOrder(req, res);
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/orders/cancel") {
+      await handleCancelOrder(req, res);
       return;
     }
     sendJson(res, 404, { error: "not found" });
