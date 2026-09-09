@@ -5528,10 +5528,11 @@ async function persistKlineData({ code, market, name, source, info, rows }) {
   }
 }
 
-function getJson(url, headers = {}) {
+function getJson(url, headers = {}, timeoutMs = 3500, errorLabel = "行情服务") {
   return new Promise((resolve, reject) => {
-    const client = url.protocol === "http:" ? http : https;
-    const req = client.get(url, { headers }, (response) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const req = client.get(target, { headers }, (response) => {
       let body = "";
 
       response.setEncoding("utf8");
@@ -5540,14 +5541,20 @@ function getJson(url, headers = {}) {
       });
       response.on("end", () => {
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`行情服务返回 HTTP ${response.statusCode}`));
+          let parsed = {};
+          try {
+            parsed = body ? JSON.parse(body) : {};
+          } catch (error) {
+            parsed = {};
+          }
+          reject(new Error(parsed.error || `${errorLabel}返回 HTTP ${response.statusCode}`));
           return;
         }
 
         try {
           resolve(JSON.parse(body));
         } catch (error) {
-          reject(new Error("行情服务返回的数据不是有效 JSON。"));
+          reject(new Error(`${errorLabel}返回的数据不是有效 JSON。`));
         }
       });
     });
@@ -5560,8 +5567,8 @@ function getJson(url, headers = {}) {
     // budget untouched (batch/cron callers of that same shared bridge legitimately need it) and
     // shrank this one instead, so the full fallback chain reliably finishes with room to spare
     // before the client gives up.
-    req.setTimeout(3500, () => {
-      req.destroy(new Error("行情服务请求超时。"));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`${errorLabel}请求超时。`));
     });
     req.on("error", reject);
   });
@@ -7670,6 +7677,34 @@ async function handleTradeIntentActionApi(req, res) {
   }
 }
 
+async function handleBrokerAccountStateApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!IBKR_TWS_AGENT_URL) {
+      sendJson(res, 503, { error: "TWS agent 未配置。请先配置 IBKR_TWS_AGENT_URL。" });
+      return;
+    }
+    const connection = await loadBrokerConnection(ownerUserId);
+    const configuredAccountId = String(connection && connection.account_id ? connection.account_id : "").trim();
+    const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/account-state`, {}, 20000, "TWS agent");
+    if (configuredAccountId) {
+      accountState.summary = (accountState.summary || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+      accountState.positions = (accountState.positions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+      accountState.openOrders = (accountState.openOrders || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+      accountState.executions = (accountState.executions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+    }
+    accountState.configuredAccountId = configuredAccountId;
+    sendJson(res, 200, accountState);
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取 IBKR 账户状态失败。" });
+  }
+}
+
 async function handleApi(req, res, requestUrl) {
   try {
     const code = normalizeCode(requestUrl.searchParams.get("code") || "513100");
@@ -8006,6 +8041,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/broker/trade-intents/action") {
     handleTradeIntentActionApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/account-state") {
+    handleBrokerAccountStateApi(req, res);
     return;
   }
 

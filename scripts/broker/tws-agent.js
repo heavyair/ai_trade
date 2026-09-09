@@ -9,6 +9,7 @@ const EXECUTION_ENABLED = String(process.env.TWS_AGENT_EXECUTION_ENABLED || "").
 const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 10000);
 const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
 const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
+const TWS_ACCOUNT_TIMEOUT_MS = Number(process.env.TWS_ACCOUNT_TIMEOUT_MS || 15000);
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload || {});
@@ -62,11 +63,11 @@ function normalizeOrderIntent(raw) {
   };
 }
 
-function createIbClient() {
+function createIbClient(clientIdOffset = 0) {
   return new IBApi({
     host: TWS_HOST,
     port: TWS_PORT,
-    clientId: TWS_CLIENT_ID,
+    clientId: TWS_CLIENT_ID + clientIdOffset,
   });
 }
 
@@ -91,6 +92,21 @@ function withTimeout(ms, message, cleanup) {
     cancel() {
       clearTimeout(timer);
     },
+  };
+}
+
+function isIgnorableIbErrorCode(code) {
+  return [2104, 2106, 2107, 2108, 2158].includes(Number(code));
+}
+
+function normalizeContract(contract) {
+  return {
+    symbol: contract && contract.symbol ? String(contract.symbol) : "",
+    secType: contract && contract.secType ? String(contract.secType) : "",
+    exchange: contract && contract.exchange ? String(contract.exchange) : "",
+    currency: contract && contract.currency ? String(contract.currency) : "",
+    primaryExch: contract && contract.primaryExch ? String(contract.primaryExch) : "",
+    conId: contract && contract.conId !== undefined ? Number(contract.conId) : null,
   };
 }
 
@@ -194,6 +210,233 @@ function submitLimitStockOrder(order) {
   return Promise.race([operation, timeout.promise]);
 }
 
+function fetchAccountSummary() {
+  const ib = createIbClient(1);
+  const reqId = 9101;
+  const tags = [
+    "NetLiquidation",
+    "TotalCashValue",
+    "AvailableFunds",
+    "BuyingPower",
+    "InitMarginReq",
+    "MaintMarginReq",
+    "GrossPositionValue",
+    "UnrealizedPnL",
+    "RealizedPnL",
+  ].join(",");
+  const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR account summary", () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const rows = [];
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.accountSummary);
+      ib.removeAllListeners(EventName.accountSummaryEnd);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.on(EventName.error, (err, code, seenReqId) => {
+      if (isIgnorableIbErrorCode(code)) return;
+      if (Number.isFinite(seenReqId) && Number(seenReqId) !== -1 && Number(seenReqId) !== reqId) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}`));
+    });
+    ib.on(EventName.accountSummary, (seenReqId, account, tag, value, currency) => {
+      if (Number(seenReqId) !== reqId) return;
+      rows.push({ account: String(account || ""), tag: String(tag || ""), value: String(value || ""), currency: String(currency || "") });
+    });
+    ib.once(EventName.accountSummaryEnd, (seenReqId) => {
+      if (Number(seenReqId) !== reqId) return;
+      cleanup();
+      resolve(rows);
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqAccountSummary(reqId, "All", tags);
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+function fetchPositions() {
+  const ib = createIbClient(2);
+  const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR positions", () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const rows = [];
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.position);
+      ib.removeAllListeners(EventName.positionEnd);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.on(EventName.error, (err, code, reqId) => {
+      if (isIgnorableIbErrorCode(code)) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.on(EventName.position, (account, contract, pos, avgCost) => {
+      if (Number(pos) === 0) return;
+      rows.push({
+        account: String(account || ""),
+        contract: normalizeContract(contract),
+        position: Number(pos) || 0,
+        avgCost: avgCost === undefined ? null : Number(avgCost),
+      });
+    });
+    ib.once(EventName.positionEnd, () => {
+      cleanup();
+      resolve(rows);
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqPositions();
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+function fetchOpenOrders() {
+  const ib = createIbClient(3);
+  const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR open orders", () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const rows = [];
+    const statuses = new Map();
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.openOrder);
+      ib.removeAllListeners(EventName.openOrderEnd);
+      ib.removeAllListeners(EventName.orderStatus);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.on(EventName.error, (err, code, reqId) => {
+      if (isIgnorableIbErrorCode(code)) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.on(EventName.orderStatus, (orderId, status, filled, remaining, avgFillPrice) => {
+      statuses.set(Number(orderId), {
+        status: String(status || ""),
+        filled: Number(filled) || 0,
+        remaining: Number(remaining) || 0,
+        avgFillPrice: Number(avgFillPrice) || 0,
+      });
+    });
+    ib.on(EventName.openOrder, (orderId, contract, order, orderState) => {
+      const status = statuses.get(Number(orderId)) || {};
+      rows.push({
+        orderId: String(orderId),
+        account: String((order && order.account) || ""),
+        contract: normalizeContract(contract),
+        action: String((order && order.action) || ""),
+        orderType: String((order && order.orderType) || ""),
+        totalQuantity: Number(order && order.totalQuantity) || 0,
+        limitPrice: order && order.lmtPrice !== undefined ? Number(order.lmtPrice) : null,
+        tif: String((order && order.tif) || ""),
+        status: String((orderState && orderState.status) || status.status || ""),
+        filled: status.filled || 0,
+        remaining: status.remaining || 0,
+        avgFillPrice: status.avgFillPrice || 0,
+        orderRef: String((order && order.orderRef) || ""),
+      });
+    });
+    ib.once(EventName.openOrderEnd, () => {
+      cleanup();
+      resolve(rows);
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqAllOpenOrders();
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+function fetchExecutions() {
+  const ib = createIbClient(4);
+  const reqId = 9102;
+  const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR executions", () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const rows = [];
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.execDetails);
+      ib.removeAllListeners(EventName.execDetailsEnd);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.on(EventName.error, (err, code, seenReqId) => {
+      if (isIgnorableIbErrorCode(code)) return;
+      if (Number.isFinite(seenReqId) && Number(seenReqId) !== -1 && Number(seenReqId) !== reqId) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}`));
+    });
+    ib.on(EventName.execDetails, (seenReqId, contract, execution) => {
+      if (Number(seenReqId) !== reqId) return;
+      rows.push({
+        execId: String((execution && execution.execId) || ""),
+        orderId: execution && execution.orderId !== undefined ? String(execution.orderId) : "",
+        account: String((execution && execution.acctNumber) || ""),
+        contract: normalizeContract(contract),
+        side: String((execution && execution.side) || ""),
+        shares: Number(execution && execution.shares) || 0,
+        price: Number(execution && execution.price) || 0,
+        avgPrice: Number(execution && execution.avgPrice) || 0,
+        time: String((execution && execution.time) || ""),
+        exchange: String((execution && execution.exchange) || ""),
+        orderRef: String((execution && execution.orderRef) || ""),
+      });
+    });
+    ib.once(EventName.execDetailsEnd, (seenReqId) => {
+      if (Number(seenReqId) !== reqId) return;
+      cleanup();
+      resolve(rows);
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqExecutions(reqId, {});
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
+async function fetchAccountState() {
+  const sections = await Promise.allSettled([
+    fetchAccountSummary(),
+    fetchPositions(),
+    fetchOpenOrders(),
+    fetchExecutions(),
+  ]);
+  const sectionNames = ["summary", "positions", "openOrders", "executions"];
+  const payload = {};
+  const errors = {};
+  sections.forEach((section, index) => {
+    const name = sectionNames[index];
+    if (section.status === "fulfilled") {
+      payload[name] = section.value;
+    } else {
+      payload[name] = [];
+      errors[name] = section.reason && section.reason.message ? section.reason.message : "read failed";
+    }
+  });
+  return {
+    ok: true,
+    ...payload,
+    errors,
+    tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+    executionEnabled: EXECUTION_ENABLED,
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
 function cancelOrder(orderId) {
   const numericOrderId = Math.floor(Number(orderId));
   if (!(numericOrderId > 0)) throw new Error("orderId must be positive");
@@ -247,6 +490,11 @@ async function handleTwsHealth(req, res) {
   });
 }
 
+async function handleAccountState(req, res) {
+  const result = await fetchAccountState();
+  sendJson(res, 200, result);
+}
+
 async function handleOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
@@ -290,6 +538,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/tws-health") {
       await handleTwsHealth(req, res);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/account-state") {
+      await handleAccountState(req, res);
       return;
     }
     if (req.method === "POST" && url.pathname === "/orders") {

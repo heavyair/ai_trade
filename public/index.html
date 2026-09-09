@@ -1678,6 +1678,32 @@
         </div>
         <div class="section-head">
           <div>
+            <h2>账户状态</h2>
+            <p class="field-hint">只读读取 IBKR 资金、持仓、未成交订单和近期成交。</p>
+          </div>
+          <button type="button" id="brokerRefreshAccountButton" class="ghost-button">刷新账户状态</button>
+        </div>
+        <div id="brokerAccountStatusText" class="field-hint"></div>
+        <div class="broker-account-grid">
+          <div class="broker-panel">
+            <div class="section-label">资金账户</div>
+            <div id="brokerAccountSummaryList" class="admin-ranking-list"></div>
+          </div>
+          <div class="broker-panel">
+            <div class="section-label">当前持仓</div>
+            <div id="brokerPositionsList" class="admin-ranking-list"></div>
+          </div>
+          <div class="broker-panel">
+            <div class="section-label">未完成订单</div>
+            <div id="brokerOpenOrdersList" class="admin-ranking-list"></div>
+          </div>
+          <div class="broker-panel">
+            <div class="section-label">近期成交</div>
+            <div id="brokerExecutionsList" class="admin-ranking-list"></div>
+          </div>
+        </div>
+        <div class="section-head">
+          <div>
             <h2>交易意图</h2>
             <p class="field-hint">从盯盘最新信号生成；审批后才能提交到 TWS agent。</p>
           </div>

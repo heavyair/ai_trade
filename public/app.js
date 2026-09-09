@@ -67,6 +67,12 @@ const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
 const brokerAutoTradeInput = document.querySelector("#brokerAutoTradeInput");
 const brokerSaveSettingsButton = document.querySelector("#brokerSaveSettingsButton");
 const brokerStatusText = document.querySelector("#brokerStatusText");
+const brokerRefreshAccountButton = document.querySelector("#brokerRefreshAccountButton");
+const brokerAccountStatusText = document.querySelector("#brokerAccountStatusText");
+const brokerAccountSummaryList = document.querySelector("#brokerAccountSummaryList");
+const brokerPositionsList = document.querySelector("#brokerPositionsList");
+const brokerOpenOrdersList = document.querySelector("#brokerOpenOrdersList");
+const brokerExecutionsList = document.querySelector("#brokerExecutionsList");
 const brokerRefreshIntentsButton = document.querySelector("#brokerRefreshIntentsButton");
 const brokerIntentList = document.querySelector("#brokerIntentList");
 const myModelsDialog = document.querySelector("#myModelsDialog");
@@ -6282,6 +6288,159 @@ async function saveBrokerSettings() {
   }
 }
 
+function formatBrokerMoney(value, currency = "") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "--";
+  return `${number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? ` ${escapeHtml(currency)}` : ""}`;
+}
+
+function renderBrokerAccountSummary(rows) {
+  if (!brokerAccountSummaryList) return;
+  if (!rows || rows.length === 0) {
+    brokerAccountSummaryList.innerHTML = '<div class="ranking-empty">暂无资金数据。</div>';
+    return;
+  }
+  const tagLabels = {
+    NetLiquidation: "净清算值",
+    TotalCashValue: "现金余额",
+    AvailableFunds: "可用资金",
+    BuyingPower: "购买力",
+    InitMarginReq: "初始保证金",
+    MaintMarginReq: "维持保证金",
+    GrossPositionValue: "持仓市值",
+    UnrealizedPnL: "未实现盈亏",
+    RealizedPnL: "已实现盈亏",
+  };
+  brokerAccountSummaryList.innerHTML = `
+    <table class="admin-ranking-table broker-account-table">
+      <thead><tr><th>账户</th><th>项目</th><th>数值</th><th>币种</th></tr></thead>
+      <tbody>${rows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.account || "--")}</td>
+          <td>${escapeHtml(tagLabels[row.tag] || row.tag || "--")}</td>
+          <td>${formatBrokerMoney(row.value, "")}</td>
+          <td>${escapeHtml(row.currency || "--")}</td>
+        </tr>
+      `).join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderBrokerPositions(rows) {
+  if (!brokerPositionsList) return;
+  if (!rows || rows.length === 0) {
+    brokerPositionsList.innerHTML = '<div class="ranking-empty">暂无持仓。</div>';
+    return;
+  }
+  brokerPositionsList.innerHTML = `
+    <table class="admin-ranking-table broker-account-table">
+      <thead><tr><th>账户</th><th>股票</th><th>类型</th><th>数量</th><th>均价/成本</th><th>币种</th></tr></thead>
+      <tbody>${rows.map((row) => {
+        const contract = row.contract || {};
+        return `
+          <tr>
+            <td>${escapeHtml(row.account || "--")}</td>
+            <td>${escapeHtml(contract.symbol || "--")}<br><span class="field-hint">${escapeHtml(contract.exchange || contract.primaryExch || "")}</span></td>
+            <td>${escapeHtml(contract.secType || "--")}</td>
+            <td>${Number(row.position || 0).toLocaleString("zh-CN")}</td>
+            <td>${formatBrokerMoney(row.avgCost, contract.currency || "")}</td>
+            <td>${escapeHtml(contract.currency || "--")}</td>
+          </tr>
+        `;
+      }).join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderBrokerOpenOrders(rows) {
+  if (!brokerOpenOrdersList) return;
+  if (!rows || rows.length === 0) {
+    brokerOpenOrdersList.innerHTML = '<div class="ranking-empty">暂无未完成订单。</div>';
+    return;
+  }
+  brokerOpenOrdersList.innerHTML = `
+    <table class="admin-ranking-table broker-account-table">
+      <thead><tr><th>订单号</th><th>账户</th><th>股票</th><th>方向</th><th>数量</th><th>限价</th><th>成交/剩余</th><th>状态</th></tr></thead>
+      <tbody>${rows.map((row) => {
+        const contract = row.contract || {};
+        return `
+          <tr>
+            <td>${escapeHtml(row.orderId || "--")}</td>
+            <td>${escapeHtml(row.account || "--")}</td>
+            <td>${escapeHtml(contract.symbol || "--")}</td>
+            <td class="${row.action === "BUY" ? "up" : row.action === "SELL" ? "down" : ""}">${escapeHtml(row.action || "--")}</td>
+            <td>${Number(row.totalQuantity || 0).toLocaleString("zh-CN")}</td>
+            <td>${row.limitPrice !== null && row.limitPrice !== undefined ? formatBrokerMoney(row.limitPrice, contract.currency || "") : "--"}</td>
+            <td>${Number(row.filled || 0).toLocaleString("zh-CN")} / ${Number(row.remaining || 0).toLocaleString("zh-CN")}</td>
+            <td>${escapeHtml(row.status || "--")}</td>
+          </tr>
+        `;
+      }).join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderBrokerExecutions(rows) {
+  if (!brokerExecutionsList) return;
+  if (!rows || rows.length === 0) {
+    brokerExecutionsList.innerHTML = '<div class="ranking-empty">暂无近期成交。</div>';
+    return;
+  }
+  brokerExecutionsList.innerHTML = `
+    <table class="admin-ranking-table broker-account-table">
+      <thead><tr><th>时间</th><th>账户</th><th>股票</th><th>方向</th><th>数量</th><th>价格</th><th>订单号</th><th>交易所</th></tr></thead>
+      <tbody>${rows.map((row) => {
+        const contract = row.contract || {};
+        return `
+          <tr>
+            <td>${escapeHtml(row.time || "--")}</td>
+            <td>${escapeHtml(row.account || "--")}</td>
+            <td>${escapeHtml(contract.symbol || "--")}</td>
+            <td class="${row.side === "BOT" ? "up" : row.side === "SLD" ? "down" : ""}">${escapeHtml(row.side || "--")}</td>
+            <td>${Number(row.shares || 0).toLocaleString("zh-CN")}</td>
+            <td>${formatBrokerMoney(row.price || row.avgPrice, contract.currency || "")}</td>
+            <td>${escapeHtml(row.orderId || "--")}</td>
+            <td>${escapeHtml(row.exchange || "--")}</td>
+          </tr>
+        `;
+      }).join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderBrokerAccountState(payload) {
+  renderBrokerAccountSummary(payload.summary || []);
+  renderBrokerPositions(payload.positions || []);
+  renderBrokerOpenOrders(payload.openOrders || []);
+  renderBrokerExecutions(payload.executions || []);
+  if (brokerAccountStatusText) {
+    const refreshed = payload.refreshedAt ? String(payload.refreshedAt).replace("T", " ").slice(0, 19) : "";
+    const errorKeys = Object.keys(payload.errors || {});
+    brokerAccountStatusText.textContent = `已刷新${refreshed ? `：${refreshed}` : ""} · ${payload.executionEnabled ? "agent允许提交" : "agent只读/禁止提交"}${errorKeys.length ? ` · 部分读取失败：${errorKeys.join(", ")}` : ""}`;
+  }
+}
+
+async function loadBrokerAccountState() {
+  if (!brokerAccountSummaryList) return;
+  if (brokerAccountStatusText) brokerAccountStatusText.textContent = "正在读取 IBKR 账户状态...";
+  brokerAccountSummaryList.innerHTML = '<div class="ranking-empty">正在读取资金账户...</div>';
+  if (brokerPositionsList) brokerPositionsList.innerHTML = '<div class="ranking-empty">正在读取持仓...</div>';
+  if (brokerOpenOrdersList) brokerOpenOrdersList.innerHTML = '<div class="ranking-empty">正在读取未完成订单...</div>';
+  if (brokerExecutionsList) brokerExecutionsList.innerHTML = '<div class="ranking-empty">正在读取近期成交...</div>';
+  try {
+    const response = await fetch("/api/broker/account-state", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取 IBKR 账户状态失败。");
+    renderBrokerAccountState(payload);
+  } catch (error) {
+    if (brokerAccountStatusText) brokerAccountStatusText.textContent = "";
+    const message = escapeHtml(error.message || "读取失败。");
+    brokerAccountSummaryList.innerHTML = `<div class="ranking-empty">${message}</div>`;
+    if (brokerPositionsList) brokerPositionsList.innerHTML = `<div class="ranking-empty">${message}</div>`;
+    if (brokerOpenOrdersList) brokerOpenOrdersList.innerHTML = `<div class="ranking-empty">${message}</div>`;
+    if (brokerExecutionsList) brokerExecutionsList.innerHTML = `<div class="ranking-empty">${message}</div>`;
+  }
+}
+
 function formatTradeIntentStatus(status) {
   return {
     pending_review: "待确认",
@@ -6458,6 +6617,9 @@ if (brokerTradingModeSelect) {
 }
 if (brokerSaveSettingsButton) {
   brokerSaveSettingsButton.addEventListener("click", () => saveBrokerSettings());
+}
+if (brokerRefreshAccountButton) {
+  brokerRefreshAccountButton.addEventListener("click", () => loadBrokerAccountState());
 }
 if (brokerRefreshIntentsButton) {
   brokerRefreshIntentsButton.addEventListener("click", () => loadBrokerTradeIntents());
@@ -8143,6 +8305,7 @@ function setWizardPage(pageName) {
   }
   if (nextPage === "broker") {
     loadBrokerSettings();
+    loadBrokerAccountState();
     loadBrokerTradeIntents();
   }
 

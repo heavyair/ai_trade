@@ -44,6 +44,7 @@ Agent endpoints:
 
 - `GET /health`: checks that the local agent process is running.
 - `GET /tws-health`: connects to TWS/IB Gateway and requests server time.
+- `GET /account-state`: reads account summary, positions, open orders, and recent executions.
 - `POST /orders`: submits a US stock limit order only when `TWS_AGENT_EXECUTION_ENABLED=true`.
 - `POST /orders/cancel`: cancels an order by broker order id only when `TWS_AGENT_EXECUTION_ENABLED=true`.
 

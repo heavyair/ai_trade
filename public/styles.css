@@ -2825,6 +2825,16 @@ textarea:focus {
   margin-bottom: 18px;
 }
 
+.broker-account-grid {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.broker-account-table {
+  min-width: 760px;
+}
+
 .broker-intent-table {
   min-width: 920px;
 }
