@@ -301,55 +301,38 @@ const MIN_UPSIDE_GATE_ROWS = 30;
 // buildScoredBacktestStates' own doc comment. Returns { checked: false } when
 // there isn't yet a full trailing year of data (a young listing), rather than flagging invalid
 // on too little evidence.
-// A 盯盘's own paper account must do the OPPOSITE of what buildScoredBacktestStates does for
-// VALIDATION windows (see that function's own comment: it deliberately resets to a fresh
-// zero-position account at its scoring start, so a lucky pre-existing position can't inflate a
-// test-year's score). Here we want the account to carry forward whatever position the model's
-// rules would ALREADY have built up by watch-creation time — the exact same realistic,
-// continuous account `states` already reflects (it's the same array used for todaysTrades/
-// signal detection just above). A newly-created watch should only ever show a trade in its own
-// "since I started watching" history for a genuinely NEW transition happening on/after creation,
-// never a "catch-up" trade dumped on day 1 just because the model's target already happened to
-// be nonzero the moment you started watching. Confirmed real user confusion this was causing: a
-// watch's day-1 "买入" looked like a live fresh signal even though the SAME model's long-window
-// signal-detection state said "暂无信号" for that exact day — the two were being computed from
-// two different, inconsistent account-reset semantics (one fresh-start-at-creation, one
-// continuous-since-window-start) that could legitimately disagree about "did anything happen
-// today," which is exactly what happened here.
-function deriveAccountStatsSinceDate(states, sinceDateStr) {
-  if (!states || states.length === 0) return null;
-  // Last row strictly BEFORE sinceDateStr — its equity is what the account "already was" at
-  // watch-creation time, purely from the model's own rules having run continuously up to that
-  // point (not from this watch itself). Falls back to states[0] (this window's own start) only
-  // in the (practically impossible) case that sinceDateStr predates every row here.
-  let baselineIndex = -1;
-  for (let i = 0; i < states.length; i += 1) {
-    if (states[i].row.date < sinceDateStr) baselineIndex = i;
-    else break;
-  }
-  const baselineEquity = baselineIndex >= 0 ? states[baselineIndex].equity : states[0].equity;
-  const last = states[states.length - 1];
-  const returnRate = baselineEquity > 0 ? ((last.equity - baselineEquity) / baselineEquity) * 100 : 0;
+function getWatchAccountStartDate(watch) {
+  return new Date(watch.created_at).toISOString().slice(0, 10);
+}
 
-  let peakEquity = baselineEquity;
+function findAccountStartIndex(rows, startDateStr) {
+  const index = rows.findIndex((row) => row.date >= startDateStr);
+  return index < 0 ? rows.length : index;
+}
+
+// A 盯盘 paper account starts when the user creates the watch: cash=config.initialCash,
+// shares=0, no historical position inherited from the model's earlier backtest. Rows before
+// accountStartIndex still warm up indicators, but they cannot mutate this watch's account.
+function deriveWatchAccountStats(states, accountStartIndex, initialCash) {
+  if (!states || states.length === 0) return null;
+  const last = states[states.length - 1];
+  const baselineCash = Number(initialCash) || INITIAL_CASH;
+  const returnRate = baselineCash > 0 ? ((last.equity - baselineCash) / baselineCash) * 100 : 0;
+  const effectiveStartIndex = Math.min(Math.max(0, accountStartIndex), states.length);
+  let peakEquity = baselineCash;
   let maxDrawdown = 0;
-  for (let i = baselineIndex + 1; i < states.length; i += 1) {
+  for (let i = effectiveStartIndex; i < states.length; i += 1) {
     const equity = states[i].equity;
     peakEquity = Math.max(peakEquity, equity);
     const drawdown = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
     maxDrawdown = Math.max(maxDrawdown, drawdown);
   }
 
-  // last.trades is already a full cumulative snapshot (buildBacktestStates/getAccountSnapshot
-  // slices the running trades array fresh every day) — filtering it to on/after sinceDateStr is
-  // exactly "trades that happened since this watch started," no separate simulation needed.
-  const trades = (last.trades || []).filter((trade) => trade.date >= sinceDateStr);
-
   return {
     returnRate,
     maxDrawdown,
-    trades,
-    rowsScored: states.length - 1 - baselineIndex,
+    trades: last.trades || [],
+    rowsScored: Math.max(0, states.length - effectiveStartIndex),
     equity: last.equity,
     cash: last.cash,
     shares: last.shares,
@@ -564,8 +547,7 @@ async function processSymbolWatch(watch) {
     : "US";
   try {
     await ensureFreshData(pool, watch.symbol, dbMarket);
-    const allRows = await loadRows(watch.symbol, dbMarket);
-    const rows = allRows.slice(-SIMULATION_WINDOW_ROWS);
+    const rows = await loadRows(watch.symbol, dbMarket);
 
     if (rows.length < MIN_ROWS) {
       // Insufficient data (e.g. a young listing) is expected/waitable, not a real failure —
@@ -585,18 +567,15 @@ async function processSymbolWatch(watch) {
       ...(watch.frozen_config && typeof watch.frozen_config === "object" ? watch.frozen_config : {}),
     };
     const baseConfig = engine.buildConfigFromPresetObject(preset, { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: preset.strategyType });
+    const accountStartDate = getWatchAccountStartDate(watch);
+    const accountStartIndex = findAccountStartIndex(rows, accountStartDate);
     engine.setActiveLotSizeSymbol(watch.symbol);
-    const states = engine.buildBacktestStates(rows, baseConfig);
+    const states = engine.buildBacktestStates(rows, baseConfig, accountStartIndex);
     const last = states[states.length - 1];
     const lastDate = rows[rows.length - 1].date;
     const todaysTrades = last.trades.filter((trade) => trade.date === lastDate);
 
-    // Simulated per-watch account: derived from the SAME continuous, realistic `states` array
-    // used for todaysTrades/signal detection above (not a separate fresh-start simulation — see
-    // deriveAccountStatsSinceDate's comment for why that used to cause a real, confusing
-    // contradiction between "暂无信号" and a day-1 "买入" appearing at the same time).
-    const createdDateStr = new Date(watch.created_at).toISOString().slice(0, 10);
-    const scoredAccount = deriveAccountStatsSinceDate(states, createdDateStr);
+    const scoredAccount = deriveWatchAccountStats(states, accountStartIndex, baseConfig.initialCash);
     const accountAnnualized = annualizedReturnRate(scoredAccount.returnRate, scoredAccount.rowsScored) || 0;
     const accountParams = [
       scoredAccount.cash, scoredAccount.shares, scoredAccount.equity, scoredAccount.positionRatio,

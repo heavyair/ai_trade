@@ -467,9 +467,10 @@ async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS watch_alerts_due_idx ON watch_alerts(enabled, last_checked_at);
     CREATE INDEX IF NOT EXISTS watch_alerts_owner_idx ON watch_alerts(owner_user_id, created_at DESC);
 
-    -- Simulated "started paper-trading the moment this watch was created" account, recomputed
-    -- from scratch every check cycle by run-watch-alerts.js (engine.buildScoredBacktestStates
-    -- scored from created_at) rather than incrementally maintained.
+    -- Simulated "started paper-trading the moment this watch was created" account. It is
+    -- initialized once on INSERT (cash=initialCash, shares=0) and maintained by
+    -- run-watch-alerts.js using created_at as the account start date; re-enabling an existing
+    -- watch must not reset these fields.
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_cash DOUBLE PRECISION;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_shares DOUBLE PRECISION;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_equity DOUBLE PRECISION;
@@ -3538,16 +3539,26 @@ async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
             watchSkipped.push({ id: row.id, presetId, watchId: existingWatch.rows[0].id, symbol, reason: "已存在盯盘" });
           } else {
             const watchId = randomId("watch");
+            const initialAccount = buildInitialWatchAccount(configPayload || {});
             const watchResult = await dbPool.query(`
               INSERT INTO watch_alerts (
                 id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market,
-                frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label
+                frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label,
+                account_cash, account_shares, account_equity, account_position_ratio,
+                account_return_rate, account_annualized_return, account_max_drawdown,
+                account_rows_scored, account_trades, account_updated_at
               )
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12)
+              VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12,
+                $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, NOW()
+              )
               RETURNING id
             `, [
               watchId, ownerUserId, admin.email, presetId, label, symbol, row.symbol_name || symbol, watchMarket,
               frequencyMinutes, strategyType, JSON.stringify(configPayload || {}), label,
+              initialAccount.cash, initialAccount.shares, initialAccount.equity, initialAccount.positionRatio,
+              initialAccount.returnRate, initialAccount.annualizedReturn, initialAccount.maxDrawdown,
+              initialAccount.rowsScored, JSON.stringify(initialAccount.trades),
             ]);
             watchCreated.push({ id: row.id, presetId, watchId: watchResult.rows[0].id, symbol });
           }
@@ -4024,6 +4035,21 @@ function mapWatchAlertRow(row, {
 
 const WATCH_ALERT_FREQUENCY_OPTIONS = new Set([30, 60, 240, 1440]);
 
+function buildInitialWatchAccount(config) {
+  const initialCash = Number(config && config.initialCash) || 2000000;
+  return {
+    cash: initialCash,
+    shares: 0,
+    equity: initialCash,
+    positionRatio: 0,
+    returnRate: 0,
+    annualizedReturn: 0,
+    maxDrawdown: 0,
+    rowsScored: 0,
+    trades: [],
+  };
+}
+
 // The list of indices a "指数盯盘" watch can target now lives in the index_catalog DB table
 // (scripts/shared/index-catalog.js) instead of a hardcoded array here — see that file's
 // header comment for why (queryable directly, single source of truth shared with
@@ -4302,9 +4328,20 @@ async function handleWatchAlertsApi(req, res) {
       }
 
       const id = randomId("watch");
+      const initialAccount = buildInitialWatchAccount(presetRow.config || {});
       const result = await dbQuery(`
-        INSERT INTO watch_alerts (id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market, frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11::jsonb, $12)
+        INSERT INTO watch_alerts (
+          id, owner_user_id, owner_email, preset_id, preset_label, symbol, symbol_name, market,
+          frequency_minutes, enabled, frozen_strategy_type, frozen_config, frozen_label,
+          account_cash, account_shares, account_equity, account_position_ratio,
+          account_return_rate, account_annualized_return, account_max_drawdown,
+          account_rows_scored, account_trades, account_updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, TRUE, $10, $11::jsonb, $12,
+          $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, NOW()
+        )
         ON CONFLICT (owner_user_id, preset_id, symbol, market) DO UPDATE SET
           preset_label = EXCLUDED.preset_label,
           symbol_name = EXCLUDED.symbol_name,
@@ -4318,7 +4355,13 @@ async function handleWatchAlertsApi(req, res) {
           is_invalid = FALSE, invalid_reason = '', invalid_since = NULL, last_invalid_warning_date = NULL,
           updated_at = NOW()
         RETURNING *
-      `, [id, ownerUserId, user.email, presetId, presetRow.label, symbol, symbolName, market, frequencyMinutes, presetRow.strategy_type, JSON.stringify(presetRow.config || {}), presetRow.label]);
+      `, [
+        id, ownerUserId, user.email, presetId, presetRow.label, symbol, symbolName, market,
+        frequencyMinutes, presetRow.strategy_type, JSON.stringify(presetRow.config || {}), presetRow.label,
+        initialAccount.cash, initialAccount.shares, initialAccount.equity, initialAccount.positionRatio,
+        initialAccount.returnRate, initialAccount.annualizedReturn, initialAccount.maxDrawdown,
+        initialAccount.rowsScored, JSON.stringify(initialAccount.trades),
+      ]);
       sendJson(res, 200, { watch: mapWatchAlertRow(result.rows[0]) });
       return;
     }
