@@ -57,6 +57,18 @@ const watchShareCodeUsers = document.querySelector("#watchShareCodeUsers");
 const watchShareCodeUseInput = document.querySelector("#watchShareCodeUseInput");
 const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton");
 const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
+const brokerAccountIdInput = document.querySelector("#brokerAccountIdInput");
+const brokerTradingModeSelect = document.querySelector("#brokerTradingModeSelect");
+const brokerHostInput = document.querySelector("#brokerHostInput");
+const brokerPortInput = document.querySelector("#brokerPortInput");
+const brokerClientIdInput = document.querySelector("#brokerClientIdInput");
+const brokerMaxOrderValueInput = document.querySelector("#brokerMaxOrderValueInput");
+const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
+const brokerAutoTradeInput = document.querySelector("#brokerAutoTradeInput");
+const brokerSaveSettingsButton = document.querySelector("#brokerSaveSettingsButton");
+const brokerStatusText = document.querySelector("#brokerStatusText");
+const brokerRefreshIntentsButton = document.querySelector("#brokerRefreshIntentsButton");
+const brokerIntentList = document.querySelector("#brokerIntentList");
 const myModelsDialog = document.querySelector("#myModelsDialog");
 const closeMyModelsButton = document.querySelector("#closeMyModelsButton");
 const validateAllMyModelsButton = document.querySelector("#validateAllMyModelsButton");
@@ -5666,6 +5678,7 @@ function renderWatchAlertActionsCell(watch) {
         <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`;
   }
   return `
+    ${!watch.indexCode && watch.market === "US" && watch.lastSignalDate ? `<button type="button" class="ghost-button watch-alert-create-intent-button" data-watch-id="${escapeHtml(watch.id)}">生成交易意图</button>` : ""}
     <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
     <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
@@ -6210,6 +6223,163 @@ async function leaveWatchShareCode(watchId) {
   }
 }
 
+function renderBrokerSettings(connection, meta = {}) {
+  const cfg = connection || {};
+  if (brokerAccountIdInput) brokerAccountIdInput.value = cfg.accountId || "";
+  if (brokerTradingModeSelect) brokerTradingModeSelect.value = cfg.tradingMode || "paper";
+  if (brokerHostInput) brokerHostInput.value = cfg.host || "127.0.0.1";
+  if (brokerPortInput) brokerPortInput.value = cfg.port || (cfg.tradingMode === "live" ? 7496 : 7497);
+  if (brokerClientIdInput) brokerClientIdInput.value = cfg.clientId || 77;
+  if (brokerMaxOrderValueInput) brokerMaxOrderValueInput.value = cfg.maxOrderValue || 0;
+  if (brokerEnabledInput) brokerEnabledInput.checked = Boolean(cfg.enabled);
+  if (brokerAutoTradeInput) brokerAutoTradeInput.checked = Boolean(cfg.autoTradeEnabled);
+  if (brokerStatusText) {
+    const parts = [
+      cfg.configured ? "已配置" : "未配置",
+      meta.serverTradingEnabled ? "服务器允许提交" : "服务器未开放真实提交",
+      meta.agentConfigured ? "TWS agent 已配置" : "TWS agent 未配置",
+    ];
+    brokerStatusText.textContent = parts.join(" · ");
+  }
+}
+
+async function loadBrokerSettings() {
+  if (!brokerStatusText) return;
+  brokerStatusText.textContent = "正在读取 IBKR/TWS 设置...";
+  try {
+    const response = await fetch("/api/broker/tws-settings", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取 IBKR/TWS 设置失败。");
+    renderBrokerSettings(payload.connection, payload);
+  } catch (error) {
+    brokerStatusText.textContent = "";
+    setStatus(`读取 IBKR/TWS 设置失败：${error.message}`, true);
+  }
+}
+
+async function saveBrokerSettings() {
+  if (brokerStatusText) brokerStatusText.textContent = "正在保存...";
+  try {
+    const response = await fetch("/api/broker/tws-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountId: brokerAccountIdInput ? brokerAccountIdInput.value : "",
+        tradingMode: brokerTradingModeSelect ? brokerTradingModeSelect.value : "paper",
+        host: brokerHostInput ? brokerHostInput.value : "127.0.0.1",
+        port: brokerPortInput ? Number(brokerPortInput.value) : 7497,
+        clientId: brokerClientIdInput ? Number(brokerClientIdInput.value) : 77,
+        maxOrderValue: brokerMaxOrderValueInput ? Number(brokerMaxOrderValueInput.value) : 0,
+        enabled: Boolean(brokerEnabledInput && brokerEnabledInput.checked),
+        autoTradeEnabled: Boolean(brokerAutoTradeInput && brokerAutoTradeInput.checked),
+      }),
+    });
+    const payload = await readJsonResponse(response, "保存 IBKR/TWS 设置失败。");
+    renderBrokerSettings(payload.connection, {});
+    setStatus("IBKR/TWS 设置已保存。");
+  } catch (error) {
+    if (brokerStatusText) brokerStatusText.textContent = "";
+    setStatus(`保存 IBKR/TWS 设置失败：${error.message}`, true);
+  }
+}
+
+function formatTradeIntentStatus(status) {
+  return {
+    pending_review: "待确认",
+    approved: "已批准",
+    submitted: "已提交",
+    cancelled: "已取消",
+    blocked: "已阻止",
+  }[status] || status || "--";
+}
+
+function renderBrokerTradeIntents(intents) {
+  if (!brokerIntentList) return;
+  if (!intents || intents.length === 0) {
+    brokerIntentList.innerHTML = '<div class="ranking-empty">暂无交易意图。请先在美股盯盘中生成。</div>';
+    return;
+  }
+  brokerIntentList.innerHTML = `
+    <table class="admin-ranking-table broker-intent-table">
+      <thead>
+        <tr>
+          <th>创建时间</th>
+          <th>股票</th>
+          <th>方向</th>
+          <th>数量</th>
+          <th>限价</th>
+          <th>预估金额</th>
+          <th>信号日</th>
+          <th>风控</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>${intents.map((intent) => `
+        <tr>
+          <td>${escapeHtml(String(intent.createdAt || "").replace("T", " ").slice(0, 16))}</td>
+          <td>${escapeHtml(intent.symbolName || intent.symbol)}<br><span class="field-hint">${escapeHtml(intent.symbol || "")}</span></td>
+          <td class="${intent.side === "buy" ? "up" : "down"}">${intent.side === "buy" ? "买入" : "卖出"}</td>
+          <td>${Number(intent.quantity || 0).toFixed(0)}</td>
+          <td>${intent.limitPrice !== null ? Number(intent.limitPrice).toFixed(2) : "--"}</td>
+          <td>${formatMoney(Number(intent.estimatedNotional) || 0)}</td>
+          <td>${escapeHtml(intent.sourceSignalDate || "--")}</td>
+          <td>${intent.riskStatus === "passed" ? '<span class="up">通过</span>' : `<span class="down">${escapeHtml(intent.riskMessage || intent.riskStatus || "未检查")}</span>`}</td>
+          <td>${escapeHtml(formatTradeIntentStatus(intent.status))}</td>
+          <td class="admin-row-actions">
+            ${intent.status === "pending_review" && intent.riskStatus === "passed" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="approve">批准</button>` : ""}
+            ${intent.status === "approved" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="submit">提交TWS</button>` : ""}
+            ${intent.status === "pending_review" || intent.status === "approved" || intent.status === "blocked" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="cancel">取消</button>` : ""}
+          </td>
+        </tr>
+      `).join("")}</tbody>
+    </table>
+  `;
+}
+
+async function loadBrokerTradeIntents() {
+  if (!brokerIntentList) return;
+  brokerIntentList.innerHTML = '<div class="ranking-empty">正在读取交易意图...</div>';
+  try {
+    const response = await fetch("/api/broker/trade-intents", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取交易意图失败。");
+    renderBrokerTradeIntents(payload.intents || []);
+  } catch (error) {
+    brokerIntentList.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "读取失败。")}</div>`;
+  }
+}
+
+async function createTradeIntentFromWatch(watchId) {
+  try {
+    const response = await fetch("/api/broker/trade-intents/from-watch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watchId }),
+    });
+    const payload = await readJsonResponse(response, "生成交易意图失败。");
+    setStatus(`已生成交易意图：${payload.intent.symbol} ${payload.intent.side === "buy" ? "买入" : "卖出"} ${payload.intent.quantity} 股。`);
+    setWizardPage("broker");
+  } catch (error) {
+    setStatus(`生成交易意图失败：${error.message}`, true);
+  }
+}
+
+async function runTradeIntentAction(intentId, action) {
+  const label = action === "approve" ? "批准" : action === "submit" ? "提交 TWS" : "取消";
+  if (action === "submit" && !window.confirm("确认提交到 IBKR/TWS？请确认这是 paper account，且订单数量和价格正确。")) return;
+  try {
+    const response = await fetch("/api/broker/trade-intents/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: intentId, action }),
+    });
+    await readJsonResponse(response, `${label}交易意图失败。`);
+    await loadBrokerTradeIntents();
+    setStatus(`${label}交易意图完成。`);
+  } catch (error) {
+    setStatus(`${label}交易意图失败：${error.message}`, true);
+  }
+}
+
 async function shareWatchAlert(id, regenerate) {
   try {
     const response = await fetch("/api/watch-alerts/share", {
@@ -6279,6 +6449,25 @@ if (watchShareCodeUsers) {
     if (button) removeWatchShareCodeUser(button.dataset.viewerUserId);
   });
 }
+if (brokerTradingModeSelect) {
+  brokerTradingModeSelect.addEventListener("change", () => {
+    if (brokerPortInput && (!brokerPortInput.value || brokerPortInput.value === "7496" || brokerPortInput.value === "7497")) {
+      brokerPortInput.value = brokerTradingModeSelect.value === "live" ? "7496" : "7497";
+    }
+  });
+}
+if (brokerSaveSettingsButton) {
+  brokerSaveSettingsButton.addEventListener("click", () => saveBrokerSettings());
+}
+if (brokerRefreshIntentsButton) {
+  brokerRefreshIntentsButton.addEventListener("click", () => loadBrokerTradeIntents());
+}
+if (brokerIntentList) {
+  brokerIntentList.addEventListener("click", (event) => {
+    const button = event.target && event.target.closest ? event.target.closest(".broker-intent-action-button") : null;
+    if (button) runTradeIntentAction(button.dataset.intentId, button.dataset.action);
+  });
+}
 if (openWatchShareDialogButton) {
   openWatchShareDialogButton.addEventListener("click", () => openWatchShareDialog());
 }
@@ -6339,6 +6528,11 @@ if (watchAlertsList) {
         watchAlertsSortState = { key, direction: key === "model" || key === "target" || key === "market" ? "asc" : "desc" };
       }
       renderWatchAlertsList();
+      return;
+    }
+    const createIntentButton = target && target.closest ? target.closest(".watch-alert-create-intent-button") : null;
+    if (createIntentButton) {
+      createTradeIntentFromWatch(createIntentButton.dataset.watchId);
       return;
     }
     const toggleButton = target && target.closest ? target.closest(".watch-alert-toggle-button") : null;
@@ -7946,6 +8140,10 @@ function setWizardPage(pageName) {
   if (nextPage === "screen") {
     renderScreenPresetOptions();
     loadStockScreen();
+  }
+  if (nextPage === "broker") {
+    loadBrokerSettings();
+    loadBrokerTradeIntents();
   }
 
   window.requestAnimationFrame(() => {

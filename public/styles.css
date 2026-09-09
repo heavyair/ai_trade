@@ -2819,6 +2819,16 @@ textarea:focus {
   -webkit-overflow-scrolling: touch;
 }
 
+.broker-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.broker-intent-table {
+  min-width: 920px;
+}
+
 .optimization-dialog .param-dialog-body {
   height: 100dvh;
   max-height: 100dvh;

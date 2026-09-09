@@ -38,6 +38,8 @@ const VALIDATED_SEARCH_PROGRESS_FILE = process.env.VALIDATED_SEARCH_PROGRESS_FIL
 const QUALIFIED_RECHECK_PROGRESS_FILE = process.env.QUALIFIED_RECHECK_PROGRESS_FILE || path.join(DATA_DIR, "qualified-recheck-progress.json");
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
+const IBKR_TWS_TRADING_ENABLED = String(process.env.IBKR_TWS_TRADING_ENABLED || "").toLowerCase() === "true";
+const IBKR_TWS_AGENT_URL = String(process.env.IBKR_TWS_AGENT_URL || "").trim().replace(/\/+$/, "");
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
@@ -566,6 +568,92 @@ async function initializeDatabase() {
     );
     CREATE INDEX IF NOT EXISTS watch_share_code_users_code_idx ON watch_share_code_users(share_code_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS watch_share_code_users_viewer_idx ON watch_share_code_users(viewer_user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS broker_connections (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_email TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'ibkr-tws',
+      account_id TEXT NOT NULL DEFAULT '',
+      trading_mode TEXT NOT NULL DEFAULT 'paper',
+      host TEXT NOT NULL DEFAULT '127.0.0.1',
+      port INTEGER NOT NULL DEFAULT 7497,
+      client_id INTEGER NOT NULL DEFAULT 77,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      auto_trade_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      max_order_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+      max_position_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+      max_position_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+      last_checked_at TIMESTAMPTZ,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(owner_user_id, provider)
+    );
+    CREATE INDEX IF NOT EXISTS broker_connections_owner_idx ON broker_connections(owner_user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS trade_intents (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      owner_email TEXT NOT NULL,
+      watch_id TEXT REFERENCES watch_alerts(id) ON DELETE SET NULL,
+      preset_id TEXT REFERENCES strategy_presets(id) ON DELETE SET NULL,
+      preset_label TEXT NOT NULL DEFAULT '',
+      symbol TEXT NOT NULL,
+      symbol_name TEXT NOT NULL DEFAULT '',
+      market TEXT NOT NULL DEFAULT '',
+      side TEXT NOT NULL,
+      quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+      order_type TEXT NOT NULL DEFAULT 'LMT',
+      limit_price DOUBLE PRECISION,
+      time_in_force TEXT NOT NULL DEFAULT 'DAY',
+      outside_rth BOOLEAN NOT NULL DEFAULT FALSE,
+      source_signal_date DATE,
+      reason TEXT NOT NULL DEFAULT '',
+      estimated_notional DOUBLE PRECISION NOT NULL DEFAULT 0,
+      risk_status TEXT NOT NULL DEFAULT 'pending',
+      risk_message TEXT NOT NULL DEFAULT '',
+      broker_provider TEXT NOT NULL DEFAULT 'ibkr-tws',
+      broker_account_id TEXT NOT NULL DEFAULT '',
+      broker_order_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending_review',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      approved_at TIMESTAMPTZ,
+      submitted_at TIMESTAMPTZ,
+      cancelled_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS trade_intents_owner_idx ON trade_intents(owner_user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS trade_intents_status_idx ON trade_intents(status, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS trade_intents_watch_signal_idx
+      ON trade_intents(owner_user_id, watch_id, source_signal_date, side)
+      WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS broker_orders (
+      id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL REFERENCES trade_intents(id) ON DELETE CASCADE,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'ibkr-tws',
+      account_id TEXT NOT NULL DEFAULT '',
+      broker_order_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      submitted_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      last_event JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS broker_orders_intent_idx ON broker_orders(intent_id);
+    CREATE INDEX IF NOT EXISTS broker_orders_owner_idx ON broker_orders(owner_user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS broker_order_events (
+      id TEXT PRIMARY KEY,
+      broker_order_id TEXT REFERENCES broker_orders(id) ON DELETE CASCADE,
+      intent_id TEXT REFERENCES trade_intents(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL DEFAULT '',
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS broker_order_events_order_idx ON broker_order_events(broker_order_id, created_at DESC);
   `);
 
   await ensureIndexCatalogTable(dbPool);
@@ -5479,6 +5567,50 @@ function getJson(url, headers = {}) {
   });
 }
 
+function postJson(url, payload, headers = {}, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const body = JSON.stringify(payload || {});
+    const req = client.request(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        ...headers,
+      },
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        let parsed = {};
+        if (responseBody) {
+          try {
+            parsed = JSON.parse(responseBody);
+          } catch (error) {
+            reject(new Error("TWS agent 返回的数据不是有效 JSON。"));
+            return;
+          }
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(parsed.error || `TWS agent 返回 HTTP ${response.statusCode}`));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("TWS agent 请求超时。"));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 async function getJsonWithRetry(urls, headers = {}, attempts = 1) {
   const candidates = Array.isArray(urls) ? urls : [urls];
   let lastError;
@@ -7180,6 +7312,364 @@ async function handleCopyPublicModelApi(req, res) {
   }
 }
 
+function mapBrokerConnectionRow(row) {
+  if (!row) {
+    return {
+      configured: false,
+      provider: "ibkr-tws",
+      tradingMode: "paper",
+      host: "127.0.0.1",
+      port: 7497,
+      clientId: 77,
+      accountId: "",
+      enabled: false,
+      autoTradeEnabled: false,
+      maxOrderValue: 0,
+      maxPositionValue: 0,
+      maxPositionPercent: 0,
+      lastCheckedAt: "",
+      lastError: "",
+    };
+  }
+  return {
+    configured: true,
+    id: row.id,
+    provider: row.provider || "ibkr-tws",
+    tradingMode: row.trading_mode || "paper",
+    host: row.host || "127.0.0.1",
+    port: Number(row.port) || 7497,
+    clientId: Number(row.client_id) || 77,
+    accountId: row.account_id || "",
+    enabled: Boolean(row.enabled),
+    autoTradeEnabled: Boolean(row.auto_trade_enabled),
+    maxOrderValue: Number(row.max_order_value) || 0,
+    maxPositionValue: Number(row.max_position_value) || 0,
+    maxPositionPercent: Number(row.max_position_percent) || 0,
+    lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
+    lastError: row.last_error || "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+function mapTradeIntentRow(row) {
+  return {
+    id: row.id,
+    watchId: row.watch_id || "",
+    presetId: row.preset_id || "",
+    presetLabel: row.preset_label || "",
+    symbol: row.symbol || "",
+    symbolName: row.symbol_name || "",
+    market: row.market || "",
+    side: row.side || "",
+    quantity: Number(row.quantity) || 0,
+    orderType: row.order_type || "LMT",
+    limitPrice: row.limit_price !== null && row.limit_price !== undefined ? Number(row.limit_price) : null,
+    timeInForce: row.time_in_force || "DAY",
+    outsideRth: Boolean(row.outside_rth),
+    sourceSignalDate: row.source_signal_date ? new Date(row.source_signal_date).toISOString().slice(0, 10) : "",
+    reason: row.reason || "",
+    estimatedNotional: Number(row.estimated_notional) || 0,
+    riskStatus: row.risk_status || "pending",
+    riskMessage: row.risk_message || "",
+    brokerProvider: row.broker_provider || "ibkr-tws",
+    brokerAccountId: row.broker_account_id || "",
+    brokerOrderId: row.broker_order_id || "",
+    status: row.status || "pending_review",
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+    approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : "",
+    submittedAt: row.submitted_at ? new Date(row.submitted_at).toISOString() : "",
+    cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+async function loadBrokerConnection(ownerUserId) {
+  const result = await dbQuery(`
+    SELECT * FROM broker_connections
+    WHERE owner_user_id = $1 AND provider = 'ibkr-tws'
+    LIMIT 1
+  `, [ownerUserId]);
+  return result.rows[0] || null;
+}
+
+function validateTradeIntentRisk(intent, connection) {
+  const messages = [];
+  if (intent.market !== "US") messages.push("第一版只允许美股通过 IBKR/TWS 下单。");
+  if (intent.side !== "buy" && intent.side !== "sell") messages.push("交易方向必须是买入或卖出。");
+  if (!(intent.quantity > 0)) messages.push("交易数量必须大于 0。");
+  if (!(intent.limitPrice > 0)) messages.push("限价必须大于 0。");
+  const maxOrderValue = Number(connection && connection.max_order_value) || 0;
+  if (maxOrderValue > 0 && intent.estimatedNotional > maxOrderValue) {
+    messages.push(`预估订单金额 ${intent.estimatedNotional.toFixed(2)} 超过单笔上限 ${maxOrderValue.toFixed(2)}。`);
+  }
+  return {
+    status: messages.length ? "blocked" : "passed",
+    message: messages.join(" "),
+  };
+}
+
+async function handleBrokerTwsSettingsApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method === "GET") {
+      const row = await loadBrokerConnection(ownerUserId);
+      sendJson(res, 200, {
+        connection: mapBrokerConnectionRow(row),
+        serverTradingEnabled: IBKR_TWS_TRADING_ENABLED,
+        agentConfigured: Boolean(IBKR_TWS_AGENT_URL),
+      });
+      return;
+    }
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const tradingMode = String(payload.tradingMode || "paper").trim().toLowerCase();
+    if (tradingMode !== "paper" && tradingMode !== "live") {
+      sendJson(res, 400, { error: "交易模式只能是 paper 或 live。" });
+      return;
+    }
+    const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? 7497 : 7496));
+    const clientId = Math.round(toFiniteNumber(payload.clientId, 77));
+    if (port <= 0 || port > 65535) {
+      sendJson(res, 400, { error: "TWS 端口不合法。" });
+      return;
+    }
+    const id = randomId("broker");
+    const result = await dbQuery(`
+      INSERT INTO broker_connections (
+        id, owner_user_id, owner_email, provider, account_id, trading_mode, host, port, client_id,
+        enabled, auto_trade_enabled, max_order_value, max_position_value, max_position_percent
+      )
+      VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ON CONFLICT (owner_user_id, provider) DO UPDATE SET
+        owner_email = EXCLUDED.owner_email,
+        account_id = EXCLUDED.account_id,
+        trading_mode = EXCLUDED.trading_mode,
+        host = EXCLUDED.host,
+        port = EXCLUDED.port,
+        client_id = EXCLUDED.client_id,
+        enabled = EXCLUDED.enabled,
+        auto_trade_enabled = EXCLUDED.auto_trade_enabled,
+        max_order_value = EXCLUDED.max_order_value,
+        max_position_value = EXCLUDED.max_position_value,
+        max_position_percent = EXCLUDED.max_position_percent,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      id, ownerUserId, user.email,
+      String(payload.accountId || "").trim(),
+      tradingMode,
+      String(payload.host || "127.0.0.1").trim() || "127.0.0.1",
+      port,
+      clientId,
+      Boolean(payload.enabled),
+      Boolean(payload.autoTradeEnabled),
+      Math.max(0, toFiniteNumber(payload.maxOrderValue, 0)),
+      Math.max(0, toFiniteNumber(payload.maxPositionValue, 0)),
+      Math.max(0, toFiniteNumber(payload.maxPositionPercent, 0)),
+    ]);
+    sendJson(res, 200, { connection: mapBrokerConnectionRow(result.rows[0]) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "保存 IBKR/TWS 设置失败。" });
+  }
+}
+
+async function handleTradeIntentsApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const result = await dbQuery(`
+      SELECT * FROM trade_intents
+      WHERE owner_user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 100
+    `, [ownerUserId]);
+    sendJson(res, 200, { intents: result.rows.map(mapTradeIntentRow) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取交易意图失败。" });
+  }
+}
+
+async function handleTradeIntentFromWatchApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const watchId = String(payload.watchId || "").trim();
+    if (!watchId) {
+      sendJson(res, 400, { error: "缺少盯盘 id。" });
+      return;
+    }
+    const watchResult = await dbQuery(`
+      SELECT *
+      FROM watch_alerts
+      WHERE id = $1 AND owner_user_id = $2
+      LIMIT 1
+    `, [watchId, ownerUserId]);
+    const watch = watchResult.rows[0];
+    if (!watch) {
+      sendJson(res, 404, { error: "盯盘不存在，或者你不是它的 owner。" });
+      return;
+    }
+    if (watch.index_code) {
+      sendJson(res, 400, { error: "指数盯盘不能直接生成单笔 IBKR 交易意图。" });
+      return;
+    }
+    if (watch.market !== "US") {
+      sendJson(res, 400, { error: "第一版 IBKR/TWS 下单只开放美股盯盘。" });
+      return;
+    }
+    const signalDate = watch.last_signal_date ? new Date(watch.last_signal_date).toISOString().slice(0, 10) : "";
+    const side = String(watch.last_signal_action || "").toLowerCase();
+    const trades = Array.isArray(watch.account_trades) ? watch.account_trades : [];
+    const lastTrade = [...trades].reverse().find((trade) => (!signalDate || trade.date === signalDate) && trade.side === side);
+    if (!signalDate || (side !== "buy" && side !== "sell") || !lastTrade) {
+      sendJson(res, 400, { error: "这个盯盘还没有可生成交易意图的最新买卖信号。" });
+      return;
+    }
+    const quantity = Math.max(0, Math.floor(toFiniteNumber(lastTrade.shares, 0)));
+    const limitPrice = toFiniteNumber(payload.limitPrice, toFiniteNumber(lastTrade.price, 0));
+    const estimatedNotional = quantity * limitPrice;
+    const connection = await loadBrokerConnection(ownerUserId);
+    const risk = validateTradeIntentRisk({
+      market: watch.market,
+      side,
+      quantity,
+      limitPrice,
+      estimatedNotional,
+    }, connection);
+    const id = randomId("intent");
+    const insertResult = await dbQuery(`
+      INSERT INTO trade_intents (
+        id, owner_user_id, owner_email, watch_id, preset_id, preset_label, symbol, symbol_name, market,
+        side, quantity, order_type, limit_price, time_in_force, outside_rth, source_signal_date,
+        reason, estimated_notional, risk_status, risk_message, broker_account_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18)
+      ON CONFLICT (owner_user_id, watch_id, source_signal_date, side) WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL DO UPDATE SET
+        quantity = EXCLUDED.quantity,
+        limit_price = EXCLUDED.limit_price,
+        reason = EXCLUDED.reason,
+        estimated_notional = EXCLUDED.estimated_notional,
+        risk_status = EXCLUDED.risk_status,
+        risk_message = EXCLUDED.risk_message,
+        broker_account_id = EXCLUDED.broker_account_id,
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      id, ownerUserId, user.email, watch.id, watch.preset_id, watch.preset_label,
+      watch.symbol, watch.symbol_name || watch.symbol, watch.market,
+      side, quantity, limitPrice, signalDate, lastTrade.reason || watch.last_signal_reason || "",
+      estimatedNotional, risk.status, risk.message, connection ? connection.account_id : "",
+    ]);
+    sendJson(res, 200, { intent: mapTradeIntentRow(insertResult.rows[0]) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "生成交易意图失败。" });
+  }
+}
+
+async function handleTradeIntentActionApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const id = String(payload.id || "").trim();
+    const action = String(payload.action || "").trim();
+    if (!id) {
+      sendJson(res, 400, { error: "缺少交易意图 id。" });
+      return;
+    }
+    if (action === "cancel") {
+      const result = await dbQuery(`
+        UPDATE trade_intents SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2 AND status IN ('pending_review', 'approved', 'blocked')
+        RETURNING *
+      `, [id, ownerUserId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 404, { error: "交易意图不存在，或者当前状态不能取消。" });
+        return;
+      }
+      sendJson(res, 200, { intent: mapTradeIntentRow(result.rows[0]) });
+      return;
+    }
+    if (action === "approve") {
+      const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
+      const intent = intentResult.rows[0];
+      if (!intent) {
+        sendJson(res, 404, { error: "交易意图不存在。" });
+        return;
+      }
+      if (intent.risk_status !== "passed") {
+        sendJson(res, 400, { error: intent.risk_message || "风控未通过，不能批准。" });
+        return;
+      }
+      const result = await dbQuery(`
+        UPDATE trade_intents SET status = 'approved', approved_at = COALESCE(approved_at, NOW()), updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2 AND status = 'pending_review'
+        RETURNING *
+      `, [id, ownerUserId]);
+      if (result.rows.length === 0) {
+        sendJson(res, 400, { error: "当前状态不能批准。" });
+        return;
+      }
+      sendJson(res, 200, { intent: mapTradeIntentRow(result.rows[0]) });
+      return;
+    }
+    if (action === "submit") {
+      if (!IBKR_TWS_TRADING_ENABLED || !IBKR_TWS_AGENT_URL) {
+        sendJson(res, 403, { error: "服务器尚未启用 IBKR/TWS 真实提交。请先配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL。" });
+        return;
+      }
+      const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
+      const intent = intentResult.rows[0];
+      if (!intent || intent.status !== "approved") {
+        sendJson(res, 400, { error: "只有已批准的交易意图可以提交。" });
+        return;
+      }
+      const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, { intent: mapTradeIntentRow(intent) });
+      const brokerOrderId = randomId("border");
+      await dbQuery(`
+        INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+        VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+      `, [
+        brokerOrderId, intent.id, ownerUserId, intent.broker_account_id || "",
+        String(agentResult.orderId || agentResult.brokerOrderId || ""),
+        String(agentResult.status || "submitted"),
+        JSON.stringify(mapTradeIntentRow(intent)),
+        JSON.stringify(agentResult),
+      ]);
+      const updated = await dbQuery(`
+        UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2
+        RETURNING *
+      `, [id, ownerUserId, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
+      sendJson(res, 200, { intent: mapTradeIntentRow(updated.rows[0]), brokerOrder: agentResult });
+      return;
+    }
+    sendJson(res, 400, { error: "未知交易操作。" });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "交易意图操作失败。" });
+  }
+}
+
 async function handleApi(req, res, requestUrl) {
   try {
     const code = normalizeCode(requestUrl.searchParams.get("code") || "513100");
@@ -7496,6 +7986,26 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/watch-alert-indexes") {
     handleWatchAlertIndexesApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/tws-settings") {
+    handleBrokerTwsSettingsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents") {
+    handleTradeIntentsApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents/from-watch") {
+    handleTradeIntentFromWatchApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents/action") {
+    handleTradeIntentActionApi(req, res);
     return;
   }
 

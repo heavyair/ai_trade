@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260908-watch-scroll-unsubscribe">
+    <link rel="stylesheet" href="/styles.css?v=20260908-ibkr-tws-trade">
   </head>
   <body>
     <main class="shell">
@@ -22,6 +22,7 @@
           <button id="wizardSimulationButton" class="wizard-action" type="button" data-wizard-target="simulation" aria-selected="false" data-i18n="historySimulation">历史模拟</button>
           <button id="wizardScreenButton" class="wizard-action" type="button" data-wizard-target="screen" aria-selected="false">选股</button>
           <button id="wizardWatchAlertsButton" class="wizard-action" type="button" data-wizard-target="watch-alerts" aria-selected="false">设置盯盘提醒</button>
+          <button id="wizardBrokerButton" class="wizard-action" type="button" data-wizard-target="broker" aria-selected="false">IBKR交易</button>
           <button id="wizardMyModelsButton" class="wizard-action" type="button" data-wizard-target="my-models" aria-selected="false">我的模型</button>
           <button id="wizardPublicModelsButton" class="wizard-action" type="button" data-wizard-target="public-models" aria-selected="false">Public排行</button>
         </div>
@@ -1636,8 +1637,56 @@
         <div class="section-label">扫描记录（仅自己可见，最近 20 次）</div>
         <div id="screenRunList" class="admin-ranking-list"></div>
       </section>
+
+      <section id="brokerPage" class="wizard-page" data-wizard-page="broker" aria-label="IBKR交易">
+        <div class="section-head">
+          <div>
+            <h2>IBKR / TWS 交易</h2>
+            <p class="field-hint">把盯盘信号变成交易意图，先人工确认，再提交到 IBKR TWS / IB Gateway。</p>
+          </div>
+        </div>
+        <div class="broker-panel">
+          <div class="section-label">TWS 连接设置</div>
+          <div class="admin-scan-filter-row">
+            <label>账户 ID
+              <input id="brokerAccountIdInput" type="text" placeholder="如 U1234567 或 DU1234567">
+            </label>
+            <label>模式
+              <select id="brokerTradingModeSelect">
+                <option value="paper">Paper</option>
+                <option value="live">Live</option>
+              </select>
+            </label>
+            <label>Host
+              <input id="brokerHostInput" type="text" value="127.0.0.1">
+            </label>
+            <label>Port
+              <input id="brokerPortInput" type="number" value="7497">
+            </label>
+            <label>Client ID
+              <input id="brokerClientIdInput" type="number" value="77">
+            </label>
+            <label>单笔金额上限
+              <input id="brokerMaxOrderValueInput" type="number" min="0" step="100" value="0">
+            </label>
+            <label class="compact-check"><input id="brokerEnabledInput" type="checkbox"> 启用连接</label>
+            <label class="compact-check"><input id="brokerAutoTradeInput" type="checkbox"> 自动交易</label>
+            <button type="button" id="brokerSaveSettingsButton" class="ghost-button">保存设置</button>
+            <span id="brokerStatusText" class="field-hint"></span>
+          </div>
+          <div class="security-note">真实下单默认关闭。服务器必须配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL 后，已批准交易意图才允许提交。</div>
+        </div>
+        <div class="section-head">
+          <div>
+            <h2>交易意图</h2>
+            <p class="field-hint">从盯盘最新信号生成；审批后才能提交到 TWS agent。</p>
+          </div>
+          <button type="button" id="brokerRefreshIntentsButton" class="ghost-button">刷新</button>
+        </div>
+        <div id="brokerIntentList" class="admin-ranking-list"></div>
+      </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260908-watch-scroll-unsubscribe"></script>
+    <script src="/app.js?v=20260908-ibkr-tws-trade"></script>
   </body>
 </html>
