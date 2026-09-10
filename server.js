@@ -1490,10 +1490,10 @@ async function getCurrentUser(req) {
   };
 }
 
-async function requireCurrentUser(req) {
+async function requireCurrentUser(req, message = "请先注册或登录后再保存模型。") {
   const user = await getCurrentUser(req);
   if (!user) {
-    const error = new Error("请先注册或登录后再保存模型。");
+    const error = new Error(message);
     error.statusCode = 401;
     throw error;
   }
@@ -7417,7 +7417,7 @@ function validateTradeIntentRisk(intent, connection) {
 
 async function handleBrokerTwsSettingsApi(req, res) {
   try {
-    const user = await requireCurrentUser(req);
+    const user = await requireCurrentUser(req, "请先登录后保存 IBKR/TWS 设置。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method === "GET") {
       const row = await loadBrokerConnection(ownerUserId);
@@ -7487,7 +7487,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
 
 async function handleTradeIntentsApi(req, res) {
   try {
-    const user = await requireCurrentUser(req);
+    const user = await requireCurrentUser(req, "请先登录后查看 IBKR 交易意图。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method !== "GET") {
       sendJson(res, 405, { error: "Method not allowed" });
@@ -7507,7 +7507,7 @@ async function handleTradeIntentsApi(req, res) {
 
 async function handleTradeIntentFromWatchApi(req, res) {
   try {
-    const user = await requireCurrentUser(req);
+    const user = await requireCurrentUser(req, "请先登录后生成 IBKR 交易意图。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
@@ -7590,7 +7590,7 @@ async function handleTradeIntentFromWatchApi(req, res) {
 
 async function handleTradeIntentActionApi(req, res) {
   try {
-    const user = await requireCurrentUser(req);
+    const user = await requireCurrentUser(req, "请先登录后操作 IBKR 交易意图。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method !== "POST") {
       sendJson(res, 405, { error: "Method not allowed" });
@@ -7679,7 +7679,7 @@ async function handleTradeIntentActionApi(req, res) {
 
 async function handleBrokerAccountStateApi(req, res) {
   try {
-    const user = await requireCurrentUser(req);
+    const user = await requireCurrentUser(req, "请先登录后查看 IBKR 账户资金和持仓。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method !== "GET") {
       sendJson(res, 405, { error: "Method not allowed" });
