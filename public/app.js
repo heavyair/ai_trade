@@ -6743,13 +6743,33 @@ async function runTradeIntentAction(intentId, action, triggerButton = null) {
     await loadBrokerTradeIntents();
     setStatus(`${label}交易意图完成。`);
   } catch (error) {
-    setStatus(`${label}交易意图失败：${error.message}`, true);
+    const details = formatBrokerActionError(error);
+    setStatus(`${label}交易意图失败：${details}`, true);
+    if (action === "submit") {
+      window.alert(`${label}失败\n\n${details}`);
+    }
   } finally {
     if (triggerButton && triggerButton.isConnected) {
       triggerButton.disabled = false;
       triggerButton.textContent = previousText;
     }
   }
+}
+
+function formatBrokerActionError(error) {
+  const payload = error && error.payload ? error.payload : {};
+  const response = payload.agentResponse || (payload.brokerOrder && payload.brokerOrder.response) || null;
+  const parts = [error && error.message ? error.message : "操作失败。"];
+  if (response && response.error && !parts[0].includes(response.error)) {
+    parts.push(response.error);
+  }
+  if (response && response.tws) {
+    parts.push(`TWS ${response.tws.host || "127.0.0.1"}:${response.tws.port || ""}`);
+  }
+  if (payload.brokerOrder && payload.brokerOrder.statusCode) {
+    parts.push(`agent HTTP ${payload.brokerOrder.statusCode}`);
+  }
+  return parts.filter(Boolean).join("；");
 }
 
 async function shareWatchAlert(id, regenerate) {
@@ -8265,7 +8285,10 @@ async function readJsonResponse(response, fallbackMessage = "服务器返回的�
     }
   }
   if (!response.ok) {
-    throw new Error(payload.error || fallbackMessage);
+    const error = new Error(payload.error || fallbackMessage);
+    error.payload = payload;
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }

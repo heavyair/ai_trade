@@ -5646,7 +5646,11 @@ function postJson(url, payload, headers = {}, timeoutMs = 8000) {
           }
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(parsed.error || `IBKR API agent 返回 HTTP ${response.statusCode}`));
+          const error = new Error(parsed.error || `IBKR API agent 返回 HTTP ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          error.payload = parsed;
+          error.responseBody = responseBody;
+          reject(error);
           return;
         }
         resolve(parsed);
@@ -7732,10 +7736,39 @@ async function handleTradeIntentActionApi(req, res) {
         return;
       }
       const connection = await loadBrokerConnection(ownerUserId);
-      const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
-        intent: mapTradeIntentRow(intent),
-        connection: brokerConnectionAgentParams(connection),
-      });
+      const mappedIntent = mapTradeIntentRow(intent);
+      let agentResult = null;
+      try {
+        agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
+          intent: mappedIntent,
+          connection: brokerConnectionAgentParams(connection),
+        });
+      } catch (agentError) {
+        const failureEvent = {
+          ok: false,
+          error: agentError.message || "IBKR API agent 提交失败。",
+          statusCode: agentError.statusCode || 0,
+          response: agentError.payload || null,
+          responseBody: agentError.responseBody || "",
+          failedAt: new Date().toISOString(),
+        };
+        await dbQuery(`
+          INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+          VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+        `, [
+          randomId("border"), intent.id, ownerUserId, intent.broker_account_id || "",
+          JSON.stringify(mappedIntent),
+          JSON.stringify(failureEvent),
+        ]);
+        await dbQuery(`UPDATE trade_intents SET updated_at = NOW() WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
+        sendJson(res, 502, {
+          error: `IBKR Gateway 返回错误：${failureEvent.error}`,
+          intent: mappedIntent,
+          brokerOrder: failureEvent,
+          agentResponse: agentError.payload || null,
+        });
+        return;
+      }
       const brokerOrderId = randomId("border");
       await dbQuery(`
         INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
@@ -7744,7 +7777,7 @@ async function handleTradeIntentActionApi(req, res) {
         brokerOrderId, intent.id, ownerUserId, intent.broker_account_id || "",
         String(agentResult.orderId || agentResult.brokerOrderId || ""),
         String(agentResult.status || "submitted"),
-        JSON.stringify(mapTradeIntentRow(intent)),
+        JSON.stringify(mappedIntent),
         JSON.stringify(agentResult),
       ]);
       const updated = await dbQuery(`
