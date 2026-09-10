@@ -6725,9 +6725,15 @@ async function createTradeIntentFromWatch(watchId) {
   }
 }
 
-async function runTradeIntentAction(intentId, action) {
+async function runTradeIntentAction(intentId, action, triggerButton = null) {
   const label = action === "approve" ? "批准" : action === "submit" ? "提交到 IBKR" : "取消";
   if (action === "submit" && !window.confirm("确认提交到 IBKR？当前连接可以是 IB Gateway 或 TWS；请确认账户模式、订单数量和价格正确。")) return;
+  const previousText = triggerButton ? triggerButton.textContent : "";
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = action === "submit" ? "提交中..." : `${label}中...`;
+  }
+  setStatus(`${label}交易意图中...`);
   try {
     const response = await fetch("/api/broker/trade-intents/action", {
       method: "POST",
@@ -6739,6 +6745,11 @@ async function runTradeIntentAction(intentId, action) {
     setStatus(`${label}交易意图完成。`);
   } catch (error) {
     setStatus(`${label}交易意图失败：${error.message}`, true);
+  } finally {
+    if (triggerButton && triggerButton.isConnected) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = previousText;
+    }
   }
 }
 
@@ -6838,7 +6849,7 @@ if (brokerRefreshIntentsButton) {
 if (brokerIntentList) {
   brokerIntentList.addEventListener("click", (event) => {
     const button = event.target && event.target.closest ? event.target.closest(".broker-intent-action-button") : null;
-    if (button) runTradeIntentAction(button.dataset.intentId, button.dataset.action);
+    if (button) runTradeIntentAction(button.dataset.intentId, button.dataset.action, button);
   });
 }
 if (openWatchShareDialogButton) {
