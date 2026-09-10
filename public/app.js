@@ -67,6 +67,9 @@ const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
 const brokerAutoTradeInput = document.querySelector("#brokerAutoTradeInput");
 const brokerSaveSettingsButton = document.querySelector("#brokerSaveSettingsButton");
 const brokerStatusText = document.querySelector("#brokerStatusText");
+const brokerExecutionEnabledInput = document.querySelector("#brokerExecutionEnabledInput");
+const brokerSaveExecutionButton = document.querySelector("#brokerSaveExecutionButton");
+const brokerExecutionStatusText = document.querySelector("#brokerExecutionStatusText");
 const brokerRefreshAccountButton = document.querySelector("#brokerRefreshAccountButton");
 const brokerAccountStatusText = document.querySelector("#brokerAccountStatusText");
 const brokerAccountSummaryList = document.querySelector("#brokerAccountSummaryList");
@@ -6561,12 +6564,62 @@ function renderBrokerAccountState(payload) {
   renderBrokerPositions(payload.positions || []);
   renderBrokerOpenOrders(payload.openOrders || []);
   renderBrokerExecutions(payload.executions || []);
+  renderBrokerExecutionState(payload);
   if (brokerAccountStatusText) {
     const refreshed = payload.refreshedAt ? String(payload.refreshedAt).replace("T", " ").slice(0, 19) : "";
     const errorKeys = Object.keys(payload.errors || {});
     const tws = payload.tws || {};
     const mode = payload.tradingMode === "live" ? "Live" : "Paper";
     brokerAccountStatusText.textContent = `已刷新${refreshed ? `：${refreshed}` : ""} · ${mode} · ${escapeHtml(tws.host || "127.0.0.1")}:${escapeHtml(String(tws.port || ""))} · ${payload.executionEnabled ? "agent允许提交" : "agent只读/禁止提交"}${errorKeys.length ? ` · 部分读取失败：${errorKeys.join(", ")}` : ""}`;
+  }
+}
+
+function renderBrokerExecutionState(payload = {}) {
+  if (brokerExecutionEnabledInput) {
+    brokerExecutionEnabledInput.checked = Boolean(payload.executionEnabled);
+  }
+  if (brokerExecutionStatusText) {
+    const tws = payload.tws || {};
+    const target = tws.port ? ` · ${escapeHtml(tws.host || "127.0.0.1")}:${escapeHtml(String(tws.port))}` : "";
+    brokerExecutionStatusText.textContent = `${payload.executionEnabled ? "当前允许提交" : "当前禁止提交"}${target}`;
+  }
+}
+
+async function loadBrokerExecutionState() {
+  if (!brokerExecutionStatusText) return null;
+  brokerExecutionStatusText.textContent = "正在读取提交开关...";
+  try {
+    const response = await fetch("/api/broker/agent-execution", { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取 IBKR 提交开关失败。");
+    renderBrokerExecutionState(payload);
+    return payload;
+  } catch (error) {
+    brokerExecutionStatusText.textContent = escapeHtml(error.message || "读取提交开关失败。");
+    if (brokerExecutionEnabledInput) brokerExecutionEnabledInput.checked = false;
+    return null;
+  }
+}
+
+async function saveBrokerExecutionState() {
+  if (!brokerExecutionStatusText) return;
+  const enabled = Boolean(brokerExecutionEnabledInput && brokerExecutionEnabledInput.checked);
+  if (enabled && !window.confirm("确认允许提交订单到 IBKR？请只在 Paper 测试确认无误后开启。")) {
+    if (brokerExecutionEnabledInput) brokerExecutionEnabledInput.checked = false;
+    return;
+  }
+  brokerExecutionStatusText.textContent = "正在保存提交开关...";
+  try {
+    const response = await fetch("/api/broker/agent-execution", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ executionEnabled: enabled }),
+    });
+    const payload = await readJsonResponse(response, "保存 IBKR 提交开关失败。");
+    renderBrokerExecutionState(payload);
+    setStatus(`IBKR 提交开关已${payload.executionEnabled ? "开启" : "关闭"}。`);
+  } catch (error) {
+    brokerExecutionStatusText.textContent = escapeHtml(error.message || "保存提交开关失败。");
+    setStatus(`保存 IBKR 提交开关失败：${error.message}`, true);
   }
 }
 
@@ -6766,7 +6819,7 @@ if (brokerTradingModeSelect) {
     if (brokerAccountStatusText) brokerAccountStatusText.textContent = `正在切换到 ${brokerTradingModeSelect.value === "live" ? "Live" : "Paper"} 并刷新账户/订单...`;
     const saved = await saveBrokerSettings();
     if (saved) {
-      await Promise.all([loadBrokerAccountState(), loadBrokerTradeIntents()]);
+      await Promise.all([loadBrokerAccountState(), loadBrokerTradeIntents(), loadBrokerExecutionState()]);
     }
   });
 }
@@ -6774,7 +6827,10 @@ if (brokerSaveSettingsButton) {
   brokerSaveSettingsButton.addEventListener("click", () => saveBrokerSettings());
 }
 if (brokerRefreshAccountButton) {
-  brokerRefreshAccountButton.addEventListener("click", () => loadBrokerAccountState());
+  brokerRefreshAccountButton.addEventListener("click", () => Promise.all([loadBrokerAccountState(), loadBrokerExecutionState()]));
+}
+if (brokerSaveExecutionButton) {
+  brokerSaveExecutionButton.addEventListener("click", () => saveBrokerExecutionState());
 }
 if (brokerRefreshIntentsButton) {
   brokerRefreshIntentsButton.addEventListener("click", () => loadBrokerTradeIntents());
@@ -8461,6 +8517,7 @@ function setWizardPage(pageName) {
   if (nextPage === "broker") {
     loadBrokerSettings();
     loadBrokerAccountState();
+    loadBrokerExecutionState();
     loadBrokerTradeIntents();
   }
 

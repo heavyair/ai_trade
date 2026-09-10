@@ -7792,6 +7792,33 @@ async function handleBrokerAccountStateApi(req, res) {
   }
 }
 
+async function handleBrokerAgentExecutionApi(req, res) {
+  try {
+    await requireCurrentUser(req, "请先登录后操作 IBKR API 提交开关。");
+    if (req.method !== "GET" && req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!IBKR_TWS_AGENT_URL) {
+      sendJson(res, 503, { error: "IBKR API agent 未配置。请先配置 IBKR_TWS_AGENT_URL。" });
+      return;
+    }
+    if (req.method === "GET") {
+      const state = await getJson(`${IBKR_TWS_AGENT_URL}/execution`, {}, 8000, "IBKR API agent");
+      sendJson(res, 200, state);
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const state = await postJson(`${IBKR_TWS_AGENT_URL}/execution`, {
+      executionEnabled: Boolean(payload.executionEnabled),
+    }, {}, 8000);
+    sendJson(res, 200, state);
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "操作 IBKR API 提交开关失败。" });
+  }
+}
+
 async function handleApi(req, res, requestUrl) {
   try {
     const code = normalizeCode(requestUrl.searchParams.get("code") || "513100");
@@ -8133,6 +8160,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/broker/account-state") {
     handleBrokerAccountStateApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/agent-execution") {
+    handleBrokerAgentExecutionApi(req, res);
     return;
   }
 

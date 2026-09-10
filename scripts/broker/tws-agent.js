@@ -5,7 +5,7 @@ const PORT = Number(process.env.TWS_AGENT_PORT || 7077);
 const TWS_HOST = process.env.TWS_HOST || "127.0.0.1";
 const TWS_PORT = Number(process.env.TWS_PORT || 4002);
 const TWS_CLIENT_ID = Number(process.env.TWS_CLIENT_ID || 77);
-const EXECUTION_ENABLED = String(process.env.TWS_AGENT_EXECUTION_ENABLED || "").toLowerCase() === "true";
+let executionEnabled = String(process.env.TWS_AGENT_EXECUTION_ENABLED || "").toLowerCase() === "true";
 const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 10000);
 const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
 const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
@@ -461,7 +461,7 @@ async function fetchAccountState(config = defaultTwsConfig()) {
     ...payload,
     errors,
     tws,
-    executionEnabled: EXECUTION_ENABLED,
+    executionEnabled,
     refreshedAt: new Date().toISOString(),
   };
 }
@@ -516,7 +516,7 @@ async function handleTwsHealth(req, res, url) {
   const result = await checkTwsConnection(twsConfigFromUrl(url));
   sendJson(res, 200, {
     ...result,
-    executionEnabled: EXECUTION_ENABLED,
+    executionEnabled,
   });
 }
 
@@ -525,14 +525,39 @@ async function handleAccountState(req, res, url) {
   sendJson(res, 200, result);
 }
 
+async function handleExecutionState(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      ok: true,
+      executionEnabled,
+      tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  if (req.method === "POST") {
+    const body = await readBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    executionEnabled = Boolean(payload.executionEnabled);
+    sendJson(res, 200, {
+      ok: true,
+      executionEnabled,
+      tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  sendJson(res, 405, { error: "method not allowed" });
+}
+
 async function handleOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
   const order = normalizeOrderIntent(payload);
   const tws = normalizeTwsConfig(payload.connection || {});
-  if (!EXECUTION_ENABLED) {
+  if (!executionEnabled) {
     sendJson(res, 409, {
-      error: "TWS agent execution is disabled. Set TWS_AGENT_EXECUTION_ENABLED=true only after paper-account testing.",
+      error: "IBKR API agent execution is disabled. Enable order submission in the IBKR page only after paper-account testing.",
       order,
       tws,
     });
@@ -546,9 +571,9 @@ async function handleCancelOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
   const tws = normalizeTwsConfig(payload.connection || {});
-  if (!EXECUTION_ENABLED) {
+  if (!executionEnabled) {
     sendJson(res, 409, {
-      error: "TWS agent execution is disabled. Set TWS_AGENT_EXECUTION_ENABLED=true only after paper-account testing.",
+      error: "IBKR API agent execution is disabled. Enable order submission in the IBKR page only after paper-account testing.",
       tws,
     });
     return;
@@ -563,7 +588,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/health") {
       sendJson(res, 200, {
         ok: true,
-        executionEnabled: EXECUTION_ENABLED,
+        executionEnabled,
         tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
       });
       return;
@@ -574,6 +599,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/account-state") {
       await handleAccountState(req, res, url);
+      return;
+    }
+    if ((req.method === "GET" || req.method === "POST") && url.pathname === "/execution") {
+      await handleExecutionState(req, res);
       return;
     }
     if (req.method === "POST" && url.pathname === "/orders") {
@@ -592,5 +621,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`IBKR TWS agent stub listening on http://127.0.0.1:${PORT}`);
-  console.log(`TWS target ${TWS_HOST}:${TWS_PORT}, clientId=${TWS_CLIENT_ID}, execution=${EXECUTION_ENABLED ? "enabled" : "disabled"}`);
+  console.log(`TWS target ${TWS_HOST}:${TWS_PORT}, clientId=${TWS_CLIENT_ID}, execution=${executionEnabled ? "enabled" : "disabled"}`);
 });
