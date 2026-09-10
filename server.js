@@ -38,7 +38,6 @@ const VALIDATED_SEARCH_PROGRESS_FILE = process.env.VALIDATED_SEARCH_PROGRESS_FIL
 const QUALIFIED_RECHECK_PROGRESS_FILE = process.env.QUALIFIED_RECHECK_PROGRESS_FILE || path.join(DATA_DIR, "qualified-recheck-progress.json");
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
-const IBKR_TWS_TRADING_ENABLED = String(process.env.IBKR_TWS_TRADING_ENABLED || "").toLowerCase() === "true";
 const IBKR_TWS_AGENT_URL = String(process.env.IBKR_TWS_AGENT_URL || "").trim().replace(/\/+$/, "");
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
@@ -7505,7 +7504,6 @@ async function handleBrokerTwsSettingsApi(req, res) {
       const row = await loadBrokerConnection(ownerUserId);
       sendJson(res, 200, {
         connection: mapBrokerConnectionRow(row),
-        serverTradingEnabled: IBKR_TWS_TRADING_ENABLED,
         agentConfigured: Boolean(IBKR_TWS_AGENT_URL),
       });
       return;
@@ -7723,8 +7721,8 @@ async function handleTradeIntentActionApi(req, res) {
       return;
     }
     if (action === "submit") {
-      if (!IBKR_TWS_TRADING_ENABLED || !IBKR_TWS_AGENT_URL) {
-        sendJson(res, 403, { error: "服务器尚未启用 IBKR API 真实提交。请先配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL。" });
+      if (!IBKR_TWS_AGENT_URL) {
+        sendJson(res, 403, { error: "IBKR API agent 未配置。请先配置 IBKR_TWS_AGENT_URL。" });
         return;
       }
       const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);

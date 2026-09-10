@@ -6391,7 +6391,6 @@ function renderBrokerSettings(connection, meta = {}) {
   if (brokerStatusText) {
     const parts = [
       cfg.configured ? "已配置" : "未配置",
-      meta.serverTradingEnabled ? "服务器允许提交" : "服务器未开放真实提交",
       meta.agentConfigured ? "IBKR API agent 已配置" : "IBKR API agent 未配置",
     ];
     brokerStatusText.textContent = parts.join(" · ");

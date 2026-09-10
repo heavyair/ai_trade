@@ -7,8 +7,7 @@ Default first-phase flow:
 
 1. A watch creates a `trade_intents` row.
 2. The user reviews and approves the intent in the app.
-3. The app calls `POST ${IBKR_TWS_AGENT_URL}/orders` only when
-   `IBKR_TWS_TRADING_ENABLED=true`.
+3. The app calls `POST ${IBKR_TWS_AGENT_URL}/orders` after the intent is approved.
 4. The agent translates the intent into a TWS API `placeOrder` call and returns the broker
    order id/status.
 

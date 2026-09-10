@@ -1674,7 +1674,7 @@
             <button type="button" id="brokerSaveSettingsButton" class="ghost-button">保存设置</button>
             <span id="brokerStatusText" class="field-hint"></span>
           </div>
-          <div class="security-note">真实下单默认关闭。服务器必须配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL 后，已批准交易意图才允许提交到 IBKR API。</div>
+          <div class="security-note">服务端只需要配置 IBKR_TWS_AGENT_URL 连接本机 agent；是否允许提交订单由下面的本机 agent 开关控制。</div>
           <div class="admin-scan-filter-row broker-execution-row">
             <label class="compact-check"><input id="brokerExecutionEnabledInput" type="checkbox"> 允许提交订单到 IBKR</label>
             <button type="button" id="brokerSaveExecutionButton" class="ghost-button">保存提交开关</button>
@@ -1719,6 +1719,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260910-ibkr-submit-feedback"></script>
+    <script src="/app.js?v=20260910-ibkr-agent-gate"></script>
   </body>
 </html>
