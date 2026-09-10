@@ -63,11 +63,37 @@ function normalizeOrderIntent(raw) {
   };
 }
 
-function createIbClient(clientIdOffset = 0) {
-  return new IBApi({
+function defaultTwsConfig() {
+  return {
     host: TWS_HOST,
     port: TWS_PORT,
-    clientId: TWS_CLIENT_ID + clientIdOffset,
+    clientId: TWS_CLIENT_ID,
+  };
+}
+
+function normalizeTwsConfig(raw = {}) {
+  const host = String(raw.host || TWS_HOST).trim() || TWS_HOST;
+  const port = Math.round(Number(raw.port || TWS_PORT));
+  const clientId = Math.round(Number(raw.clientId || TWS_CLIENT_ID));
+  if (!(port > 0 && port <= 65535)) throw new Error("TWS port is invalid");
+  if (!(clientId >= 0 && clientId <= 999999)) throw new Error("TWS clientId is invalid");
+  return { host, port, clientId };
+}
+
+function twsConfigFromUrl(url) {
+  return normalizeTwsConfig({
+    host: url.searchParams.get("host") || TWS_HOST,
+    port: url.searchParams.get("port") || TWS_PORT,
+    clientId: url.searchParams.get("clientId") || TWS_CLIENT_ID,
+  });
+}
+
+function createIbClient(config = defaultTwsConfig(), clientIdOffset = 0) {
+  const tws = normalizeTwsConfig(config);
+  return new IBApi({
+    host: tws.host,
+    port: tws.port,
+    clientId: tws.clientId + clientIdOffset,
   });
 }
 
@@ -110,9 +136,10 @@ function normalizeContract(contract) {
   };
 }
 
-function checkTwsConnection() {
-  const ib = createIbClient();
-  const timeout = withTimeout(TWS_CONNECT_TIMEOUT_MS, `Timed out connecting to IB Gateway at ${TWS_HOST}:${TWS_PORT}`, () => disconnectQuietly(ib));
+function checkTwsConnection(config = defaultTwsConfig()) {
+  const tws = normalizeTwsConfig(config);
+  const ib = createIbClient(tws);
+  const timeout = withTimeout(TWS_CONNECT_TIMEOUT_MS, `Timed out connecting to IB Gateway at ${tws.host}:${tws.port}`, () => disconnectQuietly(ib));
 
   const operation = new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -131,7 +158,7 @@ function checkTwsConnection() {
       resolve({
         ok: true,
         serverTime: time,
-        tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+        tws,
       });
     });
     ib.once(EventName.connected, () => {
@@ -142,9 +169,10 @@ function checkTwsConnection() {
   return Promise.race([operation, timeout.promise]);
 }
 
-function submitLimitStockOrder(order) {
-  const ib = createIbClient();
-  const timeout = withTimeout(TWS_ORDER_TIMEOUT_MS, `Timed out submitting order to IB Gateway at ${TWS_HOST}:${TWS_PORT}`, () => disconnectQuietly(ib));
+function submitLimitStockOrder(order, config = defaultTwsConfig()) {
+  const tws = normalizeTwsConfig(config);
+  const ib = createIbClient(tws);
+  const timeout = withTimeout(TWS_ORDER_TIMEOUT_MS, `Timed out submitting order to IB Gateway at ${tws.host}:${tws.port}`, () => disconnectQuietly(ib));
 
   const operation = new Promise((resolve, reject) => {
     let submittedOrderId = null;
@@ -210,8 +238,8 @@ function submitLimitStockOrder(order) {
   return Promise.race([operation, timeout.promise]);
 }
 
-function fetchAccountSummary() {
-  const ib = createIbClient(1);
+function fetchAccountSummary(config = defaultTwsConfig()) {
+  const ib = createIbClient(config, 1);
   const reqId = 9101;
   const tags = [
     "NetLiquidation",
@@ -259,8 +287,8 @@ function fetchAccountSummary() {
   return Promise.race([operation, timeout.promise]);
 }
 
-function fetchPositions() {
-  const ib = createIbClient(2);
+function fetchPositions(config = defaultTwsConfig()) {
+  const ib = createIbClient(config, 2);
   const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR positions", () => disconnectQuietly(ib));
 
   const operation = new Promise((resolve, reject) => {
@@ -299,8 +327,8 @@ function fetchPositions() {
   return Promise.race([operation, timeout.promise]);
 }
 
-function fetchOpenOrders() {
-  const ib = createIbClient(3);
+function fetchOpenOrders(config = defaultTwsConfig()) {
+  const ib = createIbClient(config, 3);
   const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR open orders", () => disconnectQuietly(ib));
 
   const operation = new Promise((resolve, reject) => {
@@ -358,8 +386,8 @@ function fetchOpenOrders() {
   return Promise.race([operation, timeout.promise]);
 }
 
-function fetchExecutions() {
-  const ib = createIbClient(4);
+function fetchExecutions(config = defaultTwsConfig()) {
+  const ib = createIbClient(config, 4);
   const reqId = 9102;
   const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR executions", () => disconnectQuietly(ib));
 
@@ -408,12 +436,13 @@ function fetchExecutions() {
   return Promise.race([operation, timeout.promise]);
 }
 
-async function fetchAccountState() {
+async function fetchAccountState(config = defaultTwsConfig()) {
+  const tws = normalizeTwsConfig(config);
   const sections = await Promise.allSettled([
-    fetchAccountSummary(),
-    fetchPositions(),
-    fetchOpenOrders(),
-    fetchExecutions(),
+    fetchAccountSummary(tws),
+    fetchPositions(tws),
+    fetchOpenOrders(tws),
+    fetchExecutions(tws),
   ]);
   const sectionNames = ["summary", "positions", "openOrders", "executions"];
   const payload = {};
@@ -431,16 +460,17 @@ async function fetchAccountState() {
     ok: true,
     ...payload,
     errors,
-    tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+    tws,
     executionEnabled: EXECUTION_ENABLED,
     refreshedAt: new Date().toISOString(),
   };
 }
 
-function cancelOrder(orderId) {
+function cancelOrder(orderId, config = defaultTwsConfig()) {
   const numericOrderId = Math.floor(Number(orderId));
   if (!(numericOrderId > 0)) throw new Error("orderId must be positive");
-  const ib = createIbClient();
+  const tws = normalizeTwsConfig(config);
+  const ib = createIbClient(tws);
   const timeout = withTimeout(TWS_CANCEL_TIMEOUT_MS, `Timed out cancelling order ${numericOrderId} at IB Gateway`, () => disconnectQuietly(ib));
 
   const operation = new Promise((resolve, reject) => {
@@ -482,16 +512,16 @@ function cancelOrder(orderId) {
   return Promise.race([operation, timeout.promise]);
 }
 
-async function handleTwsHealth(req, res) {
-  const result = await checkTwsConnection();
+async function handleTwsHealth(req, res, url) {
+  const result = await checkTwsConnection(twsConfigFromUrl(url));
   sendJson(res, 200, {
     ...result,
     executionEnabled: EXECUTION_ENABLED,
   });
 }
 
-async function handleAccountState(req, res) {
-  const result = await fetchAccountState();
+async function handleAccountState(req, res, url) {
+  const result = await fetchAccountState(twsConfigFromUrl(url));
   sendJson(res, 200, result);
 }
 
@@ -499,29 +529,31 @@ async function handleOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
   const order = normalizeOrderIntent(payload);
+  const tws = normalizeTwsConfig(payload.connection || {});
   if (!EXECUTION_ENABLED) {
     sendJson(res, 409, {
       error: "TWS agent execution is disabled. Set TWS_AGENT_EXECUTION_ENABLED=true only after paper-account testing.",
       order,
-      tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+      tws,
     });
     return;
   }
-  const brokerOrder = await submitLimitStockOrder(order);
+  const brokerOrder = await submitLimitStockOrder(order, tws);
   sendJson(res, 200, brokerOrder);
 }
 
 async function handleCancelOrder(req, res) {
   const body = await readBody(req);
   const payload = body ? JSON.parse(body) : {};
+  const tws = normalizeTwsConfig(payload.connection || {});
   if (!EXECUTION_ENABLED) {
     sendJson(res, 409, {
       error: "TWS agent execution is disabled. Set TWS_AGENT_EXECUTION_ENABLED=true only after paper-account testing.",
-      tws: { host: TWS_HOST, port: TWS_PORT, clientId: TWS_CLIENT_ID },
+      tws,
     });
     return;
   }
-  const result = await cancelOrder(payload.orderId);
+  const result = await cancelOrder(payload.orderId, tws);
   sendJson(res, 200, result);
 }
 
@@ -537,11 +569,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/tws-health") {
-      await handleTwsHealth(req, res);
+      await handleTwsHealth(req, res, url);
       return;
     }
     if (req.method === "GET" && url.pathname === "/account-state") {
-      await handleAccountState(req, res);
+      await handleAccountState(req, res, url);
       return;
     }
     if (req.method === "POST" && url.pathname === "/orders") {

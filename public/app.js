@@ -6282,9 +6282,11 @@ async function saveBrokerSettings() {
     const payload = await readJsonResponse(response, "保存 IBKR/TWS 设置失败。");
     renderBrokerSettings(payload.connection, {});
     setStatus("IBKR/TWS 设置已保存。");
+    return payload.connection;
   } catch (error) {
     if (brokerStatusText) brokerStatusText.textContent = "";
     setStatus(`保存 IBKR/TWS 设置失败：${error.message}`, true);
+    return null;
   }
 }
 
@@ -6416,7 +6418,9 @@ function renderBrokerAccountState(payload) {
   if (brokerAccountStatusText) {
     const refreshed = payload.refreshedAt ? String(payload.refreshedAt).replace("T", " ").slice(0, 19) : "";
     const errorKeys = Object.keys(payload.errors || {});
-    brokerAccountStatusText.textContent = `已刷新${refreshed ? `：${refreshed}` : ""} · ${payload.executionEnabled ? "agent允许提交" : "agent只读/禁止提交"}${errorKeys.length ? ` · 部分读取失败：${errorKeys.join(", ")}` : ""}`;
+    const tws = payload.tws || {};
+    const mode = payload.tradingMode === "live" ? "Live" : "Paper";
+    brokerAccountStatusText.textContent = `已刷新${refreshed ? `：${refreshed}` : ""} · ${mode} · ${escapeHtml(tws.host || "127.0.0.1")}:${escapeHtml(String(tws.port || ""))} · ${payload.executionEnabled ? "agent允许提交" : "agent只读/禁止提交"}${errorKeys.length ? ` · 部分读取失败：${errorKeys.join(", ")}` : ""}`;
   }
 }
 
@@ -6609,9 +6613,14 @@ if (watchShareCodeUsers) {
   });
 }
 if (brokerTradingModeSelect) {
-  brokerTradingModeSelect.addEventListener("change", () => {
+  brokerTradingModeSelect.addEventListener("change", async () => {
     if (brokerPortInput && (!brokerPortInput.value || brokerPortInput.value === "7496" || brokerPortInput.value === "7497" || brokerPortInput.value === "4001" || brokerPortInput.value === "4002")) {
       brokerPortInput.value = brokerTradingModeSelect.value === "live" ? "4001" : "4002";
+    }
+    if (brokerAccountStatusText) brokerAccountStatusText.textContent = `正在切换到 ${brokerTradingModeSelect.value === "live" ? "Live" : "Paper"} 并刷新账户/订单...`;
+    const saved = await saveBrokerSettings();
+    if (saved) {
+      await Promise.all([loadBrokerAccountState(), loadBrokerTradeIntents()]);
     }
   });
 }

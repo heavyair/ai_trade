@@ -7390,6 +7390,24 @@ function mapTradeIntentRow(row) {
   };
 }
 
+function brokerConnectionAgentParams(connection) {
+  const row = connection || {};
+  return {
+    host: String(row.host || "127.0.0.1").trim() || "127.0.0.1",
+    port: Number(row.port) || (row.trading_mode === "live" ? 4001 : 4002),
+    clientId: Number(row.client_id) || 77,
+  };
+}
+
+function brokerAgentUrl(pathname, connection) {
+  const url = new URL(`${IBKR_TWS_AGENT_URL}${pathname}`);
+  const params = brokerConnectionAgentParams(connection);
+  url.searchParams.set("host", params.host);
+  url.searchParams.set("port", String(params.port));
+  url.searchParams.set("clientId", String(params.clientId));
+  return url;
+}
+
 async function loadBrokerConnection(ownerUserId) {
   const result = await dbQuery(`
     SELECT * FROM broker_connections
@@ -7651,7 +7669,11 @@ async function handleTradeIntentActionApi(req, res) {
         sendJson(res, 400, { error: "只有已批准的交易意图可以提交。" });
         return;
       }
-      const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, { intent: mapTradeIntentRow(intent) });
+      const connection = await loadBrokerConnection(ownerUserId);
+      const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
+        intent: mapTradeIntentRow(intent),
+        connection: brokerConnectionAgentParams(connection),
+      });
       const brokerOrderId = randomId("border");
       await dbQuery(`
         INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
@@ -7691,7 +7713,7 @@ async function handleBrokerAccountStateApi(req, res) {
     }
     const connection = await loadBrokerConnection(ownerUserId);
     const configuredAccountId = String(connection && connection.account_id ? connection.account_id : "").trim();
-    const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/account-state`, {}, 20000, "TWS agent");
+    const accountState = await getJson(brokerAgentUrl("/account-state", connection), {}, 20000, "TWS agent");
     if (configuredAccountId) {
       accountState.summary = (accountState.summary || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
       accountState.positions = (accountState.positions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
@@ -7699,6 +7721,7 @@ async function handleBrokerAccountStateApi(req, res) {
       accountState.executions = (accountState.executions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
     }
     accountState.configuredAccountId = configuredAccountId;
+    accountState.tradingMode = connection && connection.trading_mode ? connection.trading_mode : "paper";
     sendJson(res, 200, accountState);
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "读取 IBKR 账户状态失败。" });
