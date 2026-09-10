@@ -5415,23 +5415,153 @@ function formatWatchAlertFrequency(minutes) {
   return `每 ${minutes} 分钟`;
 }
 
-// 交易对象的字段形状（side/price/date/reason/label）跟 renderScreenMatchesTable 消费的
-// 选股匹配记录一致（两边都来自 engine.js 的回测 trades 数组），所以列结构直接照抄那份。
-function renderWatchAlertOrdersTable(trades) {
+function getWatchCurrentPrice(watch) {
+  const price = Number(watch && watch.lastPrice);
+  if (Number.isFinite(price) && price > 0) return price;
+  const trades = Array.isArray(watch && watch.accountTrades) ? watch.accountTrades : [];
+  for (let i = trades.length - 1; i >= 0; i -= 1) {
+    const tradePrice = Number(trades[i].price);
+    if (Number.isFinite(tradePrice) && tradePrice > 0) return tradePrice;
+  }
+  return null;
+}
+
+function getWatchInitialCash(watch) {
+  const equity = Number(watch && watch.accountEquity);
+  const returnRate = Number(watch && watch.accountReturnRate);
+  if (Number.isFinite(equity) && Number.isFinite(returnRate) && returnRate > -99.999) {
+    return equity / (1 + returnRate / 100);
+  }
+  const configCash = Number(watch && watch.presetConfig && watch.presetConfig.initialCash);
+  return Number.isFinite(configCash) && configCash > 0 ? configCash : 2000000;
+}
+
+function buildWatchTradeLedger(watch) {
+  const trades = Array.isArray(watch && watch.accountTrades) ? watch.accountTrades : [];
+  const currentPrice = getWatchCurrentPrice(watch);
+  const lots = [];
+  const rows = trades.map((trade, index) => ({
+    trade,
+    index,
+    remainingShares: 0,
+    realizedProfit: null,
+  }));
+  let realizedProfit = 0;
+  let totalFees = 0;
+
+  trades.forEach((trade, index) => {
+    const side = String(trade.side || "").toLowerCase();
+    const shares = Math.max(0, Number(trade.shares) || 0);
+    const price = Number(trade.price);
+    const fee = Math.max(0, Number(trade.fee) || 0);
+    if (!shares || !Number.isFinite(price)) return;
+    totalFees += fee;
+    if (side === "buy") {
+      lots.push({ tradeIndex: index, price, remainingShares: shares });
+      rows[index].remainingShares = shares;
+      return;
+    }
+    if (side === "sell") {
+      let remainingToSell = shares;
+      let sellProfit = -fee;
+      for (const lot of lots) {
+        if (remainingToSell <= 0) break;
+        const matched = Math.min(lot.remainingShares, remainingToSell);
+        if (matched <= 0) continue;
+        sellProfit += (price - lot.price) * matched;
+        lot.remainingShares -= matched;
+        remainingToSell -= matched;
+      }
+      realizedProfit += sellProfit;
+      rows[index].realizedProfit = sellProfit;
+    }
+  });
+
+  lots.forEach((lot) => {
+    if (rows[lot.tradeIndex]) rows[lot.tradeIndex].remainingShares = lot.remainingShares;
+  });
+
+  const openShares = lots.reduce((sum, lot) => sum + lot.remainingShares, 0);
+  const openCost = lots.reduce((sum, lot) => sum + lot.remainingShares * lot.price, 0);
+  const averageOpenPrice = openShares > 0 ? openCost / openShares : null;
+  const unrealizedProfit = currentPrice !== null
+    ? lots.reduce((sum, lot) => sum + (currentPrice - lot.price) * lot.remainingShares, 0)
+    : null;
+  const accountProfit = Number(watch && watch.accountEquity) - getWatchInitialCash(watch);
+  const totalProfit = Number.isFinite(accountProfit)
+    ? accountProfit
+    : (unrealizedProfit !== null ? realizedProfit + unrealizedProfit - totalFees : null);
+
+  return {
+    rows,
+    totalOrders: trades.length,
+    openShares,
+    averageOpenPrice,
+    currentPrice,
+    realizedProfit,
+    unrealizedProfit,
+    totalProfit,
+  };
+}
+
+function formatWatchProfit(value) {
+  if (!Number.isFinite(value)) return '<span class="field-hint">--</span>';
+  const className = value >= 0 ? "up" : "down";
+  return `<span class="${className}">${formatMoney(value)}</span>`;
+}
+
+function renderWatchAlertOrderSummary(watch) {
+  if (watch.indexCode) return "";
+  const ledger = buildWatchTradeLedger(watch);
+  const currentPriceText = ledger.currentPrice !== null ? formatPrice(ledger.currentPrice) : "--";
+  const priceDate = watch.lastPriceDate ? ` · 价格 ${escapeHtml(watch.lastPriceDate)}` : "";
+  return `
+    <div class="watch-order-summary">
+      <span>订单 ${ledger.totalOrders} 笔</span>
+      <span>未平仓 ${Number.isFinite(ledger.openShares) ? ledger.openShares.toFixed(0) : "--"} 股</span>
+      <span>平均开仓 ${ledger.averageOpenPrice !== null ? formatPrice(ledger.averageOpenPrice) : "--"}</span>
+      <span>当前价 ${currentPriceText}${priceDate}</span>
+      <span>浮动盈利 ${ledger.unrealizedProfit !== null ? formatWatchProfit(ledger.unrealizedProfit) : '<span class="field-hint">--</span>'}</span>
+      <span>总盈利 ${formatWatchProfit(ledger.totalProfit)}</span>
+    </div>
+  `;
+}
+
+// 交易对象来自 engine.js 的回测 trades 数组；这里额外用最新日线价计算每笔订单的未平仓盈亏。
+function renderWatchAlertOrdersTable(watch) {
+  const trades = Array.isArray(watch && watch.accountTrades) ? watch.accountTrades : [];
   if (!Array.isArray(trades) || trades.length === 0) {
     return '<div class="ranking-empty">暂无模拟订单。</div>';
   }
-  const rows = trades.map((t) => `
+  const ledger = buildWatchTradeLedger(watch);
+  const currentPrice = ledger.currentPrice;
+  const rows = ledger.rows.map(({ trade: t, remainingShares, realizedProfit }) => {
+    const side = String(t.side || "").toLowerCase();
+    const shares = Math.max(0, Number(t.shares) || 0);
+    const price = Number(t.price);
+    const openProfit = side === "buy" && currentPrice !== null && Number.isFinite(price)
+      ? (currentPrice - price) * remainingShares
+      : null;
+    const profit = side === "sell" ? realizedProfit : openProfit;
+    const status = side === "buy"
+      ? (remainingShares <= 0 ? "已平仓" : remainingShares < shares ? `部分平仓 ${remainingShares.toFixed(0)}股` : "未平仓")
+      : "已成交";
+    return `
     <tr>
-      <td class="${t.side === "buy" ? "up" : "down"}">${t.side === "buy" ? "买入" : "卖出"}</td>
-      <td>${Number.isFinite(t.price) ? t.price.toFixed(2) : escapeHtml(t.price)}</td>
+      <td>${escapeHtml(status)}</td>
+      <td>${Number.isFinite(price) ? formatPrice(price) : escapeHtml(t.price)}</td>
+      <td>${Number.isFinite(shares) ? shares.toFixed(0) : "--"}</td>
+      <td class="${side === "buy" ? "up" : "down"}">${side === "buy" ? "买入" : "卖出"}</td>
+      <td>${currentPrice !== null ? formatPrice(currentPrice) : "--"}</td>
+      <td>${profit !== null ? formatWatchProfit(profit) : '<span class="field-hint">--</span>'}</td>
       <td>${escapeHtml(t.date || "")}</td>
       <td>${escapeHtml(t.reason || t.label || "")}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
   return `
     <table class="admin-ranking-table">
-      <thead><tr><th>方向</th><th>价格</th><th>日期</th><th>原因</th></tr></thead>
+      <thead><tr><th>订单状态</th><th>成交价</th><th>数量</th><th>方向</th><th>目前价格</th><th>盈利数额</th><th>日期</th><th>下单原因</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -5451,8 +5581,10 @@ function formatWatchAlertAccountStats(watch) {
   const returnClass = Number.isFinite(returnRate) ? (returnRate >= 0 ? "up" : "down") : "";
   const startDate = String(watch.createdAt || "").slice(0, 10);
   const updatedDate = String(watch.accountUpdatedAt || watch.lastCheckedAt || "").slice(0, 10);
+  const lastPrice = Number(watch.lastPrice);
   return `
-    <span>账户期 ${escapeHtml(startDate || "设置日")} 起${updatedDate ? ` · 更新 ${escapeHtml(updatedDate)}` : ""}</span>
+    <span>账户期 ${escapeHtml(startDate || "设置日")} 起${updatedDate ? ` · 账户更新 ${escapeHtml(updatedDate)}` : ""}</span>
+    <span>价格数据 ${watch.lastPriceDate ? escapeHtml(watch.lastPriceDate) : "--"}${Number.isFinite(lastPrice) ? ` · ${formatPrice(lastPrice)}` : ""}</span>
     <span>现金 <strong>${Number.isFinite(cash) ? formatMoney(cash) : "--"}</strong></span>
     <span>持仓 ${Number.isFinite(shares) ? `${shares.toFixed(0)}股` : "--"}${Number.isFinite(positionRatio) ? ` · ${positionRatio.toFixed(1)}%` : ""}</span>
     <span>持仓市值 ${positionValue !== null ? formatMoney(positionValue) : "--"}</span>
@@ -5560,10 +5692,11 @@ function renderWatchAlertEntry(watch, options = {}) {
       ${followersPart}
       ${sharedModelTextPart}
       <div class="admin-progress-banner-stats">${formatWatchAlertAccountStats(watch)}</div>
+      ${renderWatchAlertOrderSummary(watch)}
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
       </div>
-      ${renderWatchAlertOrdersTable(watch.accountTrades)}
+      ${renderWatchAlertOrdersTable(watch)}
     `;
   return `
     <details class="admin-scan-details" data-watch-id="${escapeHtml(watch.id)}">
@@ -5622,6 +5755,7 @@ const watchAlertTableColumns = [
   { key: "createdAt", label: "设置日期", type: "date" },
   { key: "cash", label: "资金", type: "number" },
   { key: "shares", label: "仓位", type: "number" },
+  { key: "currentPrice", label: "当前价", type: "number" },
   { key: "positionValue", label: "持仓市值", type: "number" },
   { key: "equity", label: "账户权益", type: "number" },
   { key: "returnRate", label: "回报", type: "number" },
@@ -5636,6 +5770,7 @@ function getWatchAlertSortValue(watch, key) {
   if (key === "createdAt") return Date.parse(watch.createdAt || "") || 0;
   if (key === "cash") return Number(watch.accountCash);
   if (key === "shares") return Number(watch.accountShares);
+  if (key === "currentPrice") return Number(watch.lastPrice);
   if (key === "positionValue") {
     const equity = Number(watch.accountEquity);
     const cash = Number(watch.accountCash);
@@ -5700,10 +5835,11 @@ function renderWatchAlertTradesCell(watch) {
   return `
     <details class="watch-trade-details" data-watch-id="${escapeHtml(watch.id)}">
       <summary>${trades.length ? `${trades.length} 笔` : "暂无交易"}</summary>
+      ${renderWatchAlertOrderSummary(watch)}
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
       </div>
-      ${renderWatchAlertOrdersTable(trades)}
+      ${renderWatchAlertOrdersTable(watch)}
     </details>
   `;
 }
@@ -5730,7 +5866,10 @@ function renderWatchAlertTableRow(watch) {
   const positionRatio = Number(watch.accountPositionRatio);
   const returnRate = Number(watch.accountReturnRate);
   const annualizedReturn = Number(watch.accountAnnualizedReturn);
-  const positionValue = Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : null;
+  const currentPrice = getWatchCurrentPrice(watch);
+  const positionValue = Number.isFinite(shares) && currentPrice !== null
+    ? shares * currentPrice
+    : (Number.isFinite(equity) && Number.isFinite(cash) ? Math.max(0, equity - cash) : null);
   const returnClass = Number.isFinite(returnRate) ? (returnRate >= 0 ? "up" : "down") : "";
   const signalCell = isIndexWatch
     ? (watch.lastSignalDate ? `${escapeHtml(watch.lastSignalDate)}<br><span class="up">有信号</span>` : '<span class="field-hint">暂无信号</span>')
@@ -5751,9 +5890,10 @@ function renderWatchAlertTableRow(watch) {
       <td class="watch-table-model-cell">${modelCell}${sharedTextPart}</td>
       <td>${targetCell}</td>
       <td>${marketLabel}</td>
-      <td>${escapeHtml(String(watch.createdAt || "").slice(0, 10) || "--")}<br><span class="field-hint">${watch.accountUpdatedAt ? `更新 ${escapeHtml(String(watch.accountUpdatedAt).slice(0, 10))}` : ""}</span></td>
+      <td>${escapeHtml(String(watch.createdAt || "").slice(0, 10) || "--")}<br><span class="field-hint">${watch.accountUpdatedAt ? `账户 ${escapeHtml(String(watch.accountUpdatedAt).slice(0, 10))}` : ""}${watch.lastPriceDate ? `<br>价格 ${escapeHtml(watch.lastPriceDate)}` : ""}</span></td>
       <td>${Number.isFinite(cash) ? formatMoney(cash) : "--"}</td>
       <td>${Number.isFinite(shares) ? `${shares.toFixed(0)}股` : "--"}<br><span class="field-hint">${Number.isFinite(positionRatio) ? `${positionRatio.toFixed(1)}%` : ""}</span></td>
+      <td>${currentPrice !== null ? formatPrice(currentPrice) : "--"}</td>
       <td>${positionValue !== null ? formatMoney(positionValue) : "--"}</td>
       <td>${Number.isFinite(equity) ? formatMoney(equity) : "--"}</td>
       <td class="${returnClass}">${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</td>

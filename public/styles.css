@@ -2737,7 +2737,7 @@ textarea:focus {
 }
 
 .watch-alerts-dialog .admin-ranking-table {
-  min-width: 1280px;
+  min-width: 1380px;
 }
 
 .watch-alerts-dialog .admin-ranking-table th {
@@ -2780,8 +2780,26 @@ textarea:focus {
   margin: 8px 0;
 }
 
+.watch-order-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.watch-order-summary span {
+  white-space: nowrap;
+}
+
+.watch-trade-details {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .watch-table-trades-cell .admin-ranking-table {
-  min-width: 420px;
+  min-width: 860px;
 }
 
 .watch-market-tabs {

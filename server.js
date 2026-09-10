@@ -4110,6 +4110,8 @@ function mapWatchAlertRow(row, {
     accountRowsScored: row.account_rows_scored || 0,
     accountTrades: isFollowerView ? rawTrades.map((trade) => ({ ...trade, reason: "" })) : rawTrades,
     accountUpdatedAt: row.account_updated_at ? new Date(row.account_updated_at).toISOString() : "",
+    lastPriceDate: row.last_price_date ? new Date(row.last_price_date).toISOString().slice(0, 10) : "",
+    lastPrice: row.last_price !== null && row.last_price !== undefined ? Number(row.last_price) : null,
     // Compatibility fields plus the newer fixed-start daily validation state. The newer state is
     // informational and does not automatically stop an active watch.
     isInvalid: Boolean(row.is_invalid),
@@ -4189,10 +4191,24 @@ async function handleWatchAlertsApi(req, res) {
           mvs.incremental_trades AS watch_validation_incremental_trades,
           mvs.target_percent AS watch_validation_target_percent,
           mvs.last_checked_at AS watch_validation_last_checked_at,
-          mvs.last_error AS watch_validation_last_error
+          mvs.last_error AS watch_validation_last_error,
+          latest_price.trade_date AS last_price_date,
+          latest_price.close AS last_price
         FROM watch_alerts
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
+        LEFT JOIN LATERAL (
+          SELECT dp.trade_date, dp.close
+          FROM daily_prices dp
+          WHERE dp.symbol = watch_alerts.symbol
+            AND dp.market = CASE
+              WHEN watch_alerts.market = 'CN' AND watch_alerts.symbol ~ '^[569]' THEN '1'
+              WHEN watch_alerts.market = 'CN' THEN '0'
+              ELSE watch_alerts.market
+            END
+          ORDER BY dp.trade_date DESC
+          LIMIT 1
+        ) latest_price ON watch_alerts.symbol IS NOT NULL
         WHERE watch_alerts.owner_user_id = $1
         ORDER BY watch_alerts.created_at DESC
       `, [ownerUserId]);
@@ -4245,11 +4261,25 @@ async function handleWatchAlertsApi(req, res) {
           mvs.incremental_trades AS watch_validation_incremental_trades,
           mvs.target_percent AS watch_validation_target_percent,
           mvs.last_checked_at AS watch_validation_last_checked_at,
-          mvs.last_error AS watch_validation_last_error
+          mvs.last_error AS watch_validation_last_error,
+          latest_price.trade_date AS last_price_date,
+          latest_price.close AS last_price
         FROM watch_alert_followers waf
         JOIN watch_alerts ON watch_alerts.id = waf.watch_id
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
+        LEFT JOIN LATERAL (
+          SELECT dp.trade_date, dp.close
+          FROM daily_prices dp
+          WHERE dp.symbol = watch_alerts.symbol
+            AND dp.market = CASE
+              WHEN watch_alerts.market = 'CN' AND watch_alerts.symbol ~ '^[569]' THEN '1'
+              WHEN watch_alerts.market = 'CN' THEN '0'
+              ELSE watch_alerts.market
+            END
+          ORDER BY dp.trade_date DESC
+          LIMIT 1
+        ) latest_price ON watch_alerts.symbol IS NOT NULL
         WHERE waf.follower_user_id = $1
         ORDER BY waf.created_at DESC
       `, [ownerUserId]);
@@ -4259,12 +4289,26 @@ async function handleWatchAlertsApi(req, res) {
         SELECT watch_alerts.*, sp.numeric_id AS preset_numeric_id, sp.label AS preset_current_label,
           sp.config AS preset_config, sp.strategy_type AS preset_strategy_type, sp.owner_user_id AS preset_owner_user_id,
           sp.original_text AS preset_original_text, sp.model_text AS preset_model_text,
-          wsc.allow_view_params, wsc.allow_copy
+          wsc.allow_view_params, wsc.allow_copy,
+          latest_price.trade_date AS last_price_date,
+          latest_price.close AS last_price
         FROM watch_share_code_users wsu
         JOIN watch_share_codes wsc ON wsc.id = wsu.share_code_id AND wsc.enabled = TRUE
         JOIN watch_alerts ON watch_alerts.owner_user_id = wsc.owner_user_id
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
+        LEFT JOIN LATERAL (
+          SELECT dp.trade_date, dp.close
+          FROM daily_prices dp
+          WHERE dp.symbol = watch_alerts.symbol
+            AND dp.market = CASE
+              WHEN watch_alerts.market = 'CN' AND watch_alerts.symbol ~ '^[569]' THEN '1'
+              WHEN watch_alerts.market = 'CN' THEN '0'
+              ELSE watch_alerts.market
+            END
+          ORDER BY dp.trade_date DESC
+          LIMIT 1
+        ) latest_price ON watch_alerts.symbol IS NOT NULL
         WHERE wsu.viewer_user_id = $1
         ORDER BY wsc.updated_at DESC, watch_alerts.created_at DESC
       `, [ownerUserId]);
