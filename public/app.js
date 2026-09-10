@@ -5543,12 +5543,8 @@ function renderWatchAlertOrdersTable(watch) {
       ? (currentPrice - price) * remainingShares
       : null;
     const profit = side === "sell" ? realizedProfit : openProfit;
-    const status = side === "buy"
-      ? (remainingShares <= 0 ? "已平仓" : remainingShares < shares ? `部分平仓 ${remainingShares.toFixed(0)}股` : "未平仓")
-      : "已成交";
     return `
     <tr>
-      <td>${escapeHtml(status)}</td>
       <td>${Number.isFinite(price) ? formatPrice(price) : escapeHtml(t.price)}</td>
       <td>${Number.isFinite(shares) ? shares.toFixed(0) : "--"}</td>
       <td class="${side === "buy" ? "up" : "down"}">${side === "buy" ? "买入" : "卖出"}</td>
@@ -5561,7 +5557,7 @@ function renderWatchAlertOrdersTable(watch) {
   }).join("");
   return `
     <table class="admin-ranking-table">
-      <thead><tr><th>订单状态</th><th>成交价</th><th>数量</th><th>方向</th><th>目前价格</th><th>盈利数额</th><th>日期</th><th>下单原因</th></tr></thead>
+      <thead><tr><th>成交价</th><th>数量</th><th>方向</th><th>目前价格</th><th>盈利数额</th><th>日期</th><th>下单原因</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   `;
@@ -5827,20 +5823,30 @@ function renderWatchAlertActionsCell(watch) {
   `;
 }
 
-function renderWatchAlertTradesCell(watch) {
+function renderWatchAlertOrderDetailRow(watch, colspan) {
   if (watch.indexCode) {
-    return `<span class="field-hint">${watch.lastSignalReason ? escapeHtml(watch.lastSignalReason) : "指数盯盘不模拟账户。"}</span>`;
+    return `
+      <tr class="watch-order-detail-row">
+        <td colspan="${colspan}">
+          <span class="field-hint">${watch.lastSignalReason ? escapeHtml(watch.lastSignalReason) : "指数盯盘不模拟账户。"}</span>
+        </td>
+      </tr>
+    `;
   }
   const trades = Array.isArray(watch.accountTrades) ? watch.accountTrades : [];
   return `
+    <tr class="watch-order-detail-row">
+      <td colspan="${colspan}">
     <details class="watch-trade-details" data-watch-id="${escapeHtml(watch.id)}">
-      <summary>${trades.length ? `${trades.length} 笔` : "暂无交易"}</summary>
+      <summary>订单信息：${trades.length ? `${trades.length} 笔` : "暂无交易"}</summary>
       ${renderWatchAlertOrderSummary(watch)}
       <div class="trade-price-wrap trade-price-wrap--compact">
         <svg class="watch-alert-chart-svg" role="img" aria-label="盯盘期间价格走势与买卖点"></svg>
       </div>
       ${renderWatchAlertOrdersTable(watch)}
     </details>
+      </td>
+    </tr>
   `;
 }
 
@@ -5885,6 +5891,7 @@ function renderWatchAlertTableRow(watch) {
   const sharedTextPart = isSharedCodeRow
     ? `<div class="field-hint">模型文字：${escapeHtml(watch.presetModelText || watch.presetOriginalText || "暂无文字说明。")}</div>`
     : "";
+  const colspan = watchAlertTableColumns.length + 1;
   return `
     <tr>
       <td class="watch-table-model-cell">${modelCell}${sharedTextPart}</td>
@@ -5899,9 +5906,9 @@ function renderWatchAlertTableRow(watch) {
       <td class="${returnClass}">${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</td>
       <td class="${returnClass}">${Number.isFinite(annualizedReturn) ? `${annualizedReturn.toFixed(1)}%` : "--"}</td>
       <td>${signalCell}<br>${statusBits}</td>
-      <td class="watch-table-trades-cell">${renderWatchAlertTradesCell(watch)}</td>
       <td class="admin-row-actions">${renderWatchAlertActionsCell(watch)}${followersPart}</td>
     </tr>
+    ${renderWatchAlertOrderDetailRow(watch, colspan)}
   `;
 }
 
@@ -5974,7 +5981,6 @@ function renderWatchAlertsList() {
       <thead>
         <tr>
           ${watchAlertTableColumns.map(renderWatchAlertSortHeader).join("")}
-          <th>交易记录</th>
           <th>操作</th>
         </tr>
       </thead>
