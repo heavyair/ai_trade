@@ -37,12 +37,20 @@ function readBody(req, limit = 1024 * 1024) {
   });
 }
 
+function normalizeUsStockLimitPrice(value) {
+  const price = Number(value);
+  if (!(price > 0)) return NaN;
+  const tick = price >= 1 ? 0.01 : 0.0001;
+  const decimals = price >= 1 ? 2 : 4;
+  return Number((Math.round(price / tick) * tick).toFixed(decimals));
+}
+
 function normalizeOrderIntent(raw) {
   const intent = raw && raw.intent ? raw.intent : {};
   const side = String(intent.side || "").toUpperCase();
   const symbol = String(intent.symbol || "").trim().toUpperCase();
   const quantity = Math.floor(Number(intent.quantity) || 0);
-  const limitPrice = Number(intent.limitPrice);
+  const limitPrice = normalizeUsStockLimitPrice(intent.limitPrice);
   const orderType = String(intent.orderType || "LMT").trim().toUpperCase();
   const timeInForce = String(intent.timeInForce || "DAY").trim().toUpperCase();
   if (side !== "BUY" && side !== "SELL") throw new Error("side must be buy or sell");
