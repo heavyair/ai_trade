@@ -5642,19 +5642,19 @@ function postJson(url, payload, headers = {}, timeoutMs = 8000) {
           try {
             parsed = JSON.parse(responseBody);
           } catch (error) {
-            reject(new Error("TWS agent 返回的数据不是有效 JSON。"));
+            reject(new Error("IBKR API agent 返回的数据不是有效 JSON。"));
             return;
           }
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(parsed.error || `TWS agent 返回 HTTP ${response.statusCode}`));
+          reject(new Error(parsed.error || `IBKR API agent 返回 HTTP ${response.statusCode}`));
           return;
         }
         resolve(parsed);
       });
     });
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error("TWS agent 请求超时。"));
+      req.destroy(new Error("IBKR API agent 请求超时。"));
     });
     req.on("error", reject);
     req.write(body);
@@ -7483,7 +7483,7 @@ async function loadBrokerConnection(ownerUserId) {
 
 function validateTradeIntentRisk(intent, connection) {
   const messages = [];
-  if (intent.market !== "US") messages.push("第一版只允许美股通过 IBKR/TWS 下单。");
+  if (intent.market !== "US") messages.push("第一版只允许美股通过 IBKR API 下单。");
   if (intent.side !== "buy" && intent.side !== "sell") messages.push("交易方向必须是买入或卖出。");
   if (!(intent.quantity > 0)) messages.push("交易数量必须大于 0。");
   if (!(intent.limitPrice > 0)) messages.push("限价必须大于 0。");
@@ -7499,7 +7499,7 @@ function validateTradeIntentRisk(intent, connection) {
 
 async function handleBrokerTwsSettingsApi(req, res) {
   try {
-    const user = await requireCurrentUser(req, "请先登录后保存 IBKR/TWS 设置。");
+    const user = await requireCurrentUser(req, "请先登录后保存 IBKR API 设置。");
     const ownerUserId = userIdForEmail(user.email);
     if (req.method === "GET") {
       const row = await loadBrokerConnection(ownerUserId);
@@ -7524,7 +7524,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
     const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? 4002 : 4001));
     const clientId = Math.round(toFiniteNumber(payload.clientId, 77));
     if (port <= 0 || port > 65535) {
-      sendJson(res, 400, { error: "TWS 端口不合法。" });
+      sendJson(res, 400, { error: "IBKR API 端口不合法。" });
       return;
     }
     const id = randomId("broker");
@@ -7563,7 +7563,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
     ]);
     sendJson(res, 200, { connection: mapBrokerConnectionRow(result.rows[0]) });
   } catch (error) {
-    sendJson(res, error.statusCode || 400, { error: error.message || "保存 IBKR/TWS 设置失败。" });
+    sendJson(res, error.statusCode || 400, { error: error.message || "保存 IBKR API 设置失败。" });
   }
 }
 
@@ -7618,7 +7618,7 @@ async function handleTradeIntentFromWatchApi(req, res) {
       return;
     }
     if (watch.market !== "US") {
-      sendJson(res, 400, { error: "第一版 IBKR/TWS 下单只开放美股盯盘。" });
+      sendJson(res, 400, { error: "第一版 IBKR API 下单只开放美股盯盘。" });
       return;
     }
     const signalDate = watch.last_signal_date ? new Date(watch.last_signal_date).toISOString().slice(0, 10) : "";
@@ -7724,7 +7724,7 @@ async function handleTradeIntentActionApi(req, res) {
     }
     if (action === "submit") {
       if (!IBKR_TWS_TRADING_ENABLED || !IBKR_TWS_AGENT_URL) {
-        sendJson(res, 403, { error: "服务器尚未启用 IBKR/TWS 真实提交。请先配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL。" });
+        sendJson(res, 403, { error: "服务器尚未启用 IBKR API 真实提交。请先配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL。" });
         return;
       }
       const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
@@ -7772,12 +7772,12 @@ async function handleBrokerAccountStateApi(req, res) {
       return;
     }
     if (!IBKR_TWS_AGENT_URL) {
-      sendJson(res, 503, { error: "TWS agent 未配置。请先配置 IBKR_TWS_AGENT_URL。" });
+      sendJson(res, 503, { error: "IBKR API agent 未配置。请先配置 IBKR_TWS_AGENT_URL。" });
       return;
     }
     const connection = await loadBrokerConnection(ownerUserId);
     const configuredAccountId = String(connection && connection.account_id ? connection.account_id : "").trim();
-    const accountState = await getJson(brokerAgentUrl("/account-state", connection), {}, 20000, "TWS agent");
+    const accountState = await getJson(brokerAgentUrl("/account-state", connection), {}, 20000, "IBKR API agent");
     if (configuredAccountId) {
       accountState.summary = (accountState.summary || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
       accountState.positions = (accountState.positions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);

@@ -1641,12 +1641,12 @@
       <section id="brokerPage" class="wizard-page" data-wizard-page="broker" aria-label="IBKR交易">
         <div class="section-head">
           <div>
-            <h2>IBKR / TWS 交易</h2>
-            <p class="field-hint">把盯盘信号变成交易意图，先人工确认，再提交到 IBKR TWS / IB Gateway。</p>
+            <h2>IBKR 交易</h2>
+            <p class="field-hint">把盯盘信号变成交易意图，先人工确认，再通过 IB Gateway 或 TWS 提交到 IBKR。</p>
           </div>
         </div>
         <div class="broker-panel">
-          <div class="section-label">TWS 连接设置</div>
+          <div class="section-label">IB Gateway / TWS 连接设置</div>
           <div class="admin-scan-filter-row">
             <label>账户 ID
               <input id="brokerAccountIdInput" type="text" placeholder="如 U1234567 或 DU1234567">
@@ -1674,7 +1674,7 @@
             <button type="button" id="brokerSaveSettingsButton" class="ghost-button">保存设置</button>
             <span id="brokerStatusText" class="field-hint"></span>
           </div>
-          <div class="security-note">真实下单默认关闭。服务器必须配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL 后，已批准交易意图才允许提交。</div>
+          <div class="security-note">真实下单默认关闭。服务器必须配置 IBKR_TWS_TRADING_ENABLED=true 和 IBKR_TWS_AGENT_URL 后，已批准交易意图才允许提交到 IBKR API。</div>
         </div>
         <div class="section-head">
           <div>
@@ -1705,7 +1705,7 @@
         <div class="section-head">
           <div>
             <h2>交易意图</h2>
-            <p class="field-hint">从盯盘最新信号生成；审批后才能提交到 TWS agent。</p>
+            <p class="field-hint">从盯盘最新信号生成；审批后才能提交到 IBKR API agent（IB Gateway 或 TWS）。</p>
           </div>
           <button type="button" id="brokerRefreshIntentsButton" class="ghost-button">刷新</button>
         </div>
@@ -1713,6 +1713,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260908-ibkr-tws-trade"></script>
+    <script src="/app.js?v=20260910-ibkr-submit-label"></script>
   </body>
 </html>

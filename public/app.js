@@ -6389,7 +6389,7 @@ function renderBrokerSettings(connection, meta = {}) {
     const parts = [
       cfg.configured ? "已配置" : "未配置",
       meta.serverTradingEnabled ? "服务器允许提交" : "服务器未开放真实提交",
-      meta.agentConfigured ? "TWS agent 已配置" : "TWS agent 未配置",
+      meta.agentConfigured ? "IBKR API agent 已配置" : "IBKR API agent 未配置",
     ];
     brokerStatusText.textContent = parts.join(" · ");
   }
@@ -6397,14 +6397,14 @@ function renderBrokerSettings(connection, meta = {}) {
 
 async function loadBrokerSettings() {
   if (!brokerStatusText) return;
-  brokerStatusText.textContent = "正在读取 IBKR/TWS 设置...";
+  brokerStatusText.textContent = "正在读取 IBKR API 设置...";
   try {
     const response = await fetch("/api/broker/tws-settings", { cache: "no-store" });
-    const payload = await readJsonResponse(response, "读取 IBKR/TWS 设置失败。");
+    const payload = await readJsonResponse(response, "读取 IBKR API 设置失败。");
     renderBrokerSettings(payload.connection, payload);
   } catch (error) {
     brokerStatusText.textContent = "";
-    setStatus(`读取 IBKR/TWS 设置失败：${error.message}`, true);
+    setStatus(`读取 IBKR API 设置失败：${error.message}`, true);
   }
 }
 
@@ -6425,13 +6425,13 @@ async function saveBrokerSettings() {
         autoTradeEnabled: Boolean(brokerAutoTradeInput && brokerAutoTradeInput.checked),
       }),
     });
-    const payload = await readJsonResponse(response, "保存 IBKR/TWS 设置失败。");
+    const payload = await readJsonResponse(response, "保存 IBKR API 设置失败。");
     renderBrokerSettings(payload.connection, {});
-    setStatus("IBKR/TWS 设置已保存。");
+    setStatus("IBKR API 设置已保存。");
     return payload.connection;
   } catch (error) {
     if (brokerStatusText) brokerStatusText.textContent = "";
-    setStatus(`保存 IBKR/TWS 设置失败：${error.message}`, true);
+    setStatus(`保存 IBKR API 设置失败：${error.message}`, true);
     return null;
   }
 }
@@ -6636,7 +6636,7 @@ function renderBrokerTradeIntents(intents) {
           <td>${escapeHtml(formatTradeIntentStatus(intent.status))}</td>
           <td class="admin-row-actions">
             ${intent.status === "pending_review" && intent.riskStatus === "passed" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="approve">批准</button>` : ""}
-            ${intent.status === "approved" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="submit">提交TWS</button>` : ""}
+            ${intent.status === "approved" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="submit">提交到IBKR</button>` : ""}
             ${intent.status === "pending_review" || intent.status === "approved" || intent.status === "blocked" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="cancel">取消</button>` : ""}
           </td>
         </tr>
@@ -6673,8 +6673,8 @@ async function createTradeIntentFromWatch(watchId) {
 }
 
 async function runTradeIntentAction(intentId, action) {
-  const label = action === "approve" ? "批准" : action === "submit" ? "提交 TWS" : "取消";
-  if (action === "submit" && !window.confirm("确认提交到 IBKR/TWS？请确认这是 paper account，且订单数量和价格正确。")) return;
+  const label = action === "approve" ? "批准" : action === "submit" ? "提交到 IBKR" : "取消";
+  if (action === "submit" && !window.confirm("确认提交到 IBKR？当前连接可以是 IB Gateway 或 TWS；请确认账户模式、订单数量和价格正确。")) return;
   try {
     const response = await fetch("/api/broker/trade-intents/action", {
       method: "POST",
