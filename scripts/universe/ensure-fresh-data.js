@@ -8,10 +8,6 @@
 const http = require("http");
 
 const BASE_URL = process.env.AI_TRADE_BASE_URL || "http://127.0.0.1:3000";
-// Generous enough to cover weekends/holidays without needing a real trading calendar — if
-// the newest stored row is within this many days of today, treat it as current and skip
-// the much more expensive live fetch.
-const STALE_TOLERANCE_DAYS = 4;
 const REQUEST_TIMEOUT_MS = 30000;
 // Only applied after an actual live fetch (not on every symbol — most symbols will already
 // be fresh and skip straight past this), so a run that hits a lot of stale symbols at once
@@ -28,10 +24,30 @@ function shiftIsoDate(iso, deltaDays) {
   return d.toISOString().slice(0, 10);
 }
 
-function daysBetween(isoA, isoB) {
-  const a = new Date(`${isoA}T00:00:00Z`);
-  const b = new Date(`${isoB}T00:00:00Z`);
-  return Math.round((b - a) / 86400000);
+function isoFromDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function previousWeekdayIso(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  do {
+    d.setUTCDate(d.getUTCDate() - 1);
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return isoFromDate(d);
+}
+
+function expectedLatestTradeDateIso(dbMarket, now = new Date()) {
+  const utcDay = now.getUTCDay();
+  if (utcDay === 0 || utcDay === 6) return previousWeekdayIso(now);
+
+  const today = isoFromDate(now);
+  const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const market = String(dbMarket || "").toUpperCase();
+  // Daily bars are only considered due after a conservative post-close buffer.
+  // US: 23:00 UTC covers both EDT and EST close plus vendor lag.
+  // CN: 08:30 UTC is after the 15:00 China close, again with a small buffer.
+  const cutoffUtcHour = market === "US" ? 23 : 8.5;
+  return utcHour >= cutoffUtcHour ? today : previousWeekdayIso(now);
 }
 
 function sleep(ms) {
@@ -65,10 +81,10 @@ function fetchJson(pathAndQuery) {
   });
 }
 
-// Checks daily_prices for the symbol's newest stored trade_date; if it's already within
-// tolerance of today, does nothing. Otherwise calls /api/klines for the (short) gap since
-// the last stored row — persistKlineData's ON CONFLICT upsert makes re-requesting
-// already-current days a harmless no-op, so this is safe to call unconditionally per symbol.
+// Checks daily_prices for the symbol's newest stored trade_date; if the database is already
+// current for the latest market day that should be available, does nothing. Otherwise calls
+// /api/klines for the short gap since the last stored row. persistKlineData's ON CONFLICT
+// upsert makes re-requesting already-current days a harmless no-op.
 async function ensureFreshData(pool, symbolCode, dbMarket) {
   const result = await pool.query(
     "SELECT MAX(trade_date) AS last_date FROM daily_prices WHERE symbol = $1 AND market = $2",
@@ -78,18 +94,19 @@ async function ensureFreshData(pool, symbolCode, dbMarket) {
     ? result.rows[0].last_date.toISOString().slice(0, 10)
     : null;
   const today = todayIso();
-  if (lastDate && daysBetween(lastDate, today) <= STALE_TOLERANCE_DAYS) {
-    return { refreshed: false, lastDate };
+  const expectedLatestDate = expectedLatestTradeDateIso(dbMarket);
+  if (lastDate && lastDate >= expectedLatestDate) {
+    return { refreshed: false, lastDate, expectedLatestDate };
   }
 
   const start = lastDate ? shiftIsoDate(lastDate, -3) : shiftIsoDate(today, -30);
   try {
     await fetchJson(`/api/klines?code=${encodeURIComponent(symbolCode)}&start=${start}&end=${today}`);
     await sleep(POST_REFRESH_DELAY_MS);
-    return { refreshed: true, lastDate };
+    return { refreshed: true, lastDate, expectedLatestDate };
   } catch (error) {
     console.error(`[warn] failed to refresh ${symbolCode} (last stored date: ${lastDate || "none"}): ${error.message}`);
-    return { refreshed: false, lastDate, error: error.message };
+    return { refreshed: false, lastDate, expectedLatestDate, error: error.message };
   }
 }
 

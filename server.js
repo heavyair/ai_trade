@@ -6133,10 +6133,30 @@ async function fetchStoredUsValuations({ code, market, start, end }) {
   }
 }
 
-// Days of staleness tolerated before a request whose `end` reaches "now" is considered too old
-// to serve straight from the cache — same tolerance handlePresetRevalidateApi already uses for
-// its own "is daily_prices fresh enough" check.
-const KLINES_CACHE_STALE_TOLERANCE_DAYS = 4;
+function isoFromUtcDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function previousWeekdayIso(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  do {
+    d.setUTCDate(d.getUTCDate() - 1);
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return isoFromUtcDate(d);
+}
+
+function expectedLatestTradeDateIso(market, now = new Date()) {
+  const utcDay = now.getUTCDay();
+  if (utcDay === 0 || utcDay === 6) return previousWeekdayIso(now);
+
+  const today = isoFromUtcDate(now);
+  const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
+  // Daily bars are only considered due after a conservative post-close buffer.
+  // US: 23:00 UTC covers both EDT and EST close plus vendor lag.
+  // CN: 08:30 UTC is after the 15:00 China close, again with a small buffer.
+  const cutoffUtcHour = market === "US" ? 23 : 8.5;
+  return utcHour >= cutoffUtcHour ? today : previousWeekdayIso(now);
+}
 
 // Skips the entire EastMoney→AKShare→Yahoo fallback cascade (and the fundamentals/valuation
 // fetches below it) when daily_prices already has everything this request needs — 2026-09-05:
@@ -6160,8 +6180,8 @@ async function tryLoadCachedKlines({ code, market, start, end }) {
   const today = new Date().toISOString().slice(0, 10);
   const effectiveEnd = end < today ? end : today;
   if (lastDate < effectiveEnd) {
-    const daysSinceLast = Math.round((new Date(today) - new Date(lastDate)) / 86400000);
-    if (daysSinceLast > KLINES_CACHE_STALE_TOLERANCE_DAYS) return null;
+    if (end < today) return null;
+    if (lastDate < expectedLatestTradeDateIso(market)) return null;
   }
 
   const symbolResult = await dbPool.query(`SELECT name, source, info FROM symbols WHERE symbol = $1 AND market = $2`, [code, market]);
@@ -6380,8 +6400,8 @@ async function handlePresetRevalidateApi(req, res) {
       ? new Date(freshnessResult.rows[0].last_date).toISOString().slice(0, 10)
       : null;
     const today = new Date().toISOString().slice(0, 10);
-    const daysSinceLast = lastDate ? Math.round((new Date(today) - new Date(lastDate)) / 86400000) : Infinity;
-    if (daysSinceLast > 4) {
+    const expectedLatestDate = expectedLatestTradeDateIso(market);
+    if (!lastDate || lastDate < expectedLatestDate) {
       const start = lastDate
         ? new Date(new Date(lastDate).getTime() - 3 * 86400000).toISOString().slice(0, 10)
         : new Date(new Date().setFullYear(new Date().getFullYear() - (trainYears + testYears))).toISOString().slice(0, 10);
