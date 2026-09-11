@@ -5819,7 +5819,7 @@ function renderWatchAlertActionsCell(watch) {
         <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`;
   }
   return `
-    ${!watch.indexCode && watch.market === "US" && watch.lastSignalDate ? `<button type="button" class="ghost-button watch-alert-create-intent-button" data-watch-id="${escapeHtml(watch.id)}">生成交易意图</button>` : ""}
+    ${!watch.indexCode && watch.market === "US" ? `<label class="compact-check"><input type="checkbox" class="watch-alert-trade-enabled-input" data-watch-id="${escapeHtml(watch.id)}"${watch.tradeEnabled ? " checked" : ""}> Enable trade</label>` : ""}
     <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
     <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
@@ -6186,6 +6186,22 @@ async function toggleWatchAlert(id, currentlyEnabled) {
     await loadMyWatchAlerts();
   } catch (error) {
     setStatus(`更新盯盘提醒失败：${error.message}`, true);
+  }
+}
+
+async function setWatchTradeEnabled(id, enabled) {
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, tradeEnabled: enabled }),
+    });
+    await readJsonResponse(response, "更新自动交易开关失败。");
+    await loadMyWatchAlerts();
+    setStatus(`Enable trade 已${enabled ? "开启" : "关闭"}。`);
+  } catch (error) {
+    setStatus(`更新自动交易开关失败：${error.message}`, true);
+    await loadMyWatchAlerts();
   }
 }
 
@@ -6987,11 +7003,6 @@ if (watchAlertsList) {
       renderWatchAlertsList();
       return;
     }
-    const createIntentButton = target && target.closest ? target.closest(".watch-alert-create-intent-button") : null;
-    if (createIntentButton) {
-      createTradeIntentFromWatch(createIntentButton.dataset.watchId);
-      return;
-    }
     const toggleButton = target && target.closest ? target.closest(".watch-alert-toggle-button") : null;
     if (toggleButton) {
       toggleWatchAlert(toggleButton.dataset.watchId, toggleButton.dataset.enabled === "1");
@@ -7026,6 +7037,11 @@ if (watchAlertsList) {
     if (shareCodeLeaveButton) {
       leaveWatchShareCode(shareCodeLeaveButton.dataset.watchId);
     }
+  });
+  watchAlertsList.addEventListener("change", (event) => {
+    const input = event.target && event.target.closest ? event.target.closest(".watch-alert-trade-enabled-input") : null;
+    if (!input) return;
+    setWatchTradeEnabled(input.dataset.watchId, Boolean(input.checked));
   });
 }
 

@@ -32,6 +32,9 @@
 //
 // Usage: node scripts/universe/run-watch-alerts.js   (no args — processes all due watches)
 
+const http = require("http");
+const https = require("https");
+const crypto = require("crypto");
 const { Pool } = require("pg");
 const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
@@ -42,12 +45,14 @@ const { resolveIndexConstituents } = require("../shared/index-catalog.js");
 const { ensureModelValidationStateTable } = require("../shared/model-validation-state.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
+const IBKR_TWS_AGENT_URL = String(process.env.IBKR_TWS_AGENT_URL || "").trim().replace(/\/+$/, "");
 const pool = new Pool({ connectionString: DATABASE_URL });
 
 const MIN_ROWS = 90;
 const SIMULATION_WINDOW_ROWS = 504; // ~2 trading years, matches run-stock-screen.js
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
+const AUTO_TRADE_ORDER_TIMEOUT_MS = Number(process.env.AUTO_TRADE_ORDER_TIMEOUT_MS || 15000);
 // After this many consecutive failed checks (real errors, NOT "insufficient data" — a young
 // listing that hasn't traded 90 days yet is expected to fail for a while and isn't the user's
 // fault), auto-disable the watch and email the owner so they know why alerts stopped, instead
@@ -130,6 +135,314 @@ function escapeHtml(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function randomId(prefix) {
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function postJson(url, payload, timeoutMs = AUTO_TRADE_ORDER_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const body = JSON.stringify(payload || {});
+    const req = client.request(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        let parsed = {};
+        try {
+          parsed = responseBody ? JSON.parse(responseBody) : {};
+        } catch (error) {
+          reject(new Error(`IBKR API agent 返回的数据不是有效 JSON：${responseBody.slice(0, 120)}`));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const error = new Error(parsed.error || `IBKR API agent 返回 HTTP ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          error.payload = parsed;
+          error.responseBody = responseBody;
+          reject(error);
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("IBKR API agent 请求超时。"));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function getJson(url, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const req = client.get(target, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        let parsed = {};
+        try {
+          parsed = body ? JSON.parse(body) : {};
+        } catch (error) {
+          reject(new Error(`IBKR API agent 返回的数据不是有效 JSON：${body.slice(0, 120)}`));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(parsed.error || `IBKR API agent 返回 HTTP ${response.statusCode}`));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("IBKR API agent 请求超时。"));
+    });
+    req.on("error", reject);
+  });
+}
+
+function brokerConnectionAgentParams(connection) {
+  const row = connection || {};
+  return {
+    host: String(row.host || "127.0.0.1").trim() || "127.0.0.1",
+    port: Number(row.port) || 4002,
+    clientId: Number(row.client_id) || 77,
+  };
+}
+
+function validateAutoTradeIntent(intent, connection) {
+  const messages = [];
+  if (intent.market !== "US") messages.push("自动 IBKR 下单只允许美股盯盘。");
+  if (!connection) messages.push("IBKR 连接未配置。");
+  if (connection && !connection.enabled) messages.push("IBKR 连接未启用。");
+  if (connection && connection.trading_mode !== "paper") messages.push("自动下单只允许 paper 模式。");
+  if (!(intent.quantity > 0)) messages.push("交易数量必须大于 0。");
+  if (!(intent.limitPrice > 0)) messages.push("限价必须大于 0。");
+  const maxOrderValue = Number(connection && connection.max_order_value) || 0;
+  if (maxOrderValue > 0 && intent.estimatedNotional > maxOrderValue) {
+    messages.push(`预估订单金额 ${intent.estimatedNotional.toFixed(2)} 超过单笔上限 ${maxOrderValue.toFixed(2)}。`);
+  }
+  return {
+    status: messages.length ? "blocked" : "passed",
+    message: messages.join(" "),
+  };
+}
+
+async function loadBrokerConnection(ownerUserId) {
+  const result = await pool.query(`
+    SELECT *
+    FROM broker_connections
+    WHERE owner_user_id = $1 AND provider = 'ibkr-tws'
+    LIMIT 1
+  `, [ownerUserId]);
+  return result.rows[0] || null;
+}
+
+async function insertBrokerOrderFailure(intent, event) {
+  await pool.query(`
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+  `, [
+    randomId("border"),
+    intent.id,
+    intent.owner_user_id,
+    intent.broker_account_id || "",
+    JSON.stringify(intent),
+    JSON.stringify(event),
+  ]);
+}
+
+async function insertBrokerOrderSuccess(intent, agentResult) {
+  await pool.query(`
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+  `, [
+    randomId("border"),
+    intent.id,
+    intent.owner_user_id,
+    intent.broker_account_id || "",
+    String(agentResult.orderId || agentResult.brokerOrderId || ""),
+    String(agentResult.status || "submitted"),
+    JSON.stringify(intent),
+    JSON.stringify(agentResult),
+  ]);
+}
+
+function buildAutoTradeEmail(watch, intent, result) {
+  const symbolLabel = `${watch.symbol_name || watch.symbol}（${watch.symbol}）`;
+  const actionText = intent.side === "buy" ? "买入" : "卖出";
+  const ok = result.ok;
+  const detail = ok
+    ? `IBKR 已接收订单：${result.status || ""} ${result.orderId ? `#${result.orderId}` : ""}`
+    : `IBKR 自动下单失败：${result.error || ""}`;
+  const subject = `IBKR Paper自动下单${ok ? "已提交" : "失败"}：${symbolLabel} ${actionText}`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>${escapeHtml(subject)}</h2>
+      <p>盯盘"${escapeHtml(watch.preset_label)} · ${escapeHtml(symbolLabel)}"触发信号后，Enable trade 已开启，系统尝试提交 IBKR Paper 限价单。</p>
+      <table style="border-collapse:collapse;margin:12px 0">
+        <tbody>
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">方向</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(actionText)}</td></tr>
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">数量</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(intent.quantity)}</td></tr>
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">限价</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(intent.limitPrice)}</td></tr>
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">状态</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(detail)}</td></tr>
+        </tbody>
+      </table>
+      <p>后续订单状态会由系统定时从 IBKR Gateway 拉取。</p>
+    </div>
+  `;
+  const text = [
+    subject,
+    `模型：${watch.preset_label}`,
+    `股票：${symbolLabel}`,
+    `方向：${actionText}`,
+    `数量：${intent.quantity}`,
+    `限价：${intent.limitPrice}`,
+    detail,
+    "后续订单状态会由系统定时从 IBKR Gateway 拉取。",
+  ].join("\n");
+  return { subject, html, text };
+}
+
+async function notifyAutoTrade(watch, intent, result) {
+  try {
+    const { subject, html, text } = buildAutoTradeEmail(watch, intent, result);
+    await postJsonToResend({ from: EMAIL_FROM, to: [watch.owner_email], subject, html, text });
+  } catch (error) {
+    console.error(`[error] failed to send auto-trade notice for watch=${watch.id}: ${error.message}`);
+  }
+}
+
+async function autoSubmitPaperTrade(watch, lastTrade, signalDate) {
+  if (!watch.trade_enabled) return null;
+  if (watch.index_code || watch.market !== "US") return null;
+  const connection = await loadBrokerConnection(watch.owner_user_id);
+  const quantity = Math.max(0, Math.floor(toFiniteNumber(lastTrade.shares, 0)));
+  const limitPrice = toFiniteNumber(lastTrade.price, 0);
+  const estimatedNotional = quantity * limitPrice;
+  const risk = validateAutoTradeIntent({
+    market: watch.market,
+    side: lastTrade.side,
+    quantity,
+    limitPrice,
+    estimatedNotional,
+  }, connection);
+  const intentId = randomId("intent");
+  const insertResult = await pool.query(`
+    INSERT INTO trade_intents (
+      id, owner_user_id, owner_email, watch_id, preset_id, preset_label, symbol, symbol_name, market,
+      side, quantity, order_type, limit_price, time_in_force, outside_rth, source_signal_date,
+      reason, estimated_notional, risk_status, risk_message, broker_account_id,
+      status, approved_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18, $19, CASE WHEN $19 = 'approved' THEN NOW() ELSE NULL END)
+    ON CONFLICT (owner_user_id, watch_id, source_signal_date, side) WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL DO UPDATE SET
+      quantity = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.quantity ELSE trade_intents.quantity END,
+      limit_price = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.limit_price ELSE trade_intents.limit_price END,
+      reason = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.reason ELSE trade_intents.reason END,
+      estimated_notional = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.estimated_notional ELSE trade_intents.estimated_notional END,
+      risk_status = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.risk_status ELSE trade_intents.risk_status END,
+      risk_message = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.risk_message ELSE trade_intents.risk_message END,
+      broker_account_id = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.broker_account_id ELSE trade_intents.broker_account_id END,
+      status = CASE WHEN trade_intents.status IN ('pending_review', 'approved', 'blocked') THEN EXCLUDED.status ELSE trade_intents.status END,
+      approved_at = CASE WHEN trade_intents.status IN ('pending_review', 'blocked') AND EXCLUDED.status = 'approved' THEN NOW() ELSE trade_intents.approved_at END,
+      updated_at = NOW()
+    RETURNING *
+  `, [
+    intentId, watch.owner_user_id, watch.owner_email, watch.id, watch.preset_id, watch.preset_label,
+    watch.symbol, watch.symbol_name || watch.symbol, watch.market,
+    lastTrade.side, quantity, limitPrice, signalDate, lastTrade.reason || watch.last_signal_reason || "",
+    estimatedNotional, risk.status, risk.message, connection ? connection.account_id : "",
+    risk.status === "passed" ? "approved" : "blocked",
+  ]);
+  const intent = insertResult.rows[0];
+  const existingOrder = await pool.query(`SELECT id FROM broker_orders WHERE intent_id = $1 LIMIT 1`, [intent.id]);
+  if (existingOrder.rows.length > 0 || intent.status === "submitted") return { skipped: true, intentId: intent.id };
+  if (risk.status !== "passed") {
+    const result = { ok: false, error: risk.message || "自动下单风控未通过。" };
+    await notifyAutoTrade(watch, intent, result);
+    return result;
+  }
+  if (!IBKR_TWS_AGENT_URL) {
+    const result = { ok: false, error: "IBKR_TWS_AGENT_URL 未配置。" };
+    await insertBrokerOrderFailure(intent, { ...result, failedAt: new Date().toISOString() });
+    await notifyAutoTrade(watch, intent, result);
+    return result;
+  }
+  let executionState = {};
+  try {
+    executionState = await getJson(`${IBKR_TWS_AGENT_URL}/execution`, 8000);
+  } catch (error) {
+    const result = { ok: false, error: error.message || "无法读取 IBKR agent 提交开关。" };
+    await insertBrokerOrderFailure(intent, { ...result, failedAt: new Date().toISOString() });
+    await notifyAutoTrade(watch, intent, result);
+    return result;
+  }
+  if (!executionState.executionEnabled) {
+    const result = { ok: false, error: "IBKR agent 当前禁止提交订单。" };
+    await insertBrokerOrderFailure(intent, { ...result, failedAt: new Date().toISOString(), response: executionState });
+    await notifyAutoTrade(watch, intent, result);
+    return result;
+  }
+  try {
+    const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
+      intent: {
+        id: intent.id,
+        brokerAccountId: intent.broker_account_id || "",
+        symbol: intent.symbol,
+        market: intent.market,
+        side: intent.side,
+        quantity: Number(intent.quantity) || 0,
+        orderType: intent.order_type || "LMT",
+        limitPrice: Number(intent.limit_price) || 0,
+        timeInForce: intent.time_in_force || "DAY",
+        outsideRth: Boolean(intent.outside_rth),
+      },
+      connection: brokerConnectionAgentParams(connection),
+    });
+    await insertBrokerOrderSuccess(intent, agentResult);
+    await pool.query(`
+      UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()
+      WHERE id = $1 AND owner_user_id = $2
+    `, [intent.id, watch.owner_user_id, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
+    const result = { ok: true, ...agentResult };
+    await notifyAutoTrade(watch, intent, result);
+    return result;
+  } catch (error) {
+    const failureEvent = {
+      ok: false,
+      error: error.message || "IBKR API agent 提交失败。",
+      statusCode: error.statusCode || 0,
+      response: error.payload || null,
+      responseBody: error.responseBody || "",
+      failedAt: new Date().toISOString(),
+    };
+    await insertBrokerOrderFailure(intent, failureEvent);
+    await notifyAutoTrade(watch, intent, { ok: false, error: failureEvent.error });
+    return failureEvent;
+  }
 }
 
 // 关注(follow) accounts never see the frozen model's actual rules (see server.js's
@@ -595,6 +908,7 @@ async function processSymbolWatch(watch) {
     if (todaysTrades.length > 0 && lastDate !== (watch.last_signal_date ? watch.last_signal_date.toISOString().slice(0, 10) : null)) {
       await sendAlertEmail(watch, todaysTrades);
       const lastTrade = todaysTrades[todaysTrades.length - 1];
+      const autoTradeResult = await autoSubmitPaperTrade(watch, lastTrade, lastDate);
       await pool.query(`
         UPDATE watch_alerts SET
           last_checked_at = NOW(), last_signal_date = $2, last_signal_action = $3,
@@ -607,7 +921,8 @@ async function processSymbolWatch(watch) {
           enabled = CASE WHEN $18 THEN FALSE ELSE enabled END
         WHERE id = $1
       `, [watch.id, lastDate, lastTrade.side, lastTrade.reason || lastTrade.label || "", ...accountParams, ...invalidParams, shouldDisableForInvalidity]);
-      console.log(`[alert] watch=${watch.id} ${watch.symbol} ${todaysTrades.map((t) => t.label).join(", ")} -> emailed ${watch.owner_email}`);
+      const autoTradeLog = autoTradeResult ? ` autoTrade=${autoTradeResult.ok ? "submitted" : autoTradeResult.skipped ? "skipped" : "failed"}` : "";
+      console.log(`[alert] watch=${watch.id} ${watch.symbol} ${todaysTrades.map((t) => t.label).join(", ")} -> emailed ${watch.owner_email}${autoTradeLog}`);
     } else {
       await pool.query(`
         UPDATE watch_alerts SET
@@ -648,6 +963,7 @@ async function processSymbolWatch(watch) {
 }
 
 async function main() {
+  await pool.query("ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS trade_enabled BOOLEAN NOT NULL DEFAULT FALSE");
   await ensureModelValidationStateTable(pool);
   const watches = await loadDueWatches();
   console.log(`[watch-alerts] ${watches.length} due watch(es)`);

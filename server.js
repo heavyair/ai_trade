@@ -482,6 +482,7 @@ async function initializeDatabase() {
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_rows_scored INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_trades JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_updated_at TIMESTAMPTZ;
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS trade_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
     -- 指数盯盘: symbol/symbol_name become optional, index_code/index_name are the index-mode
     -- counterpart — exactly one of (symbol) or (index_code) is set per row (enforced in
@@ -4097,6 +4098,7 @@ function mapWatchAlertRow(row, {
     market: row.market,
     frequencyMinutes: row.frequency_minutes,
     enabled: row.enabled,
+    tradeEnabled: Boolean(row.trade_enabled),
     lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
     lastSignalDate: row.last_signal_date ? new Date(row.last_signal_date).toISOString().slice(0, 10) : "",
     lastSignalAction: row.last_signal_action || "",
@@ -4515,6 +4517,7 @@ async function handleWatchAlertsApi(req, res) {
         return;
       }
       const enabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
+      const tradeEnabled = typeof payload.tradeEnabled === "boolean" ? payload.tradeEnabled : null;
       const frequencyMinutes = payload.frequencyMinutes !== undefined
         ? Math.round(Number(payload.frequencyMinutes))
         : null;
@@ -4522,15 +4525,34 @@ async function handleWatchAlertsApi(req, res) {
         sendJson(res, 400, { error: "检查频率不合法。" });
         return;
       }
+      if (tradeEnabled === true) {
+        const watchCheck = await dbQuery(`
+          SELECT market, index_code FROM watch_alerts WHERE id = $1 AND owner_user_id = $2
+        `, [id, ownerUserId]);
+        if (watchCheck.rows.length === 0) {
+          sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
+          return;
+        }
+        if (watchCheck.rows[0].index_code || watchCheck.rows[0].market !== "US") {
+          sendJson(res, 400, { error: "Enable trade 只允许美股单股盯盘。" });
+          return;
+        }
+        const connection = await loadBrokerConnection(ownerUserId);
+        if (!connection || !connection.enabled || connection.trading_mode !== "paper") {
+          sendJson(res, 400, { error: "开启 Enable trade 前，请先配置并启用 IBKR Paper 连接。" });
+          return;
+        }
+      }
       const result = await dbQuery(`
         UPDATE watch_alerts SET
           enabled = COALESCE($3, enabled),
           frequency_minutes = COALESCE($4, frequency_minutes),
+          trade_enabled = COALESCE($5, trade_enabled),
           consecutive_failures = CASE WHEN $3 = TRUE THEN 0 ELSE consecutive_failures END,
           updated_at = NOW()
         WHERE id = $1 AND owner_user_id = $2
         RETURNING *
-      `, [id, ownerUserId, enabled, frequencyMinutes]);
+      `, [id, ownerUserId, enabled, frequencyMinutes, tradeEnabled]);
       if (result.rows.length === 0) {
         sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
         return;
