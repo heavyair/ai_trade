@@ -7,6 +7,7 @@
 const http = require("http");
 const https = require("https");
 const { Pool } = require("pg");
+const { postJsonToResend, EMAIL_FROM } = require("../shared/send-email.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
@@ -57,6 +58,51 @@ function getJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
       req.destroy(new Error("IBKR agent request timed out"));
     });
     req.on("error", reject);
+  });
+}
+
+function postJson(url, payload, timeoutMs = REQUEST_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const body = JSON.stringify(payload || {});
+    const req = client.request(target, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        let parsed = {};
+        try {
+          parsed = responseBody ? JSON.parse(responseBody) : {};
+        } catch (error) {
+          reject(new Error(`IBKR agent returned invalid JSON: ${responseBody.slice(0, 120)}`));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const error = new Error(parsed.error || `IBKR agent returned HTTP ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          error.payload = parsed;
+          error.responseBody = responseBody;
+          reject(error);
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("IBKR agent request timed out"));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
   });
 }
 
@@ -118,6 +164,134 @@ function eventFromCandidate(eventType, candidate, status) {
   };
 }
 
+function brokerConnectionAgentParams(connection) {
+  const row = connection || {};
+  return {
+    host: String(row.host || "127.0.0.1").trim() || "127.0.0.1",
+    port: Number(row.port) || 4002,
+    clientId: Number(row.client_id) || 77,
+  };
+}
+
+async function insertBrokerOrderFailure(intent, event) {
+  await pool.query(`
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+  `, [
+    `border_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
+    intent.id,
+    intent.owner_user_id,
+    intent.broker_account_id || "",
+    JSON.stringify(intent),
+    JSON.stringify(event),
+  ]);
+}
+
+async function insertBrokerOrderSuccess(intent, agentResult) {
+  await pool.query(`
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+  `, [
+    `border_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
+    intent.id,
+    intent.owner_user_id,
+    intent.broker_account_id || "",
+    String(agentResult.orderId || agentResult.brokerOrderId || ""),
+    String(agentResult.status || "submitted"),
+    JSON.stringify(intent),
+    JSON.stringify(agentResult),
+  ]);
+}
+
+async function notifyAutoTrade(intent, result) {
+  try {
+    const actionText = intent.side === "buy" ? "买入" : "卖出";
+    const symbolLabel = `${intent.symbol_name || intent.symbol}（${intent.symbol}）`;
+    const ok = result.ok;
+    const detail = ok
+      ? `IBKR 已接收订单：${result.status || ""} ${result.orderId ? `#${result.orderId}` : ""}`
+      : `IBKR 自动下单失败：${result.error || ""}`;
+    const subject = `IBKR Paper自动下单${ok ? "已提交" : "失败"}：${symbolLabel} ${actionText}`;
+    const text = [
+      subject,
+      `模型：${intent.preset_label}`,
+      `股票：${symbolLabel}`,
+      `方向：${actionText}`,
+      `数量：${intent.quantity}`,
+      `限价：${intent.limit_price}`,
+      detail,
+      "后续订单状态会由系统定时从 IBKR Gateway 拉取。",
+    ].join("\n");
+    const html = `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937"><h2>${subject}</h2><pre>${text}</pre></div>`;
+    await postJsonToResend({ from: EMAIL_FROM, to: [intent.owner_email], subject, html, text });
+  } catch (error) {
+    console.error(JSON.stringify({ ok: false, error: `failed to send auto-trade notice: ${error.message}`, intentId: intent.id }));
+  }
+}
+
+async function submitPendingAutoTradeIntents(options) {
+  const state = await getJson(`${IBKR_TWS_AGENT_URL}/execution`, 8_000);
+  if (!state.executionEnabled) return { submitted: 0, failed: 0, skipped: "agent execution disabled" };
+  const result = await pool.query(`
+    SELECT ti.*, bc.host, bc.port, bc.client_id
+    FROM trade_intents ti
+    JOIN watch_alerts wa ON wa.id = ti.watch_id AND wa.trade_enabled = TRUE
+    JOIN broker_connections bc ON bc.owner_user_id = ti.owner_user_id
+      AND bc.provider = 'ibkr-tws'
+      AND bc.enabled = TRUE
+      AND bc.trading_mode = 'paper'
+    LEFT JOIN broker_orders bo ON bo.intent_id = ti.id
+    WHERE ti.status = 'approved'
+      AND ti.risk_status = 'passed'
+      AND ti.market = 'US'
+      AND bo.id IS NULL
+    ORDER BY ti.updated_at ASC
+    LIMIT $1
+  `, [Math.min(options.limit, 50)]);
+  let submitted = 0;
+  let failed = 0;
+  for (const intent of result.rows) {
+    const connection = { host: intent.host, port: intent.port, client_id: intent.client_id };
+    try {
+      const agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
+        intent: {
+          id: intent.id,
+          brokerAccountId: intent.broker_account_id || "",
+          symbol: intent.symbol,
+          market: intent.market,
+          side: intent.side,
+          quantity: Number(intent.quantity) || 0,
+          orderType: intent.order_type || "LMT",
+          limitPrice: Number(intent.limit_price) || 0,
+          timeInForce: intent.time_in_force || "DAY",
+          outsideRth: Boolean(intent.outside_rth),
+        },
+        connection: brokerConnectionAgentParams(connection),
+      });
+      await insertBrokerOrderSuccess(intent, agentResult);
+      await pool.query(`
+        UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()
+        WHERE id = $1 AND owner_user_id = $2
+      `, [intent.id, intent.owner_user_id, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
+      await notifyAutoTrade(intent, { ok: true, ...agentResult });
+      submitted += 1;
+    } catch (error) {
+      const failureEvent = {
+        ok: false,
+        error: error.message || "IBKR API agent 提交失败。",
+        statusCode: error.statusCode || 0,
+        response: error.payload || null,
+        responseBody: error.responseBody || "",
+        failedAt: new Date().toISOString(),
+      };
+      await insertBrokerOrderFailure(intent, failureEvent);
+      await notifyAutoTrade(intent, { ok: false, error: failureEvent.error });
+      failed += 1;
+    }
+  }
+  return { submitted, failed };
+}
+
 function latestEventForOrder(row, accountState, eventState) {
   const ids = idSetForOrder(row);
   const cachedEvents = Array.isArray(eventState && eventState.events) ? eventState.events : [];
@@ -161,6 +335,7 @@ async function insertBrokerEvent(row, event, dryRun) {
 async function syncOnce(options) {
   if (!IBKR_TWS_AGENT_URL) throw new Error("IBKR_TWS_AGENT_URL is not configured");
   await getJson(`${IBKR_TWS_AGENT_URL}/health`, 5_000);
+  const autoTrade = await submitPendingAutoTradeIntents(options);
   const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/order-snapshots`, REQUEST_TIMEOUT_MS);
   const orders = await pool.query(`
     SELECT *
@@ -204,6 +379,7 @@ async function syncOnce(options) {
     openOrders: (accountState.openOrders || []).length,
     executions: (accountState.executions || []).length,
     completedOrders: (accountState.completedOrders || []).length,
+    autoTrade,
     at: new Date().toISOString(),
   };
 }

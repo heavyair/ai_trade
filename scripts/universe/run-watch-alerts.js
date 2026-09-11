@@ -386,10 +386,7 @@ async function autoSubmitPaperTrade(watch, lastTrade, signalDate) {
     return result;
   }
   if (!IBKR_TWS_AGENT_URL) {
-    const result = { ok: false, error: "IBKR_TWS_AGENT_URL 未配置。" };
-    await insertBrokerOrderFailure(intent, { ...result, failedAt: new Date().toISOString() });
-    await notifyAutoTrade(watch, intent, result);
-    return result;
+    return { queued: true, intentId: intent.id, reason: "IBKR_TWS_AGENT_URL 未配置，等待本机 broker 同步进程提交。" };
   }
   let executionState = {};
   try {
