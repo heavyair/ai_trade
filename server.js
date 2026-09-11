@@ -2831,6 +2831,13 @@ const SCHEDULED_JOB_REGISTRY = {
     scriptPath: path.join(__dirname, "scripts", "universe", "run-model-validation-daily.js"),
     scriptArgs: [],
   },
+  brokerOrderStatus: {
+    label: "IBKR订单状态同步",
+    scheduleText: "建议在运行 IB Gateway/agent 的本机每 1 分钟执行",
+    execPath: process.execPath,
+    scriptPath: path.join(__dirname, "scripts", "broker", "sync-order-status.js"),
+    scriptArgs: [],
+  },
   refreshIndexCatalog: {
     label: "指数成分股刷新",
     scheduleText: "生产环境 crontab：每天 04:30",
@@ -7932,6 +7939,7 @@ async function handleBrokerAccountStateApi(req, res) {
       accountState.positions = (accountState.positions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
       accountState.openOrders = (accountState.openOrders || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
       accountState.executions = (accountState.executions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+      accountState.completedOrders = (accountState.completedOrders || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
     }
     accountState.configuredAccountId = configuredAccountId;
     accountState.tradingMode = connection && connection.trading_mode ? connection.trading_mode : "paper";

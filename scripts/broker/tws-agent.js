@@ -555,6 +555,55 @@ function fetchExecutions(config = defaultTwsConfig()) {
   return Promise.race([operation, timeout.promise]);
 }
 
+function fetchCompletedOrders(config = defaultTwsConfig()) {
+  const ib = createIbClient(config, 5);
+  const timeout = withTimeout(TWS_ACCOUNT_TIMEOUT_MS, "Timed out reading IBKR completed orders", () => disconnectQuietly(ib));
+
+  const operation = new Promise((resolve, reject) => {
+    const rows = [];
+    const cleanup = () => {
+      timeout.cancel();
+      ib.removeAllListeners(EventName.error);
+      ib.removeAllListeners(EventName.completedOrder);
+      ib.removeAllListeners(EventName.completedOrdersEnd);
+      ib.removeAllListeners(EventName.connected);
+      disconnectQuietly(ib);
+    };
+    ib.on(EventName.error, (err, code, reqId) => {
+      if (isIgnorableIbErrorCode(code)) return;
+      cleanup();
+      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+    });
+    ib.on(EventName.completedOrder, (contract, order, orderState) => {
+      rows.push({
+        orderId: order && order.orderId !== undefined ? String(order.orderId) : "",
+        permId: order && order.permId !== undefined ? String(order.permId) : "",
+        account: String((order && order.account) || ""),
+        contract: normalizeContract(contract),
+        action: String((order && order.action) || ""),
+        orderType: String((order && order.orderType) || ""),
+        totalQuantity: Number(order && order.totalQuantity) || 0,
+        limitPrice: order && order.lmtPrice !== undefined ? Number(order.lmtPrice) : null,
+        tif: String((order && order.tif) || ""),
+        status: String((orderState && orderState.status) || ""),
+        completedTime: String((orderState && orderState.completedTime) || ""),
+        completedStatus: String((orderState && orderState.completedStatus) || ""),
+        warningText: String((orderState && orderState.warningText) || ""),
+        orderRef: String((order && order.orderRef) || ""),
+      });
+    });
+    ib.once(EventName.completedOrdersEnd, () => {
+      cleanup();
+      resolve(rows);
+    });
+    ib.once(EventName.connected, () => {
+      ib.reqCompletedOrders(false);
+    });
+    ib.connect();
+  });
+  return Promise.race([operation, timeout.promise]);
+}
+
 async function fetchAccountState(config = defaultTwsConfig()) {
   const tws = normalizeTwsConfig(config);
   const sections = await Promise.allSettled([
@@ -562,8 +611,9 @@ async function fetchAccountState(config = defaultTwsConfig()) {
     fetchPositions(tws),
     fetchOpenOrders(tws),
     fetchExecutions(tws),
+    fetchCompletedOrders(tws),
   ]);
-  const sectionNames = ["summary", "positions", "openOrders", "executions"];
+  const sectionNames = ["summary", "positions", "openOrders", "executions", "completedOrders"];
   const payload = {};
   const errors = {};
   sections.forEach((section, index) => {

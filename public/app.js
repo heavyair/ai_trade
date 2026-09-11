@@ -76,6 +76,7 @@ const brokerAccountSummaryList = document.querySelector("#brokerAccountSummaryLi
 const brokerPositionsList = document.querySelector("#brokerPositionsList");
 const brokerOpenOrdersList = document.querySelector("#brokerOpenOrdersList");
 const brokerExecutionsList = document.querySelector("#brokerExecutionsList");
+const brokerCompletedOrdersList = document.querySelector("#brokerCompletedOrdersList");
 const brokerRefreshIntentsButton = document.querySelector("#brokerRefreshIntentsButton");
 const brokerIntentList = document.querySelector("#brokerIntentList");
 const myModelsDialog = document.querySelector("#myModelsDialog");
@@ -6558,11 +6559,42 @@ function renderBrokerExecutions(rows) {
   `;
 }
 
+function renderBrokerCompletedOrders(rows) {
+  if (!brokerCompletedOrdersList) return;
+  if (!rows || rows.length === 0) {
+    brokerCompletedOrdersList.innerHTML = '<div class="ranking-empty">暂无已完成或拒绝订单。</div>';
+    return;
+  }
+  brokerCompletedOrdersList.innerHTML = `
+    <table class="admin-ranking-table broker-account-table">
+      <thead><tr><th>订单号</th><th>永久ID</th><th>账户</th><th>股票</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>时间/信息</th></tr></thead>
+      <tbody>${rows.map((row) => {
+        const contract = row.contract || {};
+        const status = row.status || row.completedStatus || "";
+        return `
+          <tr>
+            <td>${escapeHtml(row.orderId || "--")}</td>
+            <td>${escapeHtml(row.permId || "--")}</td>
+            <td>${escapeHtml(row.account || "--")}</td>
+            <td>${escapeHtml(contract.symbol || "--")}</td>
+            <td class="${row.action === "BUY" ? "up" : row.action === "SELL" ? "down" : ""}">${escapeHtml(row.action || "--")}</td>
+            <td>${Number(row.totalQuantity || 0).toLocaleString("zh-CN")}</td>
+            <td>${row.limitPrice !== null && row.limitPrice !== undefined ? formatBrokerMoney(row.limitPrice, contract.currency || "") : "--"}</td>
+            <td class="${String(status).toLowerCase().includes("reject") || String(status).toLowerCase().includes("inactive") ? "down" : ""}">${escapeHtml(status || "--")}</td>
+            <td>${escapeHtml(row.completedTime || row.warningText || "--")}</td>
+          </tr>
+        `;
+      }).join("")}</tbody>
+    </table>
+  `;
+}
+
 function renderBrokerAccountState(payload) {
   renderBrokerAccountSummary(payload.summary || []);
   renderBrokerPositions(payload.positions || []);
   renderBrokerOpenOrders(payload.openOrders || []);
   renderBrokerExecutions(payload.executions || []);
+  renderBrokerCompletedOrders(payload.completedOrders || []);
   renderBrokerExecutionState(payload);
   if (brokerAccountStatusText) {
     const refreshed = payload.refreshedAt ? String(payload.refreshedAt).replace("T", " ").slice(0, 19) : "";
@@ -6629,6 +6661,7 @@ async function loadBrokerAccountState() {
   if (brokerPositionsList) brokerPositionsList.innerHTML = '<div class="ranking-empty">正在读取持仓...</div>';
   if (brokerOpenOrdersList) brokerOpenOrdersList.innerHTML = '<div class="ranking-empty">正在读取未完成订单...</div>';
   if (brokerExecutionsList) brokerExecutionsList.innerHTML = '<div class="ranking-empty">正在读取近期成交...</div>';
+  if (brokerCompletedOrdersList) brokerCompletedOrdersList.innerHTML = '<div class="ranking-empty">正在读取已完成/拒绝订单...</div>';
   try {
     const response = await fetch("/api/broker/account-state", { cache: "no-store" });
     const payload = await readJsonResponse(response, "读取 IBKR 账户状态失败。");
@@ -6640,6 +6673,7 @@ async function loadBrokerAccountState() {
     if (brokerPositionsList) brokerPositionsList.innerHTML = `<div class="ranking-empty">${message}</div>`;
     if (brokerOpenOrdersList) brokerOpenOrdersList.innerHTML = `<div class="ranking-empty">${message}</div>`;
     if (brokerExecutionsList) brokerExecutionsList.innerHTML = `<div class="ranking-empty">${message}</div>`;
+    if (brokerCompletedOrdersList) brokerCompletedOrdersList.innerHTML = `<div class="ranking-empty">${message}</div>`;
   }
 }
 
