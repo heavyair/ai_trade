@@ -112,7 +112,7 @@ function eventFromCandidate(eventType, candidate, status) {
     orderId: candidate.orderId ? String(candidate.orderId) : "",
     permId: candidate.permId ? String(candidate.permId) : "",
     orderRef: candidate.orderRef ? String(candidate.orderRef) : "",
-    message: candidate.warningText || "",
+    message: candidate.completedStatus || candidate.warningText || "",
     payload: candidate,
     eventAt: new Date().toISOString(),
   };
@@ -161,7 +161,7 @@ async function insertBrokerEvent(row, event, dryRun) {
 async function syncOnce(options) {
   if (!IBKR_TWS_AGENT_URL) throw new Error("IBKR_TWS_AGENT_URL is not configured");
   await getJson(`${IBKR_TWS_AGENT_URL}/health`, 5_000);
-  const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/account-state`, REQUEST_TIMEOUT_MS);
+  const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/order-snapshots`, REQUEST_TIMEOUT_MS);
   const orders = await pool.query(`
     SELECT *
     FROM broker_orders

@@ -44,6 +44,7 @@ Agent endpoints:
 - `GET /health`: checks that the local agent process is running.
 - `GET /tws-health`: connects to TWS/IB Gateway and requests server time.
 - `GET /account-state`: reads account summary, positions, open orders, recent executions, and completed orders.
+- `GET /order-snapshots`: reads only open orders, recent executions, and completed orders for status polling.
 - `GET /order-events`: reads recent in-memory events captured by the agent for one `orderId`/`orderRef`.
 - `POST /orders`: submits a US stock limit order only when `TWS_AGENT_EXECUTION_ENABLED=true`.
 - `POST /orders/cancel`: cancels an order by broker order id only when `TWS_AGENT_EXECUTION_ENABLED=true`.
@@ -52,7 +53,7 @@ Order status sync:
 
 - Run `IBKR_TWS_AGENT_URL=http://127.0.0.1:7077 node scripts/broker/sync-order-status.js` from the same private network that can reach the agent.
 - For continuous local paper/live tracking, run it every minute with cron/Task Scheduler, or run `node scripts/broker/sync-order-status.js --loop`.
-- The sync is read-only: it polls open orders, executions, completed orders, and the agent's recent event cache, then updates `broker_orders` / `broker_order_events`.
+- The sync is read-only: it polls `/order-snapshots` plus the agent's recent event cache, then updates `broker_orders` / `broker_order_events`.
 
 TWS/IB Gateway settings:
 

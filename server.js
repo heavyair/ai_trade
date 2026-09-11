@@ -7516,9 +7516,61 @@ function orderRefFromSubmittedPayload(payload) {
 function statusFromBrokerEvent(event) {
   if (!event) return "";
   if (event.status) return String(event.status);
+  if (event.completedStatus) return String(event.completedStatus);
   if (event.response && event.response.status) return String(event.response.status);
   if (event.error) return "Rejected";
   return "";
+}
+
+function brokerOrderIdentitySet(row) {
+  const lastEvent = parseJsonField(row.last_event) || {};
+  return new Set([
+    row.broker_order_id,
+    lastEvent.orderId,
+    lastEvent.permId,
+    orderRefFromSubmittedPayload(row.submitted_payload),
+  ].filter(Boolean).map(String));
+}
+
+function brokerSnapshotMatches(candidate, ids) {
+  if (!candidate || !ids || ids.size === 0) return false;
+  return [
+    candidate.orderId,
+    candidate.permId,
+    candidate.orderRef,
+    candidate.execId,
+  ].filter(Boolean).some((value) => ids.has(String(value)));
+}
+
+function brokerSnapshotEvent(eventType, candidate, fallbackStatus) {
+  return {
+    eventType,
+    status: String(candidate.status || candidate.completedStatus || fallbackStatus || ""),
+    orderId: candidate.orderId ? String(candidate.orderId) : "",
+    permId: candidate.permId ? String(candidate.permId) : "",
+    orderRef: candidate.orderRef ? String(candidate.orderRef) : "",
+    message: String(candidate.completedStatus || candidate.warningText || candidate.message || ""),
+    payload: candidate,
+    eventAt: new Date().toISOString(),
+  };
+}
+
+function latestBrokerEventFromSnapshots(row, snapshots, eventState) {
+  const cachedEvents = Array.isArray(eventState && eventState.events) ? eventState.events : [];
+  const latestCached = (eventState && eventState.latest) || cachedEvents[cachedEvents.length - 1] || null;
+  if (latestCached && statusFromBrokerEvent(latestCached)) return latestCached;
+
+  const ids = brokerOrderIdentitySet(row);
+  const openOrder = (snapshots.openOrders || []).find((order) => brokerSnapshotMatches(order, ids));
+  if (openOrder) return brokerSnapshotEvent("openOrderSnapshot", openOrder, row.status);
+
+  const completedOrder = (snapshots.completedOrders || []).find((order) => brokerSnapshotMatches(order, ids));
+  if (completedOrder) return brokerSnapshotEvent("completedOrderSnapshot", completedOrder, row.status);
+
+  const execution = (snapshots.executions || []).find((order) => brokerSnapshotMatches(order, ids));
+  if (execution) return brokerSnapshotEvent("executionSnapshot", execution, "Filled");
+
+  return null;
 }
 
 async function syncBrokerOrderEvents(ownerUserId) {
@@ -7527,6 +7579,19 @@ async function syncBrokerOrderEvents(ownerUserId) {
     await getJson(`${IBKR_TWS_AGENT_URL}/health`, {}, 1000, "IBKR API agent");
   } catch (error) {
     return { synced: 0, skipped: true, error: error.message || "IBKR API agent 不可用。" };
+  }
+  const connection = await loadBrokerConnection(ownerUserId);
+  let snapshots = {};
+  try {
+    snapshots = await getJson(brokerAgentUrl("/order-snapshots", connection), {}, 20000, "IBKR API agent");
+  } catch (error) {
+    snapshots = {};
+  }
+  const configuredAccountId = String(connection && connection.account_id ? connection.account_id : "").trim();
+  if (configuredAccountId) {
+    snapshots.openOrders = (snapshots.openOrders || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+    snapshots.executions = (snapshots.executions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
+    snapshots.completedOrders = (snapshots.completedOrders || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
   }
   const result = await dbQuery(`
     SELECT *
@@ -7551,7 +7616,7 @@ async function syncBrokerOrderEvents(ownerUserId) {
       continue;
     }
     const events = Array.isArray(state.events) ? state.events : [];
-    const latest = state.latest || events[events.length - 1] || null;
+    const latest = latestBrokerEventFromSnapshots(row, snapshots, state);
     for (const event of events) {
       const payloadText = JSON.stringify(event);
       const exists = await dbQuery(`
@@ -7573,6 +7638,23 @@ async function syncBrokerOrderEvents(ownerUserId) {
     }
     if (latest) {
       const nextStatus = statusFromBrokerEvent(latest) || row.status || "";
+      const previousEvent = parseJsonField(row.last_event) || {};
+      const sameState = String(row.status || "") === nextStatus
+        && String(previousEvent.eventType || "") === String(latest.eventType || "")
+        && String(previousEvent.orderId || "") === String(latest.orderId || "")
+        && String(previousEvent.permId || "") === String(latest.permId || "");
+      if (!events.includes(latest) && !sameState) {
+        await dbQuery(`
+          INSERT INTO broker_order_events (id, broker_order_id, intent_id, event_type, payload)
+          VALUES ($1, $2, $3, $4, $5::jsonb)
+        `, [
+          randomId("bevent"),
+          row.id,
+          row.intent_id,
+          String(latest.eventType || latest.status || "orderEvent"),
+          JSON.stringify(latest),
+        ]);
+      }
       await dbQuery(`
         UPDATE broker_orders
         SET status = $2, last_event = $3::jsonb, updated_at = NOW()
@@ -7582,6 +7664,17 @@ async function syncBrokerOrderEvents(ownerUserId) {
     }
   }
   return { synced };
+}
+
+function scheduleBrokerOrderPull(ownerUserId) {
+  if (!ownerUserId || !IBKR_TWS_AGENT_URL) return;
+  [2000, 10000, 30000, 60000, 120000, 300000].forEach((delayMs) => {
+    setTimeout(() => {
+      syncBrokerOrderEvents(ownerUserId).catch((error) => {
+        console.warn(`IBKR order pull skipped: ${error.message}`);
+      });
+    }, delayMs).unref?.();
+  });
 }
 
 async function loadBrokerConnection(ownerUserId) {
@@ -7909,6 +8002,7 @@ async function handleTradeIntentActionApi(req, res) {
         WHERE id = $1 AND owner_user_id = $2
         RETURNING *
       `, [id, ownerUserId, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
+      scheduleBrokerOrderPull(ownerUserId);
       sendJson(res, 200, { intent: mapTradeIntentRow(updated.rows[0]), brokerOrder: agentResult });
       return;
     }

@@ -6581,7 +6581,7 @@ function renderBrokerCompletedOrders(rows) {
             <td>${Number(row.totalQuantity || 0).toLocaleString("zh-CN")}</td>
             <td>${row.limitPrice !== null && row.limitPrice !== undefined ? formatBrokerMoney(row.limitPrice, contract.currency || "") : "--"}</td>
             <td class="${String(status).toLowerCase().includes("reject") || String(status).toLowerCase().includes("inactive") ? "down" : ""}">${escapeHtml(status || "--")}</td>
-            <td>${escapeHtml(row.completedTime || row.warningText || "--")}</td>
+            <td>${escapeHtml(row.completedStatus || row.warningText || row.completedTime || "--")}</td>
           </tr>
         `;
       }).join("")}</tbody>

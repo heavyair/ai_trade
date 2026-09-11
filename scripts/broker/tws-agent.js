@@ -10,7 +10,7 @@ const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 1000
 const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
 const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
 const TWS_ACCOUNT_TIMEOUT_MS = Number(process.env.TWS_ACCOUNT_TIMEOUT_MS || 15000);
-const TWS_ORDER_MONITOR_MS = Number(process.env.TWS_ORDER_MONITOR_MS || 120000);
+const TWS_ORDER_MONITOR_MS = Number(process.env.TWS_ORDER_MONITOR_MS || 0);
 const ORDER_EVENT_TTL_MS = Number(process.env.TWS_ORDER_EVENT_TTL_MS || 24 * 60 * 60 * 1000);
 const MAX_ORDER_EVENTS_PER_KEY = 200;
 const orderEventHistory = new Map();
@@ -635,6 +635,35 @@ async function fetchAccountState(config = defaultTwsConfig()) {
   };
 }
 
+async function fetchOrderSnapshots(config = defaultTwsConfig()) {
+  const tws = normalizeTwsConfig(config);
+  const sections = await Promise.allSettled([
+    fetchOpenOrders(tws),
+    fetchExecutions(tws),
+    fetchCompletedOrders(tws),
+  ]);
+  const sectionNames = ["openOrders", "executions", "completedOrders"];
+  const payload = {};
+  const errors = {};
+  sections.forEach((section, index) => {
+    const name = sectionNames[index];
+    if (section.status === "fulfilled") {
+      payload[name] = section.value;
+    } else {
+      payload[name] = [];
+      errors[name] = section.reason && section.reason.message ? section.reason.message : "read failed";
+    }
+  });
+  return {
+    ok: true,
+    ...payload,
+    errors,
+    tws,
+    executionEnabled,
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
 function cancelOrder(orderId, config = defaultTwsConfig()) {
   const numericOrderId = Math.floor(Number(orderId));
   if (!(numericOrderId > 0)) throw new Error("orderId must be positive");
@@ -691,6 +720,11 @@ async function handleTwsHealth(req, res, url) {
 
 async function handleAccountState(req, res, url) {
   const result = await fetchAccountState(twsConfigFromUrl(url));
+  sendJson(res, 200, result);
+}
+
+async function handleOrderSnapshots(req, res, url) {
+  const result = await fetchOrderSnapshots(twsConfigFromUrl(url));
   sendJson(res, 200, result);
 }
 
@@ -782,6 +816,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/account-state") {
       await handleAccountState(req, res, url);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/order-snapshots") {
+      await handleOrderSnapshots(req, res, url);
       return;
     }
     if (req.method === "GET" && url.pathname === "/order-events") {
