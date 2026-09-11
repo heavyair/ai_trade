@@ -6722,7 +6722,13 @@ function formatBrokerOrderStatus(order) {
   if (order.brokerOrderId) parts.push(`#${order.brokerOrderId}`);
   if (lastEvent.message) parts.push(lastEvent.message);
   if (lastEvent.warningText) parts.push(lastEvent.warningText);
+  // Submission-failure events (see submitTradeIntentOrder in server.js) use error/statusCode/
+  // failedAt instead of message/warningText/eventAt — without these the column just showed
+  // "rejected" with no indication of why it was rejected.
+  if (lastEvent.error) parts.push(lastEvent.error);
+  if (lastEvent.statusCode) parts.push(`HTTP ${lastEvent.statusCode}`);
   if (lastEvent.eventAt) parts.push(String(lastEvent.eventAt).replace("T", " ").slice(0, 19));
+  if (lastEvent.failedAt) parts.push(String(lastEvent.failedAt).replace("T", " ").slice(0, 19));
   return parts.filter(Boolean).join(" · ");
 }
 

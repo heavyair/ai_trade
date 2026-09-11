@@ -8015,7 +8015,13 @@ function buildTradeIntentStatusEmail(intent, kind, extra = {}) {
     ["数量", String(intent.quantity)],
     ["限价", String(intent.limit_price)],
   ];
-  if (kind === "submit_failed" && extra.error) rows.push(["失败原因", extra.error]);
+  if (kind === "submit_failed") {
+    const failure = extra.brokerOrder || {};
+    rows.push(["失败原因", extra.error || failure.error || "未知错误。"]);
+    if (failure.statusCode) rows.push(["HTTP 状态码", String(failure.statusCode)]);
+    if (failure.responseBody) rows.push(["IBKR agent 原始返回", failure.responseBody.slice(0, 500)]);
+    if (failure.failedAt) rows.push(["失败时间", failure.failedAt]);
+  }
   if (kind === "submitted" && extra.brokerOrder) rows.push(["IBKR 订单号", String(extra.brokerOrder.orderId || extra.brokerOrder.brokerOrderId || "")]);
   const subject = `IBKR 交易${label}：${symbolLabel} ${actionText}`;
   const text = [subject, ...rows.map(([k, v]) => `${k}：${v}`)].join("\n");
@@ -8121,7 +8127,8 @@ async function handleTradeIntentConfirmApi(req, res) {
     const submission = await submitTradeIntentOrder(intent, ownerUserId, connection);
     await notifyTradeIntentStatus(submission.ok ? submission.intent : intent, submission.ok ? "submitted" : "submit_failed", submission);
     if (!submission.ok) {
-      sendJson(res, 502, { error: `IBKR Gateway 返回错误：${submission.error}` });
+      const statusCode = submission.brokerOrder && submission.brokerOrder.statusCode ? `（HTTP ${submission.brokerOrder.statusCode}）` : "";
+      sendJson(res, 502, { error: `IBKR Gateway 返回错误${statusCode}：${submission.error}`, brokerOrder: submission.brokerOrder });
       return;
     }
     sendJson(res, 200, { intent: mapTradeIntentRow(submission.intent), brokerOrder: submission.brokerOrder });
@@ -8234,8 +8241,9 @@ async function handleTradeIntentActionApi(req, res) {
       const connection = await loadBrokerConnection(ownerUserId);
       const submission = await submitTradeIntentOrder(intent, ownerUserId, connection);
       if (!submission.ok) {
+        const statusCode = submission.brokerOrder && submission.brokerOrder.statusCode ? `（HTTP ${submission.brokerOrder.statusCode}）` : "";
         sendJson(res, 502, {
-          error: `IBKR Gateway 返回错误：${submission.error}`,
+          error: `IBKR Gateway 返回错误${statusCode}：${submission.error}`,
           intent: mapTradeIntentRow(intent),
           brokerOrder: submission.brokerOrder,
         });
