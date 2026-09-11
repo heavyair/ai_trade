@@ -65,6 +65,7 @@ const brokerStatusText = document.querySelector("#brokerStatusText");
 const brokerExecutionEnabledInput = document.querySelector("#brokerExecutionEnabledInput");
 const brokerSaveExecutionButton = document.querySelector("#brokerSaveExecutionButton");
 const brokerExecutionStatusText = document.querySelector("#brokerExecutionStatusText");
+const watchAlertsSummary = document.querySelector("#watchAlertsSummary");
 const tradeConfirmDialog = document.querySelector("#tradeConfirmDialog");
 const tradeConfirmBody = document.querySelector("#tradeConfirmBody");
 const tradeConfirmConfirmButton = document.querySelector("#tradeConfirmConfirmButton");
@@ -5962,6 +5963,71 @@ function renderWatchShareCodeState() {
   }
 }
 
+// Blends per-watch simulated-account numbers into one aggregate. accountReturnRate/
+// accountAnnualizedReturn are already percentages (see how they're formatted elsewhere with
+// formatPercent directly), so each watch's starting capital is backed out as
+// equity / (1 + returnRate/100) and used as the weight — a watch with more capital at stake
+// should move the blended return/annualized figures more than one that's barely traded.
+function summarizeWatchAlertGroup(watches) {
+  let orders = 0;
+  let positionValue = 0;
+  let totalEquity = 0;
+  let totalInitial = 0;
+  let annualizedWeighted = 0;
+  watches.forEach((watch) => {
+    const trades = Array.isArray(watch.accountTrades) ? watch.accountTrades : [];
+    orders += trades.length;
+    const equity = Number(watch.accountEquity) || 0;
+    const cash = Number(watch.accountCash) || 0;
+    positionValue += Math.max(0, equity - cash);
+    totalEquity += equity;
+    const returnRatePct = Number(watch.accountReturnRate);
+    const initial = Number.isFinite(returnRatePct) && returnRatePct > -100 ? equity / (1 + returnRatePct / 100) : equity;
+    totalInitial += initial;
+    const annualizedPct = Number(watch.accountAnnualizedReturn);
+    if (Number.isFinite(annualizedPct)) annualizedWeighted += annualizedPct * initial;
+  });
+  return {
+    count: watches.length,
+    orders,
+    positionValue,
+    returnRate: totalInitial > 0 ? ((totalEquity - totalInitial) / totalInitial) * 100 : 0,
+    annualizedReturn: totalInitial > 0 ? annualizedWeighted / totalInitial : 0,
+  };
+}
+
+function renderWatchAlertsSummaryRow(label, summary) {
+  const returnClass = summary.returnRate >= 0 ? "up" : "down";
+  const annualizedClass = summary.annualizedReturn >= 0 ? "up" : "down";
+  return `
+    <div class="watch-alerts-summary-row">
+      <span class="watch-alerts-summary-label">${escapeHtml(label)}（${summary.count}）</span>
+      <span>下单 ${summary.orders}</span>
+      <span>持仓 ${formatMoney(summary.positionValue)}</span>
+      <span class="${returnClass}">收益 ${formatPercent(summary.returnRate)}</span>
+      <span class="${annualizedClass}">年化 ${formatPercent(summary.annualizedReturn)}</span>
+    </div>
+  `;
+}
+
+function renderWatchAlertsSummary(watches) {
+  if (!watchAlertsSummary) return;
+  // Only symbol watches carry a simulated account (index watches track no single account —
+  // see the doc comment at the top of run-watch-alerts.js), so those are excluded here rather
+  // than counted as zero.
+  const symbolWatches = watches.filter((watch) => !watch.indexCode && watch.accountEquity !== null && watch.accountEquity !== undefined);
+  if (symbolWatches.length === 0) {
+    watchAlertsSummary.innerHTML = "";
+    return;
+  }
+  const overall = summarizeWatchAlertGroup(symbolWatches);
+  const tradable = summarizeWatchAlertGroup(symbolWatches.filter((watch) => watch.tradeEnabled));
+  watchAlertsSummary.innerHTML = `
+    ${renderWatchAlertsSummaryRow("全部盯盘汇总", overall)}
+    ${tradable.count > 0 ? renderWatchAlertsSummaryRow("允许交易的盯盘汇总", tradable) : ""}
+  `;
+}
+
 function renderWatchAlertsList() {
   if (!watchAlertsList) return;
   const wantRole = watchAlertsActiveTab === "followed" ? "follower" : watchAlertsActiveTab === "shared-code" ? "shared-code" : "owner";
@@ -5980,6 +6046,7 @@ function renderWatchAlertsList() {
   const visible = watchAlertsMarketFilter
     ? roleWatches.filter((watch) => String(watch.market || "").trim().toUpperCase() === watchAlertsMarketFilter)
     : roleWatches;
+  renderWatchAlertsSummary(visible);
   if (visible.length === 0) {
     const marketLabel = watchAlertsMarketFilter === "CN" ? "A股" : watchAlertsMarketFilter === "US" ? "美股" : watchAlertsMarketFilter === "HK" ? "港股" : "";
     const suffix = marketLabel ? `没有${marketLabel}盯盘。` : (wantRole === "follower" ? "还没有关注任何人的盯盘。" : wantRole === "shared-code" ? "还没有使用任何全部盯盘分享码。" : "还没有设置盯盘提醒。");

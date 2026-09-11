@@ -2709,12 +2709,20 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+/* The dialog used to split into a fixed (non-scrolling) header area and a separately
+   scrolling #watchAlertsList — but every filter row/expander added above the list (账户可用
+   资金, Enable trade, the 汇总 panel, ...) grows that fixed area, and on a short mobile
+   viewport it can end up taller than the screen with nothing able to reach the parts pushed
+   off the top. Scrolling the whole dialog body as one column (sticky header only) means
+   nothing above the list can ever become unreachable, whatever gets added to it later. */
 .watch-alerts-dialog .param-dialog-body {
   display: flex;
   flex-direction: column;
   height: 100dvh;
   max-height: 100dvh;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   padding-bottom: calc(18px + env(safe-area-inset-bottom));
 }
 
@@ -2728,21 +2736,43 @@ textarea:focus {
   background: var(--panel);
 }
 
+.watch-alerts-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.watch-alerts-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: baseline;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-alt, var(--panel));
+  font-size: 13px;
+}
+
+.watch-alerts-summary-label {
+  font-weight: 600;
+}
+
 .watch-alerts-dialog .admin-ranking-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
+  overflow: visible;
   padding-bottom: 18px;
-  -webkit-overflow-scrolling: touch;
 }
 
 .watch-alerts-dialog .admin-ranking-table {
   min-width: 1380px;
 }
 
+/* Was sticky (top:0) back when #watchAlertsList had its own independent scroll box — now that
+   the whole dialog body scrolls as one column, top:0 here would stick at the same spot as
+   .dialog-head above and overlap it, so the column header just scrolls with the table instead. */
 .watch-alerts-dialog .admin-ranking-table th {
-  top: 0;
-  z-index: 2;
+  position: static;
 }
 
 .watch-alert-table td {
