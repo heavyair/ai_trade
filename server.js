@@ -39,6 +39,9 @@ const QUALIFIED_RECHECK_PROGRESS_FILE = process.env.QUALIFIED_RECHECK_PROGRESS_F
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
 const IBKR_TWS_AGENT_URL = String(process.env.IBKR_TWS_AGENT_URL || "").trim().replace(/\/+$/, "");
+const IBKR_TWS_DEFAULT_HOST = String(process.env.IBKR_TWS_DEFAULT_HOST || "127.0.0.1").trim() || "127.0.0.1";
+const IBKR_TWS_DEFAULT_PORT_PAPER = Number(process.env.IBKR_TWS_DEFAULT_PORT_PAPER) || 4002;
+const IBKR_TWS_DEFAULT_PORT_LIVE = Number(process.env.IBKR_TWS_DEFAULT_PORT_LIVE) || 4001;
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
@@ -7512,8 +7515,8 @@ function mapTradeIntentRow(row) {
 function brokerConnectionAgentParams(connection) {
   const row = connection || {};
   return {
-    host: String(row.host || "127.0.0.1").trim() || "127.0.0.1",
-    port: Number(row.port) || (row.trading_mode === "live" ? 4001 : 4002),
+    host: String(row.host || IBKR_TWS_DEFAULT_HOST).trim() || IBKR_TWS_DEFAULT_HOST,
+    port: Number(row.port) || (row.trading_mode === "live" ? IBKR_TWS_DEFAULT_PORT_LIVE : IBKR_TWS_DEFAULT_PORT_PAPER),
     clientId: Number(row.client_id) || 77,
   };
 }
@@ -7751,7 +7754,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
       sendJson(res, 400, { error: "交易模式只能是 paper 或 live。" });
       return;
     }
-    const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? 4002 : 4001));
+    const port = Math.round(toFiniteNumber(payload.port, tradingMode === "paper" ? IBKR_TWS_DEFAULT_PORT_PAPER : IBKR_TWS_DEFAULT_PORT_LIVE));
     const clientId = Math.round(toFiniteNumber(payload.clientId, 77));
     if (port <= 0 || port > 65535) {
       sendJson(res, 400, { error: "IBKR API 端口不合法。" });
@@ -7782,7 +7785,7 @@ async function handleBrokerTwsSettingsApi(req, res) {
       id, ownerUserId, user.email,
       String(payload.accountId || "").trim(),
       tradingMode,
-      String(payload.host || "127.0.0.1").trim() || "127.0.0.1",
+      String(payload.host || IBKR_TWS_DEFAULT_HOST).trim() || IBKR_TWS_DEFAULT_HOST,
       port,
       clientId,
       Boolean(payload.enabled),
