@@ -2759,8 +2759,14 @@ textarea:focus {
   font-weight: 600;
 }
 
+/* Vertical scroll now belongs to .param-dialog-body (the whole dialog scrolls as one column —
+   see its comment above), but the table itself is still wider (min-width below) than a phone
+   screen, so this still needs its OWN horizontal scrollbar or the columns past the viewport
+   edge — including "操作" with the Enable trade switch — become unreachable. */
 .watch-alerts-dialog .admin-ranking-list {
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
   padding-bottom: 18px;
 }
 
