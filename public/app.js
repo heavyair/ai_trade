@@ -58,9 +58,7 @@ const watchShareCodeUsers = document.querySelector("#watchShareCodeUsers");
 const watchShareCodeUseInput = document.querySelector("#watchShareCodeUseInput");
 const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton");
 const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
-const brokerAccountIdInput = document.querySelector("#brokerAccountIdInput");
 const brokerTradingModeSelect = document.querySelector("#brokerTradingModeSelect");
-const brokerClientIdInput = document.querySelector("#brokerClientIdInput");
 const brokerMaxOrderValueInput = document.querySelector("#brokerMaxOrderValueInput");
 const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
 const brokerAutoTradeInput = document.querySelector("#brokerAutoTradeInput");
@@ -6397,9 +6395,7 @@ async function leaveWatchShareCode(watchId) {
 
 function renderBrokerSettings(connection, meta = {}) {
   const cfg = connection || {};
-  if (brokerAccountIdInput) brokerAccountIdInput.value = cfg.accountId || "";
   if (brokerTradingModeSelect) brokerTradingModeSelect.value = cfg.tradingMode || "paper";
-  if (brokerClientIdInput) brokerClientIdInput.value = cfg.clientId || 77;
   if (brokerMaxOrderValueInput) brokerMaxOrderValueInput.value = cfg.maxOrderValue || 0;
   if (brokerEnabledInput) brokerEnabledInput.checked = Boolean(cfg.enabled);
   if (brokerAutoTradeInput) brokerAutoTradeInput.checked = Boolean(cfg.autoTradeEnabled);
@@ -6432,9 +6428,7 @@ async function saveBrokerSettings() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        accountId: brokerAccountIdInput ? brokerAccountIdInput.value : "",
         tradingMode: brokerTradingModeSelect ? brokerTradingModeSelect.value : "paper",
-        clientId: brokerClientIdInput ? Number(brokerClientIdInput.value) : 77,
         maxOrderValue: brokerMaxOrderValueInput ? Number(brokerMaxOrderValueInput.value) : 0,
         enabled: Boolean(brokerEnabledInput && brokerEnabledInput.checked),
         autoTradeEnabled: Boolean(brokerAutoTradeInput && brokerAutoTradeInput.checked),
