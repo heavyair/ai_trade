@@ -2762,10 +2762,16 @@ textarea:focus {
 /* Vertical scroll now belongs to .param-dialog-body (the whole dialog scrolls as one column —
    see its comment above), but the table itself is still wider (min-width below) than a phone
    screen, so this still needs its OWN horizontal scrollbar or the columns past the viewport
-   edge — including "操作" with the Enable trade switch — become unreachable. */
+   edge — including "操作" with the Enable trade switch — become unreachable.
+   overflow-y is explicitly "hidden", not "visible": per the CSS overflow spec, pairing
+   overflow-x:auto with overflow-y:visible gets silently computed as overflow-y:auto instead
+   (browsers refuse "auto one axis, visible the other"), which turns this into its own
+   vertical scroll container too — with -webkit-overflow-scrolling:touch that's exactly the
+   nested-scroll-container trap that swallows the page's vertical swipe on iOS Safari. Explicit
+   "hidden" (a value other than visible) skips that forced conversion. */
 .watch-alerts-dialog .admin-ranking-list {
   overflow-x: auto;
-  overflow-y: visible;
+  overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   padding-bottom: 18px;
 }
