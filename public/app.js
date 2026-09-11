@@ -60,8 +60,6 @@ const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton
 const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
 const brokerAccountIdInput = document.querySelector("#brokerAccountIdInput");
 const brokerTradingModeSelect = document.querySelector("#brokerTradingModeSelect");
-const brokerHostInput = document.querySelector("#brokerHostInput");
-const brokerPortInput = document.querySelector("#brokerPortInput");
 const brokerClientIdInput = document.querySelector("#brokerClientIdInput");
 const brokerMaxOrderValueInput = document.querySelector("#brokerMaxOrderValueInput");
 const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
@@ -6401,8 +6399,6 @@ function renderBrokerSettings(connection, meta = {}) {
   const cfg = connection || {};
   if (brokerAccountIdInput) brokerAccountIdInput.value = cfg.accountId || "";
   if (brokerTradingModeSelect) brokerTradingModeSelect.value = cfg.tradingMode || "paper";
-  if (brokerHostInput) brokerHostInput.value = cfg.host || "ib-gateway";
-  if (brokerPortInput) brokerPortInput.value = cfg.port || (cfg.tradingMode === "live" ? 4003 : 4004);
   if (brokerClientIdInput) brokerClientIdInput.value = cfg.clientId || 77;
   if (brokerMaxOrderValueInput) brokerMaxOrderValueInput.value = cfg.maxOrderValue || 0;
   if (brokerEnabledInput) brokerEnabledInput.checked = Boolean(cfg.enabled);
@@ -6438,8 +6434,6 @@ async function saveBrokerSettings() {
       body: JSON.stringify({
         accountId: brokerAccountIdInput ? brokerAccountIdInput.value : "",
         tradingMode: brokerTradingModeSelect ? brokerTradingModeSelect.value : "paper",
-        host: brokerHostInput ? brokerHostInput.value : "ib-gateway",
-        port: brokerPortInput ? Number(brokerPortInput.value) : 4004,
         clientId: brokerClientIdInput ? Number(brokerClientIdInput.value) : 77,
         maxOrderValue: brokerMaxOrderValueInput ? Number(brokerMaxOrderValueInput.value) : 0,
         enabled: Boolean(brokerEnabledInput && brokerEnabledInput.checked),
@@ -6915,9 +6909,6 @@ if (watchShareCodeUsers) {
 }
 if (brokerTradingModeSelect) {
   brokerTradingModeSelect.addEventListener("change", async () => {
-    if (brokerPortInput && (!brokerPortInput.value || brokerPortInput.value === "7496" || brokerPortInput.value === "7497" || brokerPortInput.value === "4001" || brokerPortInput.value === "4002" || brokerPortInput.value === "4003" || brokerPortInput.value === "4004")) {
-      brokerPortInput.value = brokerTradingModeSelect.value === "live" ? "4003" : "4004";
-    }
     if (brokerAccountStatusText) brokerAccountStatusText.textContent = `正在切换到 ${brokerTradingModeSelect.value === "live" ? "Live" : "Paper"} 并刷新账户/订单...`;
     const saved = await saveBrokerSettings();
     if (saved) {
