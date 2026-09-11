@@ -46,8 +46,8 @@ Agent endpoints:
 - `GET /account-state`: reads account summary, positions, open orders, recent executions, and completed orders.
 - `GET /order-snapshots`: reads only open orders, recent executions, and completed orders for status polling.
 - `GET /order-events`: reads recent in-memory events captured by the agent for one `orderId`/`orderRef`.
-- `POST /orders`: submits a US stock limit order only when `TWS_AGENT_EXECUTION_ENABLED=true`.
-- `POST /orders/cancel`: cancels an order by broker order id only when `TWS_AGENT_EXECUTION_ENABLED=true`.
+- `POST /orders`: submits a US stock limit order only when execution is enabled (starts disabled; toggled via the IBKR page's "允许提交订单到 IBKR" switch, which calls `POST /execution`).
+- `POST /orders/cancel`: cancels an order by broker order id, same execution-enabled gate as above.
 
 Order status sync:
 

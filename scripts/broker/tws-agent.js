@@ -6,7 +6,10 @@ const BIND_HOST = process.env.TWS_AGENT_BIND_HOST || "127.0.0.1";
 const TWS_HOST = process.env.TWS_HOST || "127.0.0.1";
 const TWS_PORT = Number(process.env.TWS_PORT || 4002);
 const TWS_CLIENT_ID = Number(process.env.TWS_CLIENT_ID || 77);
-let executionEnabled = String(process.env.TWS_AGENT_EXECUTION_ENABLED || "").toLowerCase() === "true";
+// Always starts disabled — the only way to turn it on is the IBKR page's "允许提交订单到 IBKR"
+// switch (handleBrokerAgentExecutionApi -> POST /execution below), so there's one control for
+// this, not an env var that can silently disagree with what the UI shows.
+let executionEnabled = false;
 const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 10000);
 const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
 const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
