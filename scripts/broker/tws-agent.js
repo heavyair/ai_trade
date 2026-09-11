@@ -2,6 +2,7 @@ const http = require("http");
 const { IBApi, EventName, SecType, OrderAction, OrderType } = require("@stoqey/ib");
 
 const PORT = Number(process.env.TWS_AGENT_PORT || 7077);
+const BIND_HOST = process.env.TWS_AGENT_BIND_HOST || "127.0.0.1";
 const TWS_HOST = process.env.TWS_HOST || "127.0.0.1";
 const TWS_PORT = Number(process.env.TWS_PORT || 4002);
 const TWS_CLIENT_ID = Number(process.env.TWS_CLIENT_ID || 77);
@@ -844,7 +845,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`IBKR TWS agent stub listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, BIND_HOST, () => {
+  console.log(`IBKR TWS agent stub listening on http://${BIND_HOST}:${PORT}`);
   console.log(`TWS target ${TWS_HOST}:${TWS_PORT}, clientId=${TWS_CLIENT_ID}, execution=${executionEnabled ? "enabled" : "disabled"}`);
 });

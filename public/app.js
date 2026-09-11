@@ -14,6 +14,7 @@ const loadingOverlayText = document.querySelector("#loadingOverlayText");
 // getJson timeout comment for the accompanying server-side fix).
 const LOAD_DATA_TIMEOUT_MS = 45000;
 const wizardButtons = Array.from(document.querySelectorAll("[data-wizard-target]"));
+const wizardBrokerButton = document.querySelector("#wizardBrokerButton");
 const wizardPages = Array.from(document.querySelectorAll("[data-wizard-page]"));
 const simulationProgressButtons = Array.from(document.querySelectorAll("[data-simulation-step]"));
 const historyPanels = Array.from(document.querySelectorAll("[data-history-panel]"));
@@ -5808,6 +5809,7 @@ function renderWatchAlertSortHeader(column) {
 function renderWatchAlertActionsCell(watch) {
   const isFollowerRow = watch.role === "follower";
   const isSharedCodeRow = watch.role === "shared-code";
+  const canTrade = Boolean(currentUser && currentUser.isAdmin);
   if (isFollowerRow) {
     return `<button type="button" class="ghost-button watch-alert-unfollow-button" data-watch-id="${escapeHtml(watch.id)}">取消关注</button>`;
   }
@@ -5819,7 +5821,7 @@ function renderWatchAlertActionsCell(watch) {
         <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`;
   }
   return `
-    ${!watch.indexCode && watch.market === "US" ? `<label class="compact-check"><input type="checkbox" class="watch-alert-trade-enabled-input" data-watch-id="${escapeHtml(watch.id)}"${watch.tradeEnabled ? " checked" : ""}> Enable trade</label>` : ""}
+    ${canTrade && !watch.indexCode && watch.market === "US" ? `<label class="compact-check"><input type="checkbox" class="watch-alert-trade-enabled-input" data-watch-id="${escapeHtml(watch.id)}"${watch.tradeEnabled ? " checked" : ""}> Enable trade</label>` : ""}
     <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
     <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
@@ -8376,6 +8378,7 @@ function renderAuthState() {
   }
   if (logoutButton) logoutButton.classList.toggle("hidden", !isSignedIn);
   if (openAdminButton) openAdminButton.classList.toggle("hidden", !(isSignedIn && currentUser.isAdmin));
+  if (wizardBrokerButton) wizardBrokerButton.classList.toggle("hidden", !(isSignedIn && currentUser.isAdmin));
   if (resendVerificationButton) resendVerificationButton.classList.toggle("hidden", !needsVerification);
   if (newModelAuthNote) newModelAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
   if (watchAlertsAuthNote) watchAlertsAuthNote.classList.toggle("hidden", isSignedIn && !needsVerification);
@@ -8577,6 +8580,10 @@ function setSimulationStep(stepName) {
 }
 
 function setWizardPage(pageName) {
+  if (pageName === "broker" && !(currentUser && currentUser.isAdmin)) {
+    setStatus("只有 admin 用户可以访问 IBKR 交易。", true);
+    return;
+  }
   if (pageName === "new-model") {
     showDialog(newModelDialog);
     return;
