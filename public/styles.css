@@ -2709,31 +2709,16 @@ textarea:focus {
   justify-content: flex-end;
 }
 
-/* The dialog used to split into a fixed (non-scrolling) header area and a separately
-   scrolling #watchAlertsList — but every filter row/expander added above the list (账户可用
-   资金, Enable trade, the 汇总 panel, ...) grows that fixed area, and on a short mobile
-   viewport it can end up taller than the screen with nothing able to reach the parts pushed
-   off the top. Scrolling the whole dialog body as one column (sticky header only) means
-   nothing above the list can ever become unreachable, whatever gets added to it later. */
+/* This dialog used to split into a fixed (non-scrolling) header area plus a separately
+   scrolling #watchAlertsList, then a flex+sticky-header rewrite of that — both ran into mobile
+   Safari quirks (content pushed off-screen with no way to reach it; a nested overflow:auto
+   region swallowing the page's vertical swipe). Simplest fix: no sticky header, no nested flex
+   scroll region — just the same plain overflow:auto column every other .param-dialog-body
+   already uses, so there is exactly one scroll container and nothing to trap the gesture. */
 .watch-alerts-dialog .param-dialog-body {
-  display: flex;
-  flex-direction: column;
-  height: 100dvh;
-  max-height: 100dvh;
   overflow-y: auto;
-  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   padding-bottom: calc(18px + env(safe-area-inset-bottom));
-}
-
-.watch-alerts-dialog .dialog-head {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  margin: -18px -18px 0;
-  padding: 18px 18px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
 }
 
 .watch-alerts-summary {
