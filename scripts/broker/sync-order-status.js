@@ -229,6 +229,24 @@ async function notifyAutoTrade(intent, result) {
   }
 }
 
+// Requirement: "任何通过 IBKR 交易的单子状态都需要直接发邮件给客户" — this is where actual
+// IBKR-side transitions (filled/cancelled/rejected/...) are observed, so it's where they get
+// emailed; the confirm/decline/submit-failed emails around the confirmation step live in
+// server.js and run-watch-alerts.js instead, next to where those decisions are made.
+async function notifyOrderStatusChange(row, nextStatus) {
+  if (!row.intent_owner_email) return;
+  try {
+    const symbolLabel = `${row.intent_symbol_name || row.intent_symbol || ""}（${row.intent_symbol || ""}）`;
+    const actionText = row.intent_side === "buy" ? "买入" : row.intent_side === "sell" ? "卖出" : (row.intent_side || "");
+    const subject = `IBKR 订单状态更新：${symbolLabel} ${actionText} -> ${nextStatus}`;
+    const text = [subject, `订单号：${row.broker_order_id}`, `新状态：${nextStatus}`].join("\n");
+    const html = `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937"><h2>${subject}</h2><p>订单号：${row.broker_order_id}</p><p>新状态：${nextStatus}</p></div>`;
+    await postJsonToResend({ from: EMAIL_FROM, to: [row.intent_owner_email], subject, html, text });
+  } catch (error) {
+    console.error(JSON.stringify({ ok: false, error: `failed to send order-status notice: ${error.message}`, brokerOrderId: row.id }));
+  }
+}
+
 async function submitPendingAutoTradeIntents(options) {
   const state = await getJson(`${IBKR_TWS_AGENT_URL}/execution`, 8_000);
   if (!state.executionEnabled) return { submitted: 0, failed: 0, skipped: "agent execution disabled" };
@@ -338,12 +356,14 @@ async function syncOnce(options) {
   const autoTrade = await submitPendingAutoTradeIntents(options);
   const accountState = await getJson(`${IBKR_TWS_AGENT_URL}/order-snapshots`, REQUEST_TIMEOUT_MS);
   const orders = await pool.query(`
-    SELECT *
-    FROM broker_orders
-    WHERE provider = 'ibkr-tws'
-      AND broker_order_id <> ''
-      AND LOWER(status) <> ALL($1::text[])
-    ORDER BY updated_at ASC
+    SELECT bo.*, ti.symbol AS intent_symbol, ti.symbol_name AS intent_symbol_name,
+           ti.side AS intent_side, ti.owner_email AS intent_owner_email
+    FROM broker_orders bo
+    LEFT JOIN trade_intents ti ON ti.id = bo.intent_id
+    WHERE bo.provider = 'ibkr-tws'
+      AND bo.broker_order_id <> ''
+      AND LOWER(bo.status) <> ALL($1::text[])
+    ORDER BY bo.updated_at ASC
     LIMIT $2
   `, [Array.from(TERMINAL_STATUSES), options.limit]);
 
@@ -363,12 +383,13 @@ async function syncOnce(options) {
     if (!latest) continue;
     const nextStatus = statusFromCandidate(latest, row.status);
     await insertBrokerEvent(row, latest, options.dryRun);
-    if (!options.dryRun) {
+    if (!options.dryRun && nextStatus && nextStatus !== row.status) {
       await pool.query(`
         UPDATE broker_orders
         SET status = $2, last_event = $3::jsonb, updated_at = NOW()
         WHERE id = $1
-      `, [row.id, nextStatus || row.status, JSON.stringify(latest)]);
+      `, [row.id, nextStatus, JSON.stringify(latest)]);
+      await notifyOrderStatusChange(row, nextStatus);
     }
     changed += 1;
   }

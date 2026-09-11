@@ -486,6 +486,9 @@ async function initializeDatabase() {
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_trades JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS account_updated_at TIMESTAMPTZ;
     ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS trade_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Capital manually allocated to this watch's IBKR auto-trade sizing (shares = floor(capital
+    -- / signal price)). Enable trade is refused while this is 0 — see handleWatchAlertsApi.
+    ALTER TABLE watch_alerts ADD COLUMN IF NOT EXISTS trade_capital DOUBLE PRECISION NOT NULL DEFAULT 0;
 
     -- 指数盯盘: symbol/symbol_name become optional, index_code/index_name are the index-mode
     -- counterpart — exactly one of (symbol) or (index_code) is set per row (enforced in
@@ -631,6 +634,16 @@ async function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS trade_intents_watch_signal_idx
       ON trade_intents(owner_user_id, watch_id, source_signal_date, side)
       WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL;
+
+    -- Email confirm/decline gate for盯盘 auto-trade: a signal no longer submits straight to
+    -- IBKR — it sits at status='awaiting_confirmation' holding a one-time confirmation_token
+    -- until the owner clicks confirm/decline on the emailed link (handleTradeIntentConfirmApi /
+    -- handleTradeIntentDeclineApi), or confirmation_expires_at passes and it's swept to 'expired'.
+    ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_token TEXT NOT NULL DEFAULT '';
+    ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_expires_at TIMESTAMPTZ;
+    ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
+    CREATE UNIQUE INDEX IF NOT EXISTS trade_intents_confirmation_token_idx
+      ON trade_intents(confirmation_token) WHERE confirmation_token <> '';
 
     CREATE TABLE IF NOT EXISTS broker_orders (
       id TEXT PRIMARY KEY,
@@ -4102,6 +4115,7 @@ function mapWatchAlertRow(row, {
     frequencyMinutes: row.frequency_minutes,
     enabled: row.enabled,
     tradeEnabled: Boolean(row.trade_enabled),
+    tradeCapital: isFollowerView ? 0 : (Number(row.trade_capital) || 0),
     lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
     lastSignalDate: row.last_signal_date ? new Date(row.last_signal_date).toISOString().slice(0, 10) : "",
     lastSignalAction: row.last_signal_action || "",
@@ -4521,6 +4535,9 @@ async function handleWatchAlertsApi(req, res) {
       }
       const enabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
       const tradeEnabled = typeof payload.tradeEnabled === "boolean" ? payload.tradeEnabled : null;
+      const tradeCapital = payload.tradeCapital !== undefined
+        ? Math.max(0, toFiniteNumber(payload.tradeCapital, 0))
+        : null;
       const frequencyMinutes = payload.frequencyMinutes !== undefined
         ? Math.round(Number(payload.frequencyMinutes))
         : null;
@@ -4528,13 +4545,13 @@ async function handleWatchAlertsApi(req, res) {
         sendJson(res, 400, { error: "检查频率不合法。" });
         return;
       }
-      if (tradeEnabled !== null && !isAdminEmail(user.email)) {
-        sendJson(res, 403, { error: "只有 admin 用户可以修改 Enable trade。" });
+      if ((tradeEnabled !== null || tradeCapital !== null) && !isAdminEmail(user.email)) {
+        sendJson(res, 403, { error: "只有 admin 用户可以修改 Enable trade / 账户可用资金。" });
         return;
       }
       if (tradeEnabled === true) {
         const watchCheck = await dbQuery(`
-          SELECT market, index_code FROM watch_alerts WHERE id = $1 AND owner_user_id = $2
+          SELECT market, index_code, trade_capital FROM watch_alerts WHERE id = $1 AND owner_user_id = $2
         `, [id, ownerUserId]);
         if (watchCheck.rows.length === 0) {
           sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
@@ -4549,17 +4566,23 @@ async function handleWatchAlertsApi(req, res) {
           sendJson(res, 400, { error: "开启 Enable trade 前，请先配置并启用 IBKR Paper 连接。" });
           return;
         }
+        const effectiveCapital = tradeCapital !== null ? tradeCapital : toFiniteNumber(watchCheck.rows[0].trade_capital, 0);
+        if (!(effectiveCapital > 0)) {
+          sendJson(res, 400, { error: "开启 Enable trade 前，请先填写大于 0 的账户可用资金。" });
+          return;
+        }
       }
       const result = await dbQuery(`
         UPDATE watch_alerts SET
           enabled = COALESCE($3, enabled),
           frequency_minutes = COALESCE($4, frequency_minutes),
           trade_enabled = COALESCE($5, trade_enabled),
+          trade_capital = COALESCE($6, trade_capital),
           consecutive_failures = CASE WHEN $3 = TRUE THEN 0 ELSE consecutive_failures END,
           updated_at = NOW()
         WHERE id = $1 AND owner_user_id = $2
         RETURNING *
-      `, [id, ownerUserId, enabled, frequencyMinutes, tradeEnabled]);
+      `, [id, ownerUserId, enabled, frequencyMinutes, tradeEnabled, tradeCapital]);
       if (result.rows.length === 0) {
         sendJson(res, 404, { error: "盯盘提醒不存在，或者你不是它的 owner。" });
         return;
@@ -7504,6 +7527,8 @@ function mapTradeIntentRow(row) {
     status: row.status || "pending_review",
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
     approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : "",
+    confirmedAt: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : "",
+    confirmationExpiresAt: row.confirmation_expires_at ? new Date(row.confirmation_expires_at).toISOString() : "",
     submittedAt: row.submitted_at ? new Date(row.submitted_at).toISOString() : "",
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
@@ -7918,6 +7943,231 @@ async function handleTradeIntentFromWatchApi(req, res) {
   }
 }
 
+// Shared by the admin "submit" action (handleTradeIntentActionApi) and the email
+// confirm-link flow (handleTradeIntentConfirmApi) — both end up doing the exact same
+// agent call / broker_orders bookkeeping / status transition once an intent is cleared to fire.
+async function submitTradeIntentOrder(intent, ownerUserId, connection) {
+  const mappedIntent = mapTradeIntentRow(intent);
+  let agentResult = null;
+  try {
+    agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
+      intent: mappedIntent,
+      connection: brokerConnectionAgentParams(connection),
+    });
+  } catch (agentError) {
+    const failureEvent = {
+      ok: false,
+      error: agentError.message || "IBKR API agent 提交失败。",
+      statusCode: agentError.statusCode || 0,
+      response: agentError.payload || null,
+      responseBody: agentError.responseBody || "",
+      failedAt: new Date().toISOString(),
+    };
+    await dbQuery(`
+      INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+      VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+    `, [
+      randomId("border"), intent.id, ownerUserId, intent.broker_account_id || "",
+      JSON.stringify(mappedIntent),
+      JSON.stringify(failureEvent),
+    ]);
+    await dbQuery(`UPDATE trade_intents SET updated_at = NOW() WHERE id = $1 AND owner_user_id = $2`, [intent.id, ownerUserId]);
+    return { ok: false, error: failureEvent.error, brokerOrder: failureEvent };
+  }
+  const brokerOrderId = randomId("border");
+  await dbQuery(`
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+  `, [
+    brokerOrderId, intent.id, ownerUserId, intent.broker_account_id || "",
+    String(agentResult.orderId || agentResult.brokerOrderId || ""),
+    String(agentResult.status || "submitted"),
+    JSON.stringify(mappedIntent),
+    JSON.stringify(agentResult),
+  ]);
+  const updated = await dbQuery(`
+    UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()
+    WHERE id = $1 AND owner_user_id = $2
+    RETURNING *
+  `, [intent.id, ownerUserId, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
+  scheduleBrokerOrderPull(ownerUserId);
+  return { ok: true, intent: updated.rows[0], brokerOrder: agentResult };
+}
+
+// One email per intent-status milestone (requirement: "任何通过 IBKR 交易的单子状态都需要直接发
+// 邮件给客户") — covers the confirm-link outcomes here; the awaiting_confirmation email itself is
+// sent from run-watch-alerts.js (that's where the signal is detected), and ongoing IBKR order
+// events (filled/cancelled/rejected) are emailed from scripts/broker/sync-order-status.js where
+// those transitions are actually observed.
+function buildTradeIntentStatusEmail(intent, kind, extra = {}) {
+  const symbolLabel = `${intent.symbol_name || intent.symbol}（${intent.symbol}）`;
+  const actionText = intent.side === "buy" ? "买入" : "卖出";
+  const labels = {
+    submitted: "订单已提交 IBKR",
+    submit_failed: "订单提交失败",
+    declined: "已放弃下单",
+    expired: "确认已过期，未下单",
+  };
+  const label = labels[kind] || kind;
+  const rows = [
+    ["股票", symbolLabel],
+    ["方向", actionText],
+    ["数量", String(intent.quantity)],
+    ["限价", String(intent.limit_price)],
+  ];
+  if (kind === "submit_failed" && extra.error) rows.push(["失败原因", extra.error]);
+  if (kind === "submitted" && extra.brokerOrder) rows.push(["IBKR 订单号", String(extra.brokerOrder.orderId || extra.brokerOrder.brokerOrderId || "")]);
+  const subject = `IBKR 交易${label}：${symbolLabel} ${actionText}`;
+  const text = [subject, ...rows.map(([k, v]) => `${k}：${v}`)].join("\n");
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">
+      <h2>${escapeHtml(subject)}</h2>
+      <table style="border-collapse:collapse;margin:12px 0">
+        <tbody>${rows.map(([k, v]) => `
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(k)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(v)}</td></tr>
+        `).join("")}</tbody>
+      </table>
+    </div>
+  `;
+  return { subject, html, text };
+}
+
+async function notifyTradeIntentStatus(intent, kind, extra = {}) {
+  try {
+    const { subject, html, text } = buildTradeIntentStatusEmail(intent, kind, extra);
+    await postJsonToResend({ from: EMAIL_FROM, to: [intent.owner_email], subject, html, text });
+  } catch (error) {
+    console.error(`[error] failed to send trade intent status email for intent=${intent.id}: ${error.message}`);
+  }
+}
+
+// GET: fetch the intent behind an emailed confirm/decline link, keyed by id+token (not the
+// caller's session) since the token IS the authorization for this one intent — but still
+// requires login, and still checks ownership, so a leaked link can't be actioned by anyone
+// but the account it was generated for.
+async function handleTradeIntentConfirmationApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const id = String(requestUrl.searchParams.get("id") || "").trim();
+    const token = String(requestUrl.searchParams.get("token") || "").trim();
+    const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1`, [id]);
+    const intent = intentResult.rows[0];
+    if (!intent || intent.owner_user_id !== ownerUserId) {
+      sendJson(res, 404, { error: "交易确认链接不存在。" });
+      return;
+    }
+    if (!token || intent.confirmation_token !== token) {
+      sendJson(res, 400, { error: "交易确认链接无效。" });
+      return;
+    }
+    const expired = intent.status === "awaiting_confirmation"
+      && intent.confirmation_expires_at
+      && new Date(intent.confirmation_expires_at).getTime() < Date.now();
+    sendJson(res, 200, { intent: mapTradeIntentRow(intent), expired: Boolean(expired) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取交易确认信息失败。" });
+  }
+}
+
+async function handleTradeIntentConfirmApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const id = String(payload.id || "").trim();
+    const token = String(payload.token || "").trim();
+    const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1`, [id]);
+    const intent = intentResult.rows[0];
+    if (!intent || intent.owner_user_id !== ownerUserId) {
+      sendJson(res, 404, { error: "交易确认链接不存在。" });
+      return;
+    }
+    if (!token || intent.confirmation_token !== token) {
+      sendJson(res, 400, { error: "交易确认链接无效。" });
+      return;
+    }
+    if (intent.status !== "awaiting_confirmation") {
+      sendJson(res, 400, { error: "这笔交易已经处理过，不能重复确认。", intent: mapTradeIntentRow(intent) });
+      return;
+    }
+    if (intent.confirmation_expires_at && new Date(intent.confirmation_expires_at).getTime() < Date.now()) {
+      const expiredRow = await dbQuery(`
+        UPDATE trade_intents SET status = 'expired', updated_at = NOW() WHERE id = $1 RETURNING *
+      `, [id]);
+      await notifyTradeIntentStatus(expiredRow.rows[0], "expired");
+      sendJson(res, 400, { error: "确认链接已过期，本次信号未下单。" });
+      return;
+    }
+    // Records the user's decision regardless of whether the broker submission below
+    // succeeds — "confirmed" and "submitted" are deliberately separate states (requirement:
+    // track user-confirmation status and IBKR order status independently).
+    await dbQuery(`UPDATE trade_intents SET confirmed_at = NOW(), updated_at = NOW() WHERE id = $1`, [id]);
+    if (!IBKR_TWS_AGENT_URL) {
+      sendJson(res, 503, { error: "IBKR API agent 未配置。" });
+      return;
+    }
+    const connection = await loadBrokerConnection(ownerUserId);
+    const submission = await submitTradeIntentOrder(intent, ownerUserId, connection);
+    await notifyTradeIntentStatus(submission.ok ? submission.intent : intent, submission.ok ? "submitted" : "submit_failed", submission);
+    if (!submission.ok) {
+      sendJson(res, 502, { error: `IBKR Gateway 返回错误：${submission.error}` });
+      return;
+    }
+    sendJson(res, 200, { intent: mapTradeIntentRow(submission.intent), brokerOrder: submission.brokerOrder });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "确认下单失败。" });
+  }
+}
+
+async function handleTradeIntentDeclineApi(req, res) {
+  try {
+    const user = await requireCurrentUser(req);
+    const ownerUserId = userIdForEmail(user.email);
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const body = await readRequestBody(req);
+    const payload = body ? JSON.parse(body) : {};
+    const id = String(payload.id || "").trim();
+    const token = String(payload.token || "").trim();
+    const intentResult = await dbQuery(`SELECT * FROM trade_intents WHERE id = $1`, [id]);
+    const intent = intentResult.rows[0];
+    if (!intent || intent.owner_user_id !== ownerUserId) {
+      sendJson(res, 404, { error: "交易确认链接不存在。" });
+      return;
+    }
+    if (!token || intent.confirmation_token !== token) {
+      sendJson(res, 400, { error: "交易确认链接无效。" });
+      return;
+    }
+    if (intent.status !== "awaiting_confirmation") {
+      sendJson(res, 400, { error: "这笔交易已经处理过。", intent: mapTradeIntentRow(intent) });
+      return;
+    }
+    const result = await dbQuery(`
+      UPDATE trade_intents SET status = 'cancelled', cancelled_at = NOW(), confirmed_at = NOW(), updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `, [id]);
+    await notifyTradeIntentStatus(result.rows[0], "declined");
+    sendJson(res, 200, { intent: mapTradeIntentRow(result.rows[0]) });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "放弃下单失败。" });
+  }
+}
+
 async function handleTradeIntentActionApi(req, res) {
   try {
     const user = await requireAdminUser(req);
@@ -7937,7 +8187,7 @@ async function handleTradeIntentActionApi(req, res) {
     if (action === "cancel") {
       const result = await dbQuery(`
         UPDATE trade_intents SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND owner_user_id = $2 AND status IN ('pending_review', 'approved', 'blocked')
+        WHERE id = $1 AND owner_user_id = $2 AND status IN ('pending_review', 'approved', 'blocked', 'awaiting_confirmation')
         RETURNING *
       `, [id, ownerUserId]);
       if (result.rows.length === 0) {
@@ -7982,57 +8232,16 @@ async function handleTradeIntentActionApi(req, res) {
         return;
       }
       const connection = await loadBrokerConnection(ownerUserId);
-      const mappedIntent = mapTradeIntentRow(intent);
-      let agentResult = null;
-      try {
-        agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
-          intent: mappedIntent,
-          connection: brokerConnectionAgentParams(connection),
-        });
-      } catch (agentError) {
-        const failureEvent = {
-          ok: false,
-          error: agentError.message || "IBKR API agent 提交失败。",
-          statusCode: agentError.statusCode || 0,
-          response: agentError.payload || null,
-          responseBody: agentError.responseBody || "",
-          failedAt: new Date().toISOString(),
-        };
-        await dbQuery(`
-          INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-          VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
-        `, [
-          randomId("border"), intent.id, ownerUserId, intent.broker_account_id || "",
-          JSON.stringify(mappedIntent),
-          JSON.stringify(failureEvent),
-        ]);
-        await dbQuery(`UPDATE trade_intents SET updated_at = NOW() WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId]);
+      const submission = await submitTradeIntentOrder(intent, ownerUserId, connection);
+      if (!submission.ok) {
         sendJson(res, 502, {
-          error: `IBKR Gateway 返回错误：${failureEvent.error}`,
-          intent: mappedIntent,
-          brokerOrder: failureEvent,
-          agentResponse: agentError.payload || null,
+          error: `IBKR Gateway 返回错误：${submission.error}`,
+          intent: mapTradeIntentRow(intent),
+          brokerOrder: submission.brokerOrder,
         });
         return;
       }
-      const brokerOrderId = randomId("border");
-      await dbQuery(`
-        INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-        VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
-      `, [
-        brokerOrderId, intent.id, ownerUserId, intent.broker_account_id || "",
-        String(agentResult.orderId || agentResult.brokerOrderId || ""),
-        String(agentResult.status || "submitted"),
-        JSON.stringify(mappedIntent),
-        JSON.stringify(agentResult),
-      ]);
-      const updated = await dbQuery(`
-        UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()
-        WHERE id = $1 AND owner_user_id = $2
-        RETURNING *
-      `, [id, ownerUserId, String(agentResult.orderId || agentResult.brokerOrderId || "")]);
-      scheduleBrokerOrderPull(ownerUserId);
-      sendJson(res, 200, { intent: mapTradeIntentRow(updated.rows[0]), brokerOrder: agentResult });
+      sendJson(res, 200, { intent: mapTradeIntentRow(submission.intent), brokerOrder: submission.brokerOrder });
       return;
     }
     sendJson(res, 400, { error: "未知交易操作。" });
@@ -8436,6 +8645,21 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/broker/trade-intents/action") {
     handleTradeIntentActionApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents/confirmation") {
+    handleTradeIntentConfirmationApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents/confirm") {
+    handleTradeIntentConfirmApi(req, res);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/broker/trade-intents/decline") {
+    handleTradeIntentDeclineApi(req, res);
     return;
   }
 

@@ -65,6 +65,12 @@ const brokerStatusText = document.querySelector("#brokerStatusText");
 const brokerExecutionEnabledInput = document.querySelector("#brokerExecutionEnabledInput");
 const brokerSaveExecutionButton = document.querySelector("#brokerSaveExecutionButton");
 const brokerExecutionStatusText = document.querySelector("#brokerExecutionStatusText");
+const tradeConfirmDialog = document.querySelector("#tradeConfirmDialog");
+const tradeConfirmBody = document.querySelector("#tradeConfirmBody");
+const tradeConfirmConfirmButton = document.querySelector("#tradeConfirmConfirmButton");
+const tradeConfirmDeclineButton = document.querySelector("#tradeConfirmDeclineButton");
+const tradeConfirmStatusText = document.querySelector("#tradeConfirmStatusText");
+const closeTradeConfirmButton = document.querySelector("#closeTradeConfirmButton");
 const brokerRefreshAccountButton = document.querySelector("#brokerRefreshAccountButton");
 const brokerAccountStatusText = document.querySelector("#brokerAccountStatusText");
 const brokerAccountSummaryList = document.querySelector("#brokerAccountSummaryList");
@@ -5815,7 +5821,12 @@ function renderWatchAlertActionsCell(watch) {
         <button type="button" class="ghost-button watch-share-code-leave-button" data-watch-id="${escapeHtml(watch.id)}">退出分享码</button>`;
   }
   return `
-    ${canTrade && !watch.indexCode && watch.market === "US" ? `<label class="compact-check"><input type="checkbox" class="watch-alert-trade-enabled-input" data-watch-id="${escapeHtml(watch.id)}"${watch.tradeEnabled ? " checked" : ""}> Enable trade</label>` : ""}
+    ${canTrade && !watch.indexCode && watch.market === "US" ? `
+      <label class="compact-check"><input type="checkbox" class="watch-alert-trade-enabled-input" data-watch-id="${escapeHtml(watch.id)}"${watch.tradeEnabled ? " checked" : ""}> Enable trade</label>
+      <label class="compact-check">账户可用资金
+        <input type="number" min="0" step="100" class="watch-alert-trade-capital-input" data-watch-id="${escapeHtml(watch.id)}" value="${escapeHtml(watch.tradeCapital || 0)}" style="width:100px">
+      </label>
+    ` : ""}
     <button type="button" class="ghost-button watch-alert-toggle-button" data-watch-id="${escapeHtml(watch.id)}" data-enabled="${watch.enabled ? "1" : "0"}">${watch.enabled ? "停用" : "启用"}</button>
     <button type="button" class="ghost-button watch-alert-delete-button" data-watch-id="${escapeHtml(watch.id)}">删除</button>
     <button type="button" class="ghost-button watch-alert-share-button" data-watch-id="${escapeHtml(watch.id)}" data-regenerate="0">${watch.inviteToken ? "复制分享链接" : "生成分享链接"}</button>
@@ -6197,6 +6208,21 @@ async function setWatchTradeEnabled(id, enabled) {
     setStatus(`Enable trade 已${enabled ? "开启" : "关闭"}。`);
   } catch (error) {
     setStatus(`更新自动交易开关失败：${error.message}`, true);
+    await loadMyWatchAlerts();
+  }
+}
+
+async function setWatchTradeCapital(id, capital) {
+  try {
+    const response = await fetch("/api/watch-alerts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, tradeCapital: capital }),
+    });
+    await readJsonResponse(response, "更新账户可用资金失败。");
+    setStatus("账户可用资金已保存。");
+  } catch (error) {
+    setStatus(`更新账户可用资金失败：${error.message}`, true);
     await loadMyWatchAlerts();
   }
 }
@@ -6681,9 +6707,11 @@ function formatTradeIntentStatus(status) {
   return {
     pending_review: "待确认",
     approved: "已批准",
+    awaiting_confirmation: "等待邮件确认",
     submitted: "已提交",
-    cancelled: "已取消",
+    cancelled: "已取消/已放弃",
     blocked: "已阻止",
+    expired: "确认已过期",
   }[status] || status || "--";
 }
 
@@ -6743,7 +6771,7 @@ function renderBrokerTradeIntents(intents) {
           <td class="admin-row-actions">
             ${intent.status === "pending_review" && intent.riskStatus === "passed" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="approve">批准</button>` : ""}
             ${intent.status === "approved" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="submit">提交到IBKR</button>` : ""}
-            ${intent.status === "pending_review" || intent.status === "approved" || intent.status === "blocked" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="cancel">取消</button>` : ""}
+            ${intent.status === "pending_review" || intent.status === "approved" || intent.status === "blocked" || intent.status === "awaiting_confirmation" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="cancel">取消</button>` : ""}
           </td>
         </tr>
       `).join("")}</tbody>
@@ -6964,11 +6992,111 @@ function checkAutoFollowFromUrl() {
   });
 }
 
+function checkTradeConfirmFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get("tradeConfirmId");
+  const token = params.get("tradeConfirmToken");
+  if (!id || !token) return;
+  const action = params.get("tradeConfirmAction") || "";
+  params.delete("tradeConfirmId");
+  params.delete("tradeConfirmToken");
+  params.delete("tradeConfirmAction");
+  const nextSearch = params.toString();
+  window.history.replaceState({}, "", location.pathname + (nextSearch ? `?${nextSearch}` : "") + location.hash);
+  if (!currentUser) {
+    setStatus("这是一个 IBKR 交易确认链接，请先登录再重新打开邮件里的链接。", true);
+    return;
+  }
+  openTradeConfirmDialog(id, token, action);
+}
+
+async function openTradeConfirmDialog(id, token, action) {
+  if (!tradeConfirmDialog) return;
+  if (tradeConfirmStatusText) tradeConfirmStatusText.textContent = "";
+  if (tradeConfirmBody) tradeConfirmBody.innerHTML = "<p class=\"field-hint\">正在读取交易确认信息...</p>";
+  if (tradeConfirmConfirmButton) tradeConfirmConfirmButton.classList.add("hidden");
+  if (tradeConfirmDeclineButton) tradeConfirmDeclineButton.classList.add("hidden");
+  showDialog(tradeConfirmDialog);
+  try {
+    const response = await fetch(`/api/broker/trade-intents/confirmation?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    const payload = await readJsonResponse(response, "读取交易确认信息失败。");
+    renderTradeConfirmDialog(payload.intent, Boolean(payload.expired), id, token);
+  } catch (error) {
+    if (tradeConfirmBody) tradeConfirmBody.innerHTML = `<p class="field-hint">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function renderTradeConfirmDialog(intent, expired, id, token) {
+  const isPending = intent.status === "awaiting_confirmation" && !expired;
+  const symbolLabel = `${intent.symbolName || intent.symbol}（${intent.symbol}）`;
+  const actionText = intent.side === "buy" ? "买入" : "卖出";
+  const statusLabels = {
+    awaiting_confirmation: expired ? "已过期" : "等待确认",
+    submitted: "已提交 IBKR",
+    cancelled: "已放弃",
+    expired: "已过期",
+    blocked: "被风控拦截",
+  };
+  const rows = [
+    ["股票", symbolLabel],
+    ["方向", actionText],
+    ["数量", String(intent.quantity)],
+    ["限价", String(intent.limitPrice)],
+    ["预估金额", intent.estimatedNotional.toFixed(2)],
+    ["当前状态", statusLabels[intent.status] || intent.status],
+  ];
+  if (tradeConfirmBody) {
+    tradeConfirmBody.innerHTML = `
+      <table style="border-collapse:collapse;margin:12px 0;width:100%">
+        <tbody>${rows.map(([k, v]) => `
+          <tr><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(k)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5ebf3">${escapeHtml(v)}</td></tr>
+        `).join("")}</tbody>
+      </table>
+      ${!isPending ? `<p class="field-hint">这笔交易已经处理过或已过期，不能再确认/放弃。</p>` : ""}
+    `;
+  }
+  if (tradeConfirmConfirmButton) {
+    tradeConfirmConfirmButton.classList.toggle("hidden", !isPending);
+    tradeConfirmConfirmButton.onclick = () => submitTradeConfirmDecision(id, token, "confirm");
+  }
+  if (tradeConfirmDeclineButton) {
+    tradeConfirmDeclineButton.classList.toggle("hidden", !isPending);
+    tradeConfirmDeclineButton.onclick = () => submitTradeConfirmDecision(id, token, "decline");
+  }
+}
+
+async function submitTradeConfirmDecision(id, token, decision) {
+  if (tradeConfirmStatusText) tradeConfirmStatusText.textContent = decision === "confirm" ? "正在提交订单..." : "正在放弃...";
+  if (tradeConfirmConfirmButton) tradeConfirmConfirmButton.disabled = true;
+  if (tradeConfirmDeclineButton) tradeConfirmDeclineButton.disabled = true;
+  try {
+    const response = await fetch(`/api/broker/trade-intents/${decision}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, token }),
+    });
+    await readJsonResponse(response, decision === "confirm" ? "确认下单失败。" : "放弃下单失败。");
+    if (tradeConfirmStatusText) tradeConfirmStatusText.textContent = decision === "confirm" ? "已提交 IBKR。" : "已放弃下单。";
+    if (tradeConfirmConfirmButton) tradeConfirmConfirmButton.classList.add("hidden");
+    if (tradeConfirmDeclineButton) tradeConfirmDeclineButton.classList.add("hidden");
+    setStatus(decision === "confirm" ? "已确认并提交 IBKR 订单。" : "已放弃这笔交易。");
+  } catch (error) {
+    if (tradeConfirmStatusText) tradeConfirmStatusText.textContent = "";
+    setStatus(`${decision === "confirm" ? "确认下单" : "放弃下单"}失败：${error.message}`, true);
+  } finally {
+    if (tradeConfirmConfirmButton) tradeConfirmConfirmButton.disabled = false;
+    if (tradeConfirmDeclineButton) tradeConfirmDeclineButton.disabled = false;
+  }
+}
+
 if (watchAlertsCreateButton) {
   watchAlertsCreateButton.addEventListener("click", () => createWatchAlert());
 }
 if (closeWatchAlertsButton && watchAlertsDialog) {
   closeWatchAlertsButton.addEventListener("click", () => closeDialog(watchAlertsDialog));
+}
+if (closeTradeConfirmButton && tradeConfirmDialog) {
+  closeTradeConfirmButton.addEventListener("click", () => closeDialog(tradeConfirmDialog));
 }
 if (watchAlertsList) {
   watchAlertsList.addEventListener("click", (event) => {
@@ -7020,9 +7148,15 @@ if (watchAlertsList) {
     }
   });
   watchAlertsList.addEventListener("change", (event) => {
-    const input = event.target && event.target.closest ? event.target.closest(".watch-alert-trade-enabled-input") : null;
-    if (!input) return;
-    setWatchTradeEnabled(input.dataset.watchId, Boolean(input.checked));
+    const enabledInput = event.target && event.target.closest ? event.target.closest(".watch-alert-trade-enabled-input") : null;
+    if (enabledInput) {
+      setWatchTradeEnabled(enabledInput.dataset.watchId, Boolean(enabledInput.checked));
+      return;
+    }
+    const capitalInput = event.target && event.target.closest ? event.target.closest(".watch-alert-trade-capital-input") : null;
+    if (capitalInput) {
+      setWatchTradeCapital(capitalInput.dataset.watchId, Number(capitalInput.value) || 0);
+    }
   });
 }
 
@@ -18133,6 +18267,7 @@ async function initializeApp() {
   renderAuthState();
   await fetchAuthSession();
   checkAutoFollowFromUrl();
+  checkTradeConfirmFromUrl();
   await initializeServerCustomPresets();
   initializeServerRankingRecords();
   setStatus(t("initialStatus"));

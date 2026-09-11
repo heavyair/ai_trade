@@ -88,6 +88,24 @@
         </form>
       </dialog>
 
+      <dialog id="tradeConfirmDialog" class="param-dialog" aria-label="确认 IBKR 下单">
+        <form method="dialog" class="param-dialog-body">
+          <div class="dialog-head">
+            <div>
+              <h2>确认 IBKR 下单</h2>
+              <p class="field-hint">点击邮件里的链接后，在这里再确认一次才会真正提交或放弃。</p>
+            </div>
+            <button id="closeTradeConfirmButton" class="ghost-button" type="button">关闭</button>
+          </div>
+          <div id="tradeConfirmBody"></div>
+          <div class="admin-scan-filter-row">
+            <button type="button" id="tradeConfirmConfirmButton" class="ghost-button hidden">确认下单</button>
+            <button type="button" id="tradeConfirmDeclineButton" class="ghost-button hidden">放弃</button>
+            <span id="tradeConfirmStatusText" class="field-hint"></span>
+          </div>
+        </form>
+      </dialog>
+
       <dialog id="watchAlertsDialog" class="param-dialog watch-alerts-dialog" aria-label="设置盯盘提醒">
         <form method="dialog" class="param-dialog-body">
           <div class="dialog-head">
