@@ -6653,6 +6653,24 @@ function formatTradeIntentStatus(status) {
   }[status] || status || "--";
 }
 
+function formatBrokerOrderStatus(order) {
+  if (!order) return "--";
+  const lastEvent = order.lastEvent || {};
+  const parts = [order.status || lastEvent.status || "--"];
+  if (order.brokerOrderId) parts.push(`#${order.brokerOrderId}`);
+  if (lastEvent.message) parts.push(lastEvent.message);
+  if (lastEvent.warningText) parts.push(lastEvent.warningText);
+  if (lastEvent.eventAt) parts.push(String(lastEvent.eventAt).replace("T", " ").slice(0, 19));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function brokerOrderStatusClass(order) {
+  const status = String((order && order.status) || "").toLowerCase();
+  if (status.includes("filled") || status.includes("submitted")) return "up";
+  if (status.includes("reject") || status.includes("inactive") || status.includes("cancel")) return "down";
+  return "";
+}
+
 function renderBrokerTradeIntents(intents) {
   if (!brokerIntentList) return;
   if (!intents || intents.length === 0) {
@@ -6672,6 +6690,7 @@ function renderBrokerTradeIntents(intents) {
           <th>信号日</th>
           <th>风控</th>
           <th>状态</th>
+          <th>IBKR订单</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -6686,6 +6705,7 @@ function renderBrokerTradeIntents(intents) {
           <td>${escapeHtml(intent.sourceSignalDate || "--")}</td>
           <td>${intent.riskStatus === "passed" ? '<span class="up">通过</span>' : `<span class="down">${escapeHtml(intent.riskMessage || intent.riskStatus || "未检查")}</span>`}</td>
           <td>${escapeHtml(formatTradeIntentStatus(intent.status))}</td>
+          <td class="${brokerOrderStatusClass(intent.latestBrokerOrder)}">${escapeHtml(formatBrokerOrderStatus(intent.latestBrokerOrder))}</td>
           <td class="admin-row-actions">
             ${intent.status === "pending_review" && intent.riskStatus === "passed" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="approve">批准</button>` : ""}
             ${intent.status === "approved" ? `<button type="button" class="ghost-button broker-intent-action-button" data-intent-id="${escapeHtml(intent.id)}" data-action="submit">提交到IBKR</button>` : ""}

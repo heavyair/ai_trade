@@ -7425,8 +7425,25 @@ function mapBrokerConnectionRow(row) {
   };
 }
 
+function parseJsonField(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
 function mapTradeIntentRow(row) {
-  return {
+  const latestBrokerOrder = row.latest_broker_order_row_id ? {
+    id: row.latest_broker_order_row_id || "",
+    brokerOrderId: row.latest_broker_order_id || "",
+    status: row.latest_broker_order_status || "",
+    lastEvent: parseJsonField(row.latest_broker_order_last_event),
+    updatedAt: row.latest_broker_order_updated_at ? new Date(row.latest_broker_order_updated_at).toISOString() : "",
+  } : null;
+  const mapped = {
     id: row.id,
     watchId: row.watch_id || "",
     presetId: row.preset_id || "",
@@ -7455,6 +7472,8 @@ function mapTradeIntentRow(row) {
     cancelledAt: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : "",
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
   };
+  if (latestBrokerOrder) mapped.latestBrokerOrder = latestBrokerOrder;
+  return mapped;
 }
 
 function brokerConnectionAgentParams(connection) {
@@ -7473,6 +7492,89 @@ function brokerAgentUrl(pathname, connection) {
   url.searchParams.set("port", String(params.port));
   url.searchParams.set("clientId", String(params.clientId));
   return url;
+}
+
+function brokerAgentOrderEventsUrl(orderId, orderRef) {
+  const url = new URL(`${IBKR_TWS_AGENT_URL}/order-events`);
+  if (orderId) url.searchParams.set("orderId", String(orderId));
+  if (orderRef) url.searchParams.set("orderRef", String(orderRef));
+  return url;
+}
+
+function orderRefFromSubmittedPayload(payload) {
+  const row = parseJsonField(payload) || {};
+  return row.id ? `ai_trade:${row.id}` : "";
+}
+
+function statusFromBrokerEvent(event) {
+  if (!event) return "";
+  if (event.status) return String(event.status);
+  if (event.response && event.response.status) return String(event.response.status);
+  if (event.error) return "Rejected";
+  return "";
+}
+
+async function syncBrokerOrderEvents(ownerUserId) {
+  if (!IBKR_TWS_AGENT_URL) return { synced: 0, skipped: true };
+  try {
+    await getJson(`${IBKR_TWS_AGENT_URL}/health`, {}, 1000, "IBKR API agent");
+  } catch (error) {
+    return { synced: 0, skipped: true, error: error.message || "IBKR API agent 不可用。" };
+  }
+  const result = await dbQuery(`
+    SELECT *
+    FROM broker_orders
+    WHERE owner_user_id = $1
+      AND provider = 'ibkr-tws'
+      AND broker_order_id <> ''
+      AND (
+        LOWER(status) NOT IN ('filled', 'cancelled', 'apicancelled', 'inactive', 'rejected')
+        OR updated_at > NOW() - INTERVAL '1 day'
+      )
+    ORDER BY updated_at DESC
+    LIMIT 50
+  `, [ownerUserId]);
+  let synced = 0;
+  for (const row of result.rows) {
+    const orderRef = orderRefFromSubmittedPayload(row.submitted_payload);
+    let state = null;
+    try {
+      state = await getJson(brokerAgentOrderEventsUrl(row.broker_order_id, orderRef), {}, 8000, "IBKR API agent");
+    } catch (error) {
+      continue;
+    }
+    const events = Array.isArray(state.events) ? state.events : [];
+    const latest = state.latest || events[events.length - 1] || null;
+    for (const event of events) {
+      const payloadText = JSON.stringify(event);
+      const exists = await dbQuery(`
+        SELECT id FROM broker_order_events
+        WHERE broker_order_id = $1 AND payload = $2::jsonb
+        LIMIT 1
+      `, [row.id, payloadText]);
+      if (exists.rows.length > 0) continue;
+      await dbQuery(`
+        INSERT INTO broker_order_events (id, broker_order_id, intent_id, event_type, payload)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+      `, [
+        randomId("bevent"),
+        row.id,
+        row.intent_id,
+        String(event.eventType || event.status || "orderEvent"),
+        payloadText,
+      ]);
+    }
+    if (latest) {
+      const nextStatus = statusFromBrokerEvent(latest) || row.status || "";
+      await dbQuery(`
+        UPDATE broker_orders
+        SET status = $2, last_event = $3::jsonb, updated_at = NOW()
+        WHERE id = $1
+      `, [row.id, nextStatus, JSON.stringify(latest)]);
+      synced += 1;
+    }
+  }
+  return { synced };
 }
 
 async function loadBrokerConnection(ownerUserId) {
@@ -7577,10 +7679,25 @@ async function handleTradeIntentsApi(req, res) {
       sendJson(res, 405, { error: "Method not allowed" });
       return;
     }
+    await syncBrokerOrderEvents(ownerUserId);
     const result = await dbQuery(`
-      SELECT * FROM trade_intents
-      WHERE owner_user_id = $1
-      ORDER BY created_at DESC
+      SELECT
+        trade_intents.*,
+        latest_order.id AS latest_broker_order_row_id,
+        latest_order.broker_order_id AS latest_broker_order_id,
+        latest_order.status AS latest_broker_order_status,
+        latest_order.last_event AS latest_broker_order_last_event,
+        latest_order.updated_at AS latest_broker_order_updated_at
+      FROM trade_intents
+      LEFT JOIN LATERAL (
+        SELECT id, broker_order_id, status, last_event, updated_at
+        FROM broker_orders
+        WHERE broker_orders.intent_id = trade_intents.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) latest_order ON TRUE
+      WHERE trade_intents.owner_user_id = $1
+      ORDER BY trade_intents.created_at DESC
       LIMIT 100
     `, [ownerUserId]);
     sendJson(res, 200, { intents: result.rows.map(mapTradeIntentRow) });
@@ -7809,6 +7926,7 @@ async function handleBrokerAccountStateApi(req, res) {
     const connection = await loadBrokerConnection(ownerUserId);
     const configuredAccountId = String(connection && connection.account_id ? connection.account_id : "").trim();
     const accountState = await getJson(brokerAgentUrl("/account-state", connection), {}, 20000, "IBKR API agent");
+    const orderSync = await syncBrokerOrderEvents(ownerUserId);
     if (configuredAccountId) {
       accountState.summary = (accountState.summary || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
       accountState.positions = (accountState.positions || []).filter((row) => String(row.account || "").trim() === configuredAccountId);
@@ -7817,6 +7935,7 @@ async function handleBrokerAccountStateApi(req, res) {
     }
     accountState.configuredAccountId = configuredAccountId;
     accountState.tradingMode = connection && connection.trading_mode ? connection.trading_mode : "paper";
+    accountState.orderSync = orderSync;
     sendJson(res, 200, accountState);
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "读取 IBKR 账户状态失败。" });

@@ -10,6 +10,10 @@ const TWS_CONNECT_TIMEOUT_MS = Number(process.env.TWS_CONNECT_TIMEOUT_MS || 1000
 const TWS_ORDER_TIMEOUT_MS = Number(process.env.TWS_ORDER_TIMEOUT_MS || 15000);
 const TWS_CANCEL_TIMEOUT_MS = Number(process.env.TWS_CANCEL_TIMEOUT_MS || 15000);
 const TWS_ACCOUNT_TIMEOUT_MS = Number(process.env.TWS_ACCOUNT_TIMEOUT_MS || 15000);
+const TWS_ORDER_MONITOR_MS = Number(process.env.TWS_ORDER_MONITOR_MS || 120000);
+const ORDER_EVENT_TTL_MS = Number(process.env.TWS_ORDER_EVENT_TTL_MS || 24 * 60 * 60 * 1000);
+const MAX_ORDER_EVENTS_PER_KEY = 200;
+const orderEventHistory = new Map();
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload || {});
@@ -43,6 +47,52 @@ function normalizeUsStockLimitPrice(value) {
   const tick = price >= 1 ? 0.01 : 0.0001;
   const decimals = price >= 1 ? 2 : 4;
   return Number((Math.round(price / tick) * tick).toFixed(decimals));
+}
+
+function orderRefForIntent(order) {
+  return order && order.id ? `ai_trade:${order.id}` : "ai_trade";
+}
+
+function isTerminalOrderStatus(status) {
+  return ["filled", "cancelled", "apicancelled", "inactive", "rejected"].includes(String(status || "").toLowerCase());
+}
+
+function normalizeOrderEvent(event) {
+  return {
+    ...event,
+    eventAt: event.eventAt || new Date().toISOString(),
+  };
+}
+
+function rememberOrderEvent(keys, event) {
+  const normalized = normalizeOrderEvent(event);
+  Array.from(new Set(keys.filter(Boolean).map(String))).forEach((key) => {
+    const rows = orderEventHistory.get(key) || [];
+    const last = rows[rows.length - 1];
+    if (!last || JSON.stringify(last) !== JSON.stringify(normalized)) {
+      rows.push(normalized);
+    }
+    const cutoff = Date.now() - ORDER_EVENT_TTL_MS;
+    const kept = rows
+      .filter((row) => !row.eventAt || Date.parse(row.eventAt) >= cutoff)
+      .slice(-MAX_ORDER_EVENTS_PER_KEY);
+    orderEventHistory.set(key, kept);
+  });
+}
+
+function readOrderEvents(orderId, orderRef) {
+  const merged = [];
+  const seen = new Set();
+  [orderId, orderRef].filter(Boolean).map(String).forEach((key) => {
+    (orderEventHistory.get(key) || []).forEach((event) => {
+      const eventKey = JSON.stringify(event);
+      if (seen.has(eventKey)) return;
+      seen.add(eventKey);
+      merged.push(event);
+    });
+  });
+  merged.sort((a, b) => Date.parse(a.eventAt || "") - Date.parse(b.eventAt || ""));
+  return merged;
 }
 
 function normalizeOrderIntent(raw) {
@@ -181,12 +231,15 @@ function submitLimitStockOrder(order, config = defaultTwsConfig()) {
   const tws = normalizeTwsConfig(config);
   const ib = createIbClient(tws);
   const timeout = withTimeout(TWS_ORDER_TIMEOUT_MS, `Timed out submitting order to IB Gateway at ${tws.host}:${tws.port}`, () => disconnectQuietly(ib));
+  const orderRef = orderRefForIntent(order);
 
   const operation = new Promise((resolve, reject) => {
     let submittedOrderId = null;
+    let monitorTimer = null;
     let resolved = false;
     const cleanup = () => {
       timeout.cancel();
+      if (monitorTimer) clearTimeout(monitorTimer);
       ib.removeAllListeners(EventName.error);
       ib.removeAllListeners(EventName.nextValidId);
       ib.removeAllListeners(EventName.orderStatus);
@@ -194,17 +247,42 @@ function submitLimitStockOrder(order, config = defaultTwsConfig()) {
       ib.removeAllListeners(EventName.connected);
       disconnectQuietly(ib);
     };
+    const eventKeys = () => [submittedOrderId !== null ? String(submittedOrderId) : "", orderRef];
+    const stopMonitoringSoon = (delayMs = 0) => {
+      if (monitorTimer) clearTimeout(monitorTimer);
+      monitorTimer = setTimeout(cleanup, Math.max(0, delayMs));
+    };
     const finish = (payload) => {
       if (resolved) return;
       resolved = true;
-      cleanup();
-      resolve(payload);
+      timeout.cancel();
+      stopMonitoringSoon(TWS_ORDER_MONITOR_MS);
+      resolve({
+        ...payload,
+        orderRef,
+        events: readOrderEvents(payload.orderId || "", orderRef),
+        monitorMs: TWS_ORDER_MONITOR_MS,
+      });
     };
 
-    ib.once(EventName.error, (err, code, reqId) => {
+    ib.on(EventName.error, (err, code, reqId) => {
       if (submittedOrderId !== null && reqId !== submittedOrderId && code) return;
-      cleanup();
-      reject(new Error(`${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`));
+      const message = `${err && err.message ? err.message : "IB Gateway error"}${code ? ` (code ${code})` : ""}${Number.isFinite(reqId) ? ` reqId ${reqId}` : ""}`;
+      rememberOrderEvent(eventKeys(), {
+        eventType: "error",
+        status: "Rejected",
+        orderId: submittedOrderId !== null ? String(submittedOrderId) : "",
+        orderRef,
+        code: Number(code) || 0,
+        reqId: Number.isFinite(reqId) ? Number(reqId) : null,
+        message,
+      });
+      if (!resolved) {
+        cleanup();
+        reject(new Error(message));
+        return;
+      }
+      stopMonitoringSoon(1000);
     });
     ib.once(EventName.nextValidId, (orderId) => {
       submittedOrderId = Number(orderId);
@@ -223,19 +301,52 @@ function submitLimitStockOrder(order, config = defaultTwsConfig()) {
         tif: order.timeInForce,
         outsideRth: order.outsideRth,
         transmit: true,
-        orderRef: order.id ? `ai_trade:${order.id}` : "ai_trade",
+        orderRef,
       };
       if (order.accountId) ibOrder.account = order.accountId;
+      rememberOrderEvent(eventKeys(), {
+        eventType: "placeOrder",
+        status: "PendingSubmit",
+        orderId: String(submittedOrderId),
+        orderRef,
+        order,
+        tws,
+      });
       ib.placeOrder(submittedOrderId, contract, ibOrder);
     });
-    ib.on(EventName.openOrder, (orderId) => {
+    ib.on(EventName.openOrder, (orderId, contract, ibOrder, orderState) => {
       if (Number(orderId) === submittedOrderId) {
-        finish({ orderId: String(orderId), status: "OpenOrderAccepted" });
+        const status = String((orderState && orderState.status) || "OpenOrderAccepted");
+        rememberOrderEvent(eventKeys(), {
+          eventType: "openOrder",
+          status,
+          orderId: String(orderId),
+          orderRef,
+          contract: normalizeContract(contract),
+          warningText: String((orderState && orderState.warningText) || ""),
+        });
+        finish({ orderId: String(orderId), status });
+        if (isTerminalOrderStatus(status)) stopMonitoringSoon(1000);
       }
     });
-    ib.on(EventName.orderStatus, (orderId, status) => {
+    ib.on(EventName.orderStatus, (orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld) => {
       if (Number(orderId) === submittedOrderId) {
-        finish({ orderId: String(orderId), status: String(status || "Submitted") });
+        const normalizedStatus = String(status || "Submitted");
+        rememberOrderEvent(eventKeys(), {
+          eventType: "orderStatus",
+          status: normalizedStatus,
+          orderId: String(orderId),
+          orderRef,
+          filled: Number(filled) || 0,
+          remaining: Number(remaining) || 0,
+          avgFillPrice: Number(avgFillPrice) || 0,
+          lastFillPrice: Number(lastFillPrice) || 0,
+          permId: permId !== undefined ? String(permId) : "",
+          clientId: clientId !== undefined ? String(clientId) : "",
+          whyHeld: String(whyHeld || ""),
+        });
+        finish({ orderId: String(orderId), status: normalizedStatus });
+        if (isTerminalOrderStatus(normalizedStatus)) stopMonitoringSoon(1000);
       }
     });
     ib.once(EventName.connected, () => {
@@ -533,6 +644,20 @@ async function handleAccountState(req, res, url) {
   sendJson(res, 200, result);
 }
 
+async function handleOrderEvents(req, res, url) {
+  const orderId = String(url.searchParams.get("orderId") || "").trim();
+  const orderRef = String(url.searchParams.get("orderRef") || "").trim();
+  const events = readOrderEvents(orderId, orderRef);
+  sendJson(res, 200, {
+    ok: true,
+    orderId,
+    orderRef,
+    events,
+    latest: events[events.length - 1] || null,
+    refreshedAt: new Date().toISOString(),
+  });
+}
+
 async function handleExecutionState(req, res) {
   if (req.method === "GET") {
     sendJson(res, 200, {
@@ -607,6 +732,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/account-state") {
       await handleAccountState(req, res, url);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/order-events") {
+      await handleOrderEvents(req, res, url);
       return;
     }
     if ((req.method === "GET" || req.method === "POST") && url.pathname === "/execution") {
