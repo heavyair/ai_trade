@@ -60,8 +60,6 @@ const watchShareCodeUseButton = document.querySelector("#watchShareCodeUseButton
 const watchShareCodeUseStatus = document.querySelector("#watchShareCodeUseStatus");
 const brokerTradingModeSelect = document.querySelector("#brokerTradingModeSelect");
 const brokerMaxOrderValueInput = document.querySelector("#brokerMaxOrderValueInput");
-const brokerEnabledInput = document.querySelector("#brokerEnabledInput");
-const brokerAutoTradeInput = document.querySelector("#brokerAutoTradeInput");
 const brokerSaveSettingsButton = document.querySelector("#brokerSaveSettingsButton");
 const brokerStatusText = document.querySelector("#brokerStatusText");
 const brokerExecutionEnabledInput = document.querySelector("#brokerExecutionEnabledInput");
@@ -6397,8 +6395,6 @@ function renderBrokerSettings(connection, meta = {}) {
   const cfg = connection || {};
   if (brokerTradingModeSelect) brokerTradingModeSelect.value = cfg.tradingMode || "paper";
   if (brokerMaxOrderValueInput) brokerMaxOrderValueInput.value = cfg.maxOrderValue || 0;
-  if (brokerEnabledInput) brokerEnabledInput.checked = Boolean(cfg.enabled);
-  if (brokerAutoTradeInput) brokerAutoTradeInput.checked = Boolean(cfg.autoTradeEnabled);
   if (brokerStatusText) {
     const parts = [
       cfg.configured ? "已配置" : "未配置",
@@ -6430,8 +6426,6 @@ async function saveBrokerSettings() {
       body: JSON.stringify({
         tradingMode: brokerTradingModeSelect ? brokerTradingModeSelect.value : "paper",
         maxOrderValue: brokerMaxOrderValueInput ? Number(brokerMaxOrderValueInput.value) : 0,
-        enabled: Boolean(brokerEnabledInput && brokerEnabledInput.checked),
-        autoTradeEnabled: Boolean(brokerAutoTradeInput && brokerAutoTradeInput.checked),
       }),
     });
     const payload = await readJsonResponse(response, "保存 IBKR API 设置失败。");
