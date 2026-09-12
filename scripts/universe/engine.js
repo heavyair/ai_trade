@@ -3043,8 +3043,32 @@ function buildRangeValues(descriptor) {
 }
 
 
+// 参数寻优的目标函数——几百组候选参数里挑哪一组，最终就由它决定。
+//
+// 基础项还是"收益率 − 回撤×0.25"（账户层面的结果），另外加一项每买单期望：同样的收益率下，
+// 靠每笔都有边际优势赚来的，比靠个别几笔大单赚来的更可能在验证期复现。以前这里只有基础项，
+// 导致一个矛盾——搜索先按"收益率−回撤"找出最优参数，事后再用期望/盈亏比去卡门槛，等于挑出来
+// 的本来就不是期望最高的那组参数，再拿期望去筛它。
+//
+// 权重是拿 40 个标的实测扫出来的，不是拍的。在 0/2/4/8 里，权重 2 几乎全面占优：验证期
+// 每买单期望的中位数从 1.34% 升到 1.85%、均值从 3.28% 升到 5.52%，而验证期年化的中位数
+// 25.7% 一点没降，"某个验证年一笔完整买卖都没有"的坏情况还从 6 次降到 4 次。
+// 权重再往上就开始过头：4 和 8 都会把年化中位数拉低到 21.4%，权重 8 的期望均值(2.96%)
+// 甚至比旧目标还差——说明它在牺牲整体收益去换单笔数字好看。
+// 上下限截断的作用：上限 10% 防止一两笔极端大单把期望撑到几十、反过来盖过基础项；
+// 下限 −5% 避免一个灾难性候选把分数拉到无穷小，那样反而区分不出其他候选的好坏。
+const SCORE_EXPECTANCY_WEIGHT = 2;
+// 已平仓买单太少时期望是噪音（2 单 100% 说明不了任何问题），这种候选只用基础项打分，
+// 不给期望加分也不扣分。跟 search-validated-best.js 的 MIN_CLOSED_BUYS 同一口径。
+const SCORE_MIN_CLOSED_BUYS = 10;
+
 function scoreBacktestState(state) {
-  return state ? state.returnRate - state.maxDrawdown * 0.25 : -Infinity;
+  if (!state) return -Infinity;
+  const base = state.returnRate - state.maxDrawdown * 0.25;
+  const stats = buildBuyWinStats(state.trades);
+  if (stats.closedBuys < SCORE_MIN_CLOSED_BUYS || stats.expectancyPct === null) return base;
+  const clamped = Math.min(Math.max(stats.expectancyPct, -5), 10);
+  return base + clamped * SCORE_EXPECTANCY_WEIGHT;
 }
 
 

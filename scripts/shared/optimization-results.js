@@ -356,8 +356,10 @@ async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
   // anchored to this model's ORIGINAL training origin (see run-qualified-recheck.js) instead of
   // a window that slides forward with每次 run. Null on rows written before the train/test
   // methodology existed — the caller falls back to the rolling split for those.
+  // target_percent 必须按行带出来：达标标准改过（年化门槛从 50% 降到 20%，改由每买单期望挑大梁），
+  // 复查如果继续用一个脚本级的固定门槛，就会把按新标准存下来的模型按旧标准判成"不再达标"并降级。
   const result = await pool.query(
-    `SELECT id, symbol, market, preset_label, best_config, train_start_date, train_end_date
+    `SELECT id, symbol, market, preset_label, best_config, train_start_date, train_end_date, target_percent
      FROM optimization_scan_results
      WHERE source = 'validated-search' AND reached_target = TRUE
        ${hasSymbolFilter ? "AND symbol = ANY($1)" : ""}
@@ -372,6 +374,7 @@ async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
     bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
     trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : null,
     trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : null,
+    targetPercent: Number.isFinite(Number(row.target_percent)) ? Number(row.target_percent) : null,
   }));
 }
 

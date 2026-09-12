@@ -151,6 +151,28 @@ async function loadRows(symbol, market) {
 // The AI can still hand back a syntactically-valid-but-empty skeleton (e.g. every condition
 // it proposed got filtered out by normalizeGeneratedModel for using a disallowed field) —
 // this catches that before wasting a parameter search on a model with nothing to optimize.
+// 挑选依据：先看样本是否够（够的排前面），再比每买单期望，期望打平才比老的 score。
+// 跟 search-validated-best.js 的 MIN_CLOSED_BUYS 同一口径。
+const MIN_CLOSED_BUYS_FOR_SELECTION = 10;
+
+function attemptSelectionRank(best) {
+  const stats = engine.buildBuyWinStats(best.last.trades);
+  const expectancyPct = stats.expectancyPct === null ? -Infinity : stats.expectancyPct;
+  return {
+    hasSample: stats.closedBuys >= MIN_CLOSED_BUYS_FOR_SELECTION ? 1 : 0,
+    expectancyPct,
+    score: Number(best.score) || 0,
+  };
+}
+
+// 返回 >0 表示 a 更好，<0 表示 b 更好。
+function compareAttemptRank(a, b) {
+  if (a.hasSample !== b.hasSample) return a.hasSample - b.hasSample;
+  // 样本都不足时期望不可信，直接退回老的 score 比较。
+  if (a.hasSample === 1 && a.expectancyPct !== b.expectancyPct) return a.expectancyPct - b.expectancyPct;
+  return a.score - b.score;
+}
+
 function modelHasRules(model) {
   if (model.strategyType === "block-rules") return model.buyBlockRules.length > 0 || model.sellBlockRules.length > 0;
   if (model.strategyType === "score-rules") return model.scoreRules.length > 0 && model.positionBands.length > 0;
@@ -315,8 +337,16 @@ async function main() {
           bestAnnualizedReturn, bestAnnualizedSymbol, bestAnnualizedStrategyType,
         });
 
-        if (beatsReturn && beatsDrawdown && (!bestQualifying || best.score > bestQualifying.best.score)) {
-          bestQualifying = { model, best };
+        // 多个候选都跑赢买入持有时，挑"每买单期望"最高的那个，而不是 best.score
+        // （= 收益率 − 回撤×0.25）最高的。score 是账户层面的结果，会被仓位大小和复利放大，
+        // 分不清"每笔都有边际优势"和"碰巧几笔大的把整体拉回来"；期望才是每笔的边际优势。
+        // 已平仓买单不足 MIN_BUY_WIN_SAMPLE 笔时期望是噪音，这种候选排在有足够样本的后面，
+        // 它们之间再按老的 score 比——总比拿两三笔的期望乱排强。
+        if (beatsReturn && beatsDrawdown) {
+          const candidateRank = attemptSelectionRank(best);
+          if (!bestQualifying || compareAttemptRank(candidateRank, bestQualifying.rank) > 0) {
+            bestQualifying = { model, best, rank: candidateRank };
+          }
         }
       }
 

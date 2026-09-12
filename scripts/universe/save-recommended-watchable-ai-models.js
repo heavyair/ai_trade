@@ -8,6 +8,7 @@ const engine = require("./engine.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { loadRowsForSymbol } = require("../shared/load-rows.js");
 const { annualizedUpsideDeviation } = require("../shared/volatility.js");
+const { recommendationFromDbRow } = require("../../public/model-recommendation.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
 const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "true";
@@ -217,33 +218,11 @@ function yearBreakdownPasses(years, options = {}) {
   });
 }
 
+// 这个脚本决定哪些扫描结果被自动存成"推荐盯盘"模型，所以它用的评分必须跟界面上显示的是同一个
+// ——否则用户看到的排名和系统实际挑走的模型对不上。以前这里是一份独立拷贝，还停留在旧版（带
+// 策略类型写死先验、年化全额计入、完全没有每买单期望和盈亏比），现在统一走共享模块。
 function recommendationScore(row) {
-  const status = row.validation_status || "valid";
-  const totalTrades = Number(row.test_year1_trades || 0) + Number(row.test_year2_trades || 0);
-  const worstYearReturn = Math.min(Number(row.test_year1_annualized_return) || 0, Number(row.test_year2_annualized_return) || 0);
-  const maxDiff = Math.max(Number(row.annualized_diff_year1) || 0, Number(row.annualized_diff_year2) || 0);
-  const tradeDiff = Math.abs(Number(row.test_year1_trades || 0) - Number(row.test_year2_trades || 0));
-  const strategyScores = {
-    "block-rules": 90,
-    wave: 80,
-    "local-high-ladder": 75,
-    "order-grid": 55,
-    "score-rules": 45,
-    "stagnation-reversal": 30,
-    "ma-rsi-band": 20,
-  };
-  const tradeScore = totalTrades >= 11 && totalTrades <= 60 ? 220
-    : totalTrades >= 61 && totalTrades <= 120 ? 180
-      : totalTrades >= 6 && totalTrades <= 10 ? 130
-        : totalTrades > 120 ? 90
-          : totalTrades >= 3 && totalTrades <= 5 ? 60
-            : 0;
-  return (status === "valid" ? 1000 : status === "watching" ? 780 : 0)
-    + tradeScore
-    + (strategyScores[row.strategy_type] || 10)
-    + Math.min(Math.max(worstYearReturn, 0), 300)
-    - Math.min(maxDiff, 300) * 0.15
-    - Math.min(tradeDiff, 200) * 0.25;
+  return recommendationFromDbRow(row).recommendationScore;
 }
 
 async function loadRawCandidates(pool) {

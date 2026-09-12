@@ -19,6 +19,9 @@ const DATABASE_SSL = String(process.env.DATABASE_SSL || "").toLowerCase() === "t
 const INITIAL_CASH = Number(process.env.MODEL_VALIDATION_INITIAL_CASH || 2000000);
 const TRADE_FEE = Number(process.env.MODEL_VALIDATION_TRADE_FEE || 5);
 const DEFAULT_PROGRESS_FILE = path.join(__dirname, "..", "..", "data", "model-validation-progress.json");
+// 每买单期望要够多少个已平仓买单才算数——跟界面上"样本不足"的标注、search-validated-best.js
+// 的 MIN_CLOSED_BUYS 是同一个口径，低于这个数的期望值当噪音处理，不用来降级模型。
+const MIN_BUY_WIN_SAMPLE = 10;
 let progressState = {};
 
 function writeProgress(filePath, patch) {
@@ -175,14 +178,26 @@ function deriveStatus(cumulative, incremental, candidate, options) {
 
   const cumulativeAnnualized = Number(cumulative.annualizedReturn);
   const cumulativeReturnMiss = Number.isFinite(cumulativeAnnualized) && cumulativeAnnualized < target;
+  // 每买单期望转负 = 平均每笔买单是亏的，整体收益只能靠仓位或个别大单撑着，属于模型本身的
+  // 边际优势没了。这三个指标本来就已经算好存库（见 scoreWindow），以前只展示不判定。
+  // 只在已平仓买单够 MIN_BUY_WIN_SAMPLE 笔时才作数——两三笔的期望是噪音，不足以降级一个模型。
+  const cumulativeExpectancyPct = Number(cumulative.buyExpectancyPct);
+  const cumulativeExpectancyMiss = Number(cumulative.buyClosedCount) >= MIN_BUY_WIN_SAMPLE
+    && Number.isFinite(cumulativeExpectancyPct)
+    && cumulativeExpectancyPct < 0;
   const drawdownMiss = drawdownWarningLimit !== null
     && Number.isFinite(Number(cumulative.maxDrawdown))
     && Number(cumulative.maxDrawdown) > drawdownWarningLimit;
   const reasons = [];
 
   if (!hasNewEvidence) {
-    if (cumulativeReturnMiss) {
-      reasons.push(`累计年化 ${cumulativeAnnualized.toFixed(1)}% 低于目标 ${target.toFixed(1)}%，但新增区间只有 ${incremental.days} 个交易日、${incremental.trades} 笔交易，先标记观察。`);
+    if (cumulativeReturnMiss || cumulativeExpectancyMiss) {
+      if (cumulativeReturnMiss) {
+        reasons.push(`累计年化 ${cumulativeAnnualized.toFixed(1)}% 低于目标 ${target.toFixed(1)}%，但新增区间只有 ${incremental.days} 个交易日、${incremental.trades} 笔交易，先标记观察。`);
+      }
+      if (cumulativeExpectancyMiss) {
+        reasons.push(`累计每买单期望 ${cumulativeExpectancyPct.toFixed(2)}% 已转负，但新增区间只有 ${incremental.days} 个交易日、${incremental.trades} 笔交易，先标记观察。`);
+      }
       return { status: "watching", reason: reasons.join(" ") };
     }
     reasons.push(`累计验证仍达标；新增区间 ${incremental.days} 个交易日、${incremental.trades} 笔交易，暂不足以单独判定。`);
@@ -200,11 +215,21 @@ function deriveStatus(cumulative, incremental, candidate, options) {
   if (drawdownMiss) {
     reasons.push(`累计最大回撤 ${Number(cumulative.maxDrawdown).toFixed(1)}% 超过原验证回撤参考 ${originalMaxDrawdown.toFixed(1)}% 的容忍线 ${drawdownWarningLimit.toFixed(1)}%。`);
   }
+  if (cumulativeExpectancyMiss) {
+    reasons.push(`累计每买单期望 ${cumulativeExpectancyPct.toFixed(2)}%（${cumulative.buyClosedCount} 个已平仓买单）已转负，平均每笔买单是亏的。`);
+  }
 
-  if (cumulativeReturnMiss && (incrementalWeak || drawdownMiss)) {
+  // 期望转负跟年化不达标同级：两者都是"模型本身不行了"的证据，任一项再叠加另一个问题就降级为
+  // invalid，单独出现则先 warning。
+  const coreMiss = cumulativeReturnMiss || cumulativeExpectancyMiss;
+  const secondaryMiss = incrementalWeak || drawdownMiss;
+  if (cumulativeReturnMiss && cumulativeExpectancyMiss) {
     return { status: "invalid", reason: `${reasons.join(" ")} 模型需要重新验证或更换。` };
   }
-  if (cumulativeReturnMiss || incrementalWeak || drawdownMiss) {
+  if (coreMiss && secondaryMiss) {
+    return { status: "invalid", reason: `${reasons.join(" ")} 模型需要重新验证或更换。` };
+  }
+  if (coreMiss || secondaryMiss) {
     return { status: "warning", reason: `${reasons.join(" ")} 模型仍保留，但需要关注。` };
   }
   return {
