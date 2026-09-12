@@ -441,16 +441,21 @@ async function main() {
             });
             return;
           }
+          // 算不出上行标准差/买入持有回撤 = 这一年的行情数据太少，无法评估——按本文件
+          // MIN_UPSIDE_GATE_ROWS 注释里写明的设计，这种年份应当【跳过】，既不算通过也不算
+          // 失败。原来的写法把"无法评估"当成"不达标"，后果很严重：splitTrainTestWindows 按
+          // "今天往前 6 年"切训练窗口，并不管这只股票实际有没有那么长的历史，而库里 574 个
+          // 标的中有 459 个（80%）的训练第 1 年不足 30 行（美股数据只到 2018 年，很多 A 股是
+          // 次新股）。于是这些标的上的每一个 AI 模型都会被这道门无条件否决，而日志看起来
+          // 像是"模型不够好"，掩盖了真正的原因。
           if (win.upsideDev === null || required === null) {
-            failingTrainYears.push(`${win.start}~${win.end}: 无法计算上行标准差`);
-            passesUpside = false;
+            // 不改 passesUpside，保持该年"未参与判定"
           } else if (!(stats.ann >= required)) {
             failingTrainYears.push(`${win.start}~${win.end}: ${stats.ann.toFixed(1)}%<${required.toFixed(1)}%`);
             passesUpside = false;
           }
           if (buyHoldDD === null || allowedDD === null) {
-            failingTrainDrawdownYears.push(`${win.start}~${win.end}: 无法计算买入持有回撤`);
-            passesDrawdown = false;
+            // 同上：无法评估的年份跳过
           } else if (!(stats.maxDrawdown < allowedDD)) {
             failingTrainDrawdownYears.push(`${win.start}~${win.end}: 回撤${stats.maxDrawdown.toFixed(1)}%>=买入持有${buyHoldDD.toFixed(1)}%×${(1 + DRAWDOWN_TOLERANCE_PERCENT / 100).toFixed(2)}=${allowedDD.toFixed(1)}%`);
             passesDrawdown = false;
