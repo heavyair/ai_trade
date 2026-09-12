@@ -2268,6 +2268,16 @@ function renderAdminRerunFrame() {
     }
   }
   if (adminRerunMetrics) {
+    // 胜率单独看会骗人（胜率 80%/盈亏比 0.54 的模型不如胜率 45%/盈亏比 2.63 的），所以这里
+    // 跟列表界面一样把盈亏比和每买单期望一起摆出来。三个指标同源，只算一次。
+    const rerunBuyWin = buildBuyWinStats(state.trades);
+    const rerunPayoff = rerunBuyWin.payoffRatio === null
+      ? (rerunBuyWin.closedBuys > 0 ? "∞（无亏损单）" : "--")
+      : rerunBuyWin.payoffRatio.toFixed(2);
+    const rerunExpectancy = rerunBuyWin.expectancyPct === null
+      ? "--"
+      : `${rerunBuyWin.expectancyPct >= 0 ? "+" : ""}${rerunBuyWin.expectancyPct.toFixed(2)}%`;
+    const rerunExpectancyClass = rerunBuyWin.expectancyPct === null ? "" : (rerunBuyWin.expectancyPct >= 0 ? "up" : "down");
     adminRerunMetrics.innerHTML = `
       <article><span>当前日期</span><strong>${escapeHtml(rows[index].date)}</strong></article>
       <article><span>收益率</span><strong class="${state.returnRate >= 0 ? "up" : "down"}">${formatPercent(state.returnRate)}</strong></article>
@@ -2276,7 +2286,9 @@ function renderAdminRerunFrame() {
       <article><span>持仓比例</span><strong>${formatPercent(state.positionRatio)}</strong></article>
       <article><span>总资产</span><strong>${formatMoney(state.equity)}</strong></article>
       <article><span>交易次数</span><strong>${state.trades.length}</strong></article>
-      <article><span>买单胜率</span><strong>${escapeHtml(formatBuyWinRate(buildBuyWinStats(state.trades)))}</strong></article>
+      <article><span>买单胜率</span><strong>${escapeHtml(formatBuyWinRate(rerunBuyWin))}</strong></article>
+      <article><span>盈亏比</span><strong>${escapeHtml(rerunPayoff)}</strong></article>
+      <article><span>每买单期望</span><strong class="${rerunExpectancyClass}">${escapeHtml(rerunExpectancy)}</strong></article>
     `;
   }
   if (adminRerunProgressLabel) {
@@ -3602,6 +3614,9 @@ let adminAutoGenerateSortKey = "annualizedDiffYear2";
 let adminAutoGenerateSortDirection = "asc";
 
 const ADMIN_AUTO_GENERATE_COLUMNS = [
+  // 评分放在最前：它是把状态/交易笔数/每买单期望/盈亏比/年化揉成一个数的综合排序依据，
+  // 后面那十几列都是它的分解项。没有这一列时只能按单项排序，看不出"综合最好的是哪个"。
+  { key: "recommendationScore", label: "评分" },
   { key: "targetSymbol", label: "股票" },
   { key: "label", label: "模型名称" },
   { key: "strategyType", label: "策略类型" },
@@ -3637,6 +3652,7 @@ function compareWithBuyWinSink(aRank, bRank) {
 }
 
 function getAdminAutoGenerateSortValue(record, key) {
+  if (key === "recommendationScore") return getWatchableRecommendation(record).recommendationScore;
   if (key === "testYear1BuyWinRate") return Number(record.testYear1BuyWinRate) || 0;
   if (key === "testYear2BuyWinRate") return Number(record.testYear2BuyWinRate) || 0;
   if (key === "testYear1BuyExpectancyPct") return Number(record.testYear1BuyExpectancyPct) || 0;
@@ -3794,9 +3810,14 @@ function renderAiGeneratedPresetRow(p, options = {}) {
         <button type="button" class="ghost-button" data-action="copy" data-preset-id="${escapeHtml(p.id)}" ${p.shareAllowCopy ? "" : "disabled"}>复制到我的模型</button>
       </td>`
     : "";
+  // 评分用跟"推荐盯盘"列表同一个公式（/model-recommendation.js），所以两个界面对同一个模型
+  // 给出的分数和分级一定一致。分级放在分数下面做副标题，省一列宽度。
+  const recommendation = getWatchableRecommendation(p);
+  const scoreCell = `<td><strong>${Math.round(recommendation.recommendationScore)}</strong><br><span class="field-hint">${escapeHtml(recommendation.recommendationTier)}</span></td>`;
   return `
     <tr>
       ${statusCell}
+      ${scoreCell}
       <td>${escapeHtml(p.targetSymbol || "")}</td>
       <td>${
         // Public排行 rows whose owner hasn't granted "允许查看参数" arrive with bestConfig already
@@ -4865,8 +4886,10 @@ async function pauseAdminValidatedSearch() {
   }
 }
 
-let adminValidatedSearchSortKey = "annualizedDiffYear2";
-let adminValidatedSearchSortDirection = "asc";
+// 默认按评分从高到低——评分是综合排序依据，比原来默认的"第2年年化差异升序"更接近
+// "先看哪个模型最值得用"这个真实诉求；想看单项仍可点任意表头切换。
+let adminValidatedSearchSortKey = "recommendationScore";
+let adminValidatedSearchSortDirection = "desc";
 let adminValidatedSearchLastPayload = null;
 let adminValidatedSearchPollTimer = null;
 let adminValidatedSearchRecommendFilterActive = false;
