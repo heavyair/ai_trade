@@ -3401,7 +3401,12 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
           LEAST(osr.test_year1_annualized_return, osr.test_year2_annualized_return) AS worst_year_return,
           ((osr.test_year1_annualized_return + osr.test_year2_annualized_return) / 2.0) AS avg_year_return,
           ABS(osr.test_year1_trades - osr.test_year2_trades) AS trade_diff,
-          GREATEST(osr.annualized_diff_year1, osr.annualized_diff_year2) AS max_annualized_diff
+          GREATEST(osr.annualized_diff_year1, osr.annualized_diff_year2) AS max_annualized_diff,
+          -- 统一取"较差的那个验证年"，跟 worst_year_return 和 reachedTarget 要求两年都达标
+          -- 是同一个"看最差情况"的原则。
+          LEAST(osr.test_year1_buy_expectancy_pct, osr.test_year2_buy_expectancy_pct) AS worst_buy_expectancy_pct,
+          LEAST(osr.test_year1_buy_payoff_ratio, osr.test_year2_buy_payoff_ratio) AS worst_buy_payoff_ratio,
+          LEAST(osr.test_year1_buy_closed_count, osr.test_year2_buy_closed_count) AS worst_buy_closed_count
         FROM optimization_scan_results osr
         LEFT JOIN model_validation_states mvs
           ON mvs.subject_type = 'ai_scan' AND mvs.subject_id = osr.id
@@ -3427,24 +3432,28 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
               WHEN total_test_trades BETWEEN 3 AND 5 THEN 60
               ELSE 0
             END
-          + CASE strategy_type
-              WHEN 'block-rules' THEN 90
-              WHEN 'wave' THEN 80
-              WHEN 'local-high-ladder' THEN 75
-              WHEN 'order-grid' THEN 55
-              WHEN 'score-rules' THEN 45
-              WHEN 'stagnation-reversal' THEN 30
-              WHEN 'ma-rsi-band' THEN 20
-              ELSE 10
-            END
-          + LEAST(GREATEST(worst_year_return, 0), 300)
+          -- 主收益项：每买单期望%（较差年）。取代原来的"较差年年化"——年化是账户层面的
+          -- 复利结果，会被仓位大小放大，无法区分"每笔都有边际优势"和"碰巧几笔大的赚回来"。
+          -- 样本不足(<10单)的证据打 0.4 折，避免 2 单 100% 的噪音冲到榜首。
+          + LEAST(GREATEST(COALESCE(worst_buy_expectancy_pct, 0), -5), 10) * 40
+            * CASE WHEN COALESCE(worst_buy_closed_count, 0) >= 10 THEN 1
+                   WHEN COALESCE(worst_buy_closed_count, 0) > 0 THEN 0.4 ELSE 0 END
+          -- 盈亏比只在 >1 时加分：赢一次赚的要多于输一次亏的，否则全靠胜率硬撑。
+          + LEAST(GREATEST(COALESCE(worst_buy_payoff_ratio, 0) - 1, 0) * 60, 180)
+            * CASE WHEN COALESCE(worst_buy_closed_count, 0) >= 10 THEN 1
+                   WHEN COALESCE(worst_buy_closed_count, 0) > 0 THEN 0.4 ELSE 0 END
+          -- 年化降为辅助项（原来是 ×1 上限 300）。策略类型的写死偏好已移除：有了期望值这种
+          -- 直接证据，不需要再用"哪种策略类型更好"的先验去猜。
+          + LEAST(GREATEST(worst_year_return, 0), 300) * 0.3
           - LEAST(max_annualized_diff, 300) * 0.15
           - LEAST(trade_diff, 200) * 0.25
         ) AS recommendation_score,
         CASE
           WHEN validation_status = 'watching' THEN '观察中'
-          WHEN total_test_trades BETWEEN 11 AND 60 AND strategy_type IN ('block-rules', 'wave', 'local-high-ladder') AND worst_year_return >= 80 THEN '优先'
-          WHEN total_test_trades >= 6 AND worst_year_return >= 60 THEN '可用'
+          WHEN COALESCE(worst_buy_closed_count, 0) >= 10 AND COALESCE(worst_buy_expectancy_pct, 0) >= 2
+               AND COALESCE(worst_buy_payoff_ratio, 0) >= 1.2 AND total_test_trades >= 6 THEN '优先'
+          WHEN COALESCE(worst_buy_closed_count, 0) >= 10 AND COALESCE(worst_buy_expectancy_pct, 0) > 0
+               AND total_test_trades >= 6 THEN '可用'
           ELSE '谨慎'
         END AS recommendation_tier
       FROM scored

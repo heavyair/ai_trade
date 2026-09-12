@@ -3979,25 +3979,27 @@ function getWatchableRecommendation(model) {
         : totalTrades > 120 ? 90
           : totalTrades >= 3 && totalTrades <= 5 ? 60
             : 0;
-  const strategyScores = {
-    "block-rules": 90,
-    wave: 80,
-    "local-high-ladder": 75,
-    "order-grid": 55,
-    "score-rules": 45,
-    "stagnation-reversal": 30,
-    "ma-rsi-band": 20,
-  };
-  const strategyScore = strategyScores[model.strategyType] || 10;
+  const worstExpectancyPct = Math.min(
+    Number(model.testYear1BuyExpectancyPct) || 0,
+    Number(model.testYear2BuyExpectancyPct) || 0
+  );
+  const worstPayoff = Math.min(Number(model.testYear1BuyPayoffRatio) || 0, Number(model.testYear2BuyPayoffRatio) || 0);
+  const worstClosed = Math.min(Number(model.testYear1BuyClosedCount) || 0, Number(model.testYear2BuyClosedCount) || 0);
+  // 样本不足(<10单)的证据打 0.4 折——2 单 100% 是噪音，不该冲到榜首。
+  const sampleFactor = worstClosed >= 10 ? 1 : worstClosed > 0 ? 0.4 : 0;
+  const expectancyScore = Math.min(Math.max(worstExpectancyPct, -5), 10) * 40 * sampleFactor;
+  const payoffScore = Math.min(Math.max(worstPayoff - 1, 0) * 60, 180) * sampleFactor;
+  // 年化降为辅助项、策略类型先验移除——理由见 server.js 里同一套公式的 SQL 版注释。
   const recommendationScore = statusScore
     + tradeScore
-    + strategyScore
-    + Math.min(Math.max(worstYearReturn, 0), 300)
+    + expectancyScore
+    + payoffScore
+    + Math.min(Math.max(worstYearReturn, 0), 300) * 0.3
     - Math.min(maxAnnualizedDiff, 300) * 0.15
     - Math.min(tradeDiff, 200) * 0.25;
   const recommendationTier = validationStatus === "watching" ? "观察中"
-    : (totalTrades >= 11 && totalTrades <= 60 && ["block-rules", "wave", "local-high-ladder"].includes(model.strategyType) && worstYearReturn >= 80) ? "优先"
-      : (totalTrades >= 6 && worstYearReturn >= 60) ? "可用"
+    : (worstClosed >= 10 && worstExpectancyPct >= 2 && worstPayoff >= 1.2 && totalTrades >= 6) ? "优先"
+      : (worstClosed >= 10 && worstExpectancyPct > 0 && totalTrades >= 6) ? "可用"
         : "谨慎";
   return { totalTrades, worstYearReturn, avgYearReturn, maxAnnualizedDiff, tradeDiff, validationStatus, recommendationScore, recommendationTier };
 }
