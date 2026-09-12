@@ -1,11 +1,18 @@
 // 达标复查 (qualification recheck): re-scores every already-qualified model
-// (optimization_scan_results.source='validated-search' AND reached_target=TRUE) against the
-// two MOST RECENT 1-year validation windows, using freshly-arrived price data — the exact same
-// methodology search-validated-best.js used to qualify it in the first place (see that file's
-// header comment for why "both years individually clear the target" beats a blended average),
-// just re-run later once more real trading days have accumulated. splitTrainTestWindows is
-// always anchored on "today" at call time, so simply calling it again naturally slides both
-// windows forward — no need to remember or reconstruct the original run's dates.
+// (optimization_scan_results.source='validated-search' AND reached_target=TRUE) against its
+// validation windows, using freshly-arrived price data — the exact same methodology
+// search-validated-best.js used to qualify it in the first place (see that file's header comment
+// for why "both years individually clear the target" beats a blended average), just re-run later
+// once more real trading days have accumulated.
+//
+// The windows are INCREMENTAL with a FIXED ORIGIN: they start from the model's own original
+// train_start_date (frozen forever once recorded) and the last one extends through the latest
+// trading day, so a recheck covers everything that has happened since the model was created and
+// the span only ever grows. It deliberately does NOT use the rolling splitTrainTestWindows
+// anchored on "today", which would silently slide the whole span forward and re-judge the model
+// on a different stretch of history each run. Same rule the manual 重新验证 follows
+// (server.js's handlePresetRevalidateApi) — only rows predating the train/test methodology
+// (train_start_date IS NULL) still fall back to the rolling split, having no origin to anchor to.
 //
 // The outcome is written to a separate set of recheck_* columns (see optimization-results.js's
 // ensureResultsTable comment) — test_year1/test_year2 are left untouched either way, so "did it
@@ -29,7 +36,7 @@ const engine = require("./engine.js");
 const { ensureFreshData } = require("./ensure-fresh-data.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { annualizedUpsideDeviation } = require("../shared/volatility.js");
-const { splitTrainTestWindows } = require("../shared/train-test-window.js");
+const { splitTrainTestWindows, splitFixedStartWindows } = require("../shared/train-test-window.js");
 const { ensureResultsTable, fetchQualifiedForRecheck, saveRecheckResult } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -116,6 +123,31 @@ async function loadRows(symbol, dbMarket) {
       && Number.isFinite(row.high) && Number.isFinite(row.low));
 }
 
+// How many whole years the model's original training window spanned — needed to place the
+// validation windows at the right offset from the fixed origin. Derived from the stored
+// train window rather than assumed, since different runs qualified models with different shapes.
+function deriveTrainYears(trainStartDate, trainEndDate) {
+  if (!trainStartDate || !trainEndDate) return null;
+  const start = new Date(trainStartDate);
+  const end = new Date(trainEndDate);
+  if (!(end > start)) return null;
+  const years = Math.round((end - start) / (365.25 * 86400000));
+  return Math.max(1, Math.min(10, years));
+}
+
+function buildRecheckWindows(allRows, candidate) {
+  const trainYears = deriveTrainYears(candidate.trainStartDate, candidate.trainEndDate);
+  if (candidate.trainStartDate && trainYears) {
+    // End bound is exclusive everywhere in this codebase, so pass "today" (strictly after the
+    // newest stored row) to make sure the latest trading day is actually included.
+    const today = new Date().toISOString().slice(0, 10);
+    const { testWindows } = splitFixedStartWindows(allRows, trainYears, TEST_YEARS, candidate.trainStartDate, today);
+    return { testWindows, fixedStart: true };
+  }
+  const { testWindows } = splitTrainTestWindows(allRows, 1, TEST_YEARS);
+  return { testWindows, fixedStart: false };
+}
+
 async function main() {
   await ensureResultsTable(pool);
 
@@ -141,9 +173,15 @@ async function main() {
         console.log(`[refresh] ${candidate.symbol} history was stale (last stored: ${freshness.lastDate || "none"}), refreshed before rechecking`);
       }
       const allRows = await loadRows(candidate.symbol, candidate.market);
-      // trainYears doesn't matter here — a recheck never re-trains, it only re-scores the
-      // already-frozen best_config, so only the testWindows half of the split is used.
-      const { testWindows } = splitTrainTestWindows(allRows, 1, TEST_YEARS);
+      // Windows are anchored to this model's ORIGINAL training start date, with the last one
+      // extended through today — the same cumulative "fixed origin, growing end" shape the
+      // manual 重新验证 uses (server.js's handlePresetRevalidateApi). A recheck never re-trains,
+      // it only re-scores the already-frozen best_config, so trainYears here just positions
+      // where the validation windows begin relative to that origin.
+      //
+      // Rows written before the train/test methodology existed have no origin to anchor to, so
+      // those still fall back to the rolling split.
+      const { testWindows, fixedStart } = buildRecheckWindows(allRows, candidate);
       const testWindowRowCounts = testWindows.map(
         (win) => allRows.filter((row) => row.date >= win.startDate && row.date < win.endDate).length,
       );
@@ -165,7 +203,7 @@ async function main() {
       const year2Annualized = annualizedReturnRate(scoredYear2.returnRate, scoredYear2.rowsScored) || 0;
 
       // Same upside-deviation gate search-validated-best.js applies when a model first
-      // qualifies — recomputed here from the FRESH rolling test windows (not the ones stored at
+      // qualifies — recomputed here from the freshly-rebuilt test windows (not the ones stored at
       // original qualification time), same as year1Annualized/year2Annualized above.
       const year1Rows = allRows.filter((row) => row.date >= testWindows[0].startDate && row.date < testWindows[0].endDate);
       const year2Rows = allRows.filter((row) => row.date >= testWindows[1].startDate && row.date < testWindows[1].endDate);
@@ -175,7 +213,7 @@ async function main() {
       const passesUpsideYear2 = upsideDev2 === null || year2Annualized >= (UPSIDE_THRESHOLD_PERCENT / 100) * upsideDev2;
 
       // Per-year drawdown gate: this validation year's own max drawdown must stay smaller than
-      // buy-hold's own drawdown in that SAME (fresh, rolling) window — same standard
+      // buy-hold's own drawdown in that SAME freshly-rebuilt window — same standard
       // search-validated-best.js applies at original qualification time.
       const buyHoldYear1 = engine.buildBuyHoldStates(year1Rows, INITIAL_CASH, TRADE_FEE);
       const buyHoldYear2 = engine.buildBuyHoldStates(year2Rows, INITIAL_CASH, TRADE_FEE);
@@ -193,7 +231,8 @@ async function main() {
       });
       checked += 1;
       if (nowQualifies) stillQualifies += 1; else noLongerQualifies += 1;
-      console.log(`[${candidate.symbol}] ${candidate.label}: 复查 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"} ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
+      const windowLog = `${fixedStart ? "固定起点" : "滚动窗口(无原始起点)"} ${testWindows[0].startDate}~${testWindows[testWindows.length - 1].endDate}`;
+      console.log(`[${candidate.symbol}] ${candidate.label}: 复查(${windowLog}) year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"} ${nowQualifies ? "— 仍达标" : "— 不再达标"}`);
       writeProgress({ checked, stillQualifies, noLongerQualifies });
     } catch (error) {
       console.error(`[error] ${candidate.symbol}: ${error.message}`);

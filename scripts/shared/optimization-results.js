@@ -295,8 +295,12 @@ async function needsScan(pool, symbol, market, presetId, { rescan, sessionSince 
 // qualified row".
 async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
   const hasSymbolFilter = Array.isArray(symbols) && symbols.length > 0;
+  // train_start_date/train_end_date come along so the recheck can re-score against windows
+  // anchored to this model's ORIGINAL training origin (see run-qualified-recheck.js) instead of
+  // a window that slides forward with每次 run. Null on rows written before the train/test
+  // methodology existed — the caller falls back to the rolling split for those.
   const result = await pool.query(
-    `SELECT id, symbol, market, preset_label, best_config
+    `SELECT id, symbol, market, preset_label, best_config, train_start_date, train_end_date
      FROM optimization_scan_results
      WHERE source = 'validated-search' AND reached_target = TRUE
        ${hasSymbolFilter ? "AND symbol = ANY($1)" : ""}
@@ -309,6 +313,8 @@ async function fetchQualifiedForRecheck(pool, { symbols } = {}) {
     market: row.market,
     label: row.preset_label,
     bestConfig: row.best_config && typeof row.best_config === "object" ? row.best_config : {},
+    trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : null,
+    trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : null,
   }));
 }
 
