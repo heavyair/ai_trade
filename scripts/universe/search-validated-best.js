@@ -548,7 +548,7 @@ async function main() {
         const sampleGate = evaluateBuySampleGate(
           engine.buildBuyWinStats(fullSpan.trades).closedLots,
           trainStartDate, fullSpanEnd,
-          { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR }
+          { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR, rows: allRows }
         );
         const worstClosedBuys = sampleGate.total;
         const passesSample = sampleGate.passes;

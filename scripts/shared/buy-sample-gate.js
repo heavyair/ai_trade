@@ -28,21 +28,37 @@ function buildYearBuckets(startDate, latestDate) {
   return buckets;
 }
 
+// 一个年份桶要有这么多个实际交易日，"这一年一笔完整买卖都没有"才说明得了问题。低于这个数
+// 的桶属于【无法评估】，跳过——既不算通过也不算失败，跟 MIN_UPSIDE_GATE_ROWS 对数据太少的
+// 年份的处理方式一致。
+//
+// 这条不是可有可无的边角料：很多科创板/创业板标的上市时间晚于模型的训练起点（例如 688041
+// 行情从 2022-08 才开始，而训练起点是 2020-08），前一两个"年份"里这只股票根本不存在。没有
+// 这条豁免，就是在拿"股票还没上市的年份"判模型断档——实测 266 条复查里有 113 条是仅因此
+// 被降级的，其中不乏合计 348 笔完整买卖的模型。
+const MIN_ROWS_FOR_YEAR_CHECK = 120;
+
 // closedLots 来自 engine.buildBuyWinStats(trades).closedLots——必须是【整段历史一次连续回测】
 // 得到的成交流水，不能把各年分别回测的结果拼起来：分段回测每段都会重置账户，跨年的买单会被
 // 算成两笔或者干脆丢掉。
 //
-// minPerYear 只作用于【完整的】年份桶。最后一桶通常不足一年（截到最新交易日），对它按整年的
-// 标准要求会把刚跨过周年没几天的模型误判成断档，所以不足一年的桶不参与这条判定。
-function evaluateBuySampleGate(closedLots, startDate, latestDate, { minTotal, minPerYear }) {
+// rows 是该标的的全部行情（带 date），用来判断每个年份桶有没有足够数据可评估。
+//
+// minPerYear 只作用于【完整且有足够行情】的年份桶。最后一桶通常不足一年（截到最新交易日），
+// 对它按整年的标准要求会把刚跨过周年没几天的模型误判成断档，所以也不参与这条判定。
+function evaluateBuySampleGate(closedLots, startDate, latestDate, { minTotal, minPerYear, rows }) {
   const lots = Array.isArray(closedLots) ? closedLots : [];
+  const priceRows = Array.isArray(rows) ? rows : [];
   const total = lots.length;
   const buckets = buildYearBuckets(startDate, latestDate).map((bucket) => {
     const fullYear = toIsoDate(shiftYears(new Date(bucket.start), 1)) <= latestDate;
     const count = lots.filter((lot) => lot.closeDate >= bucket.start && lot.closeDate < bucket.end).length;
-    return { ...bucket, count, fullYear };
+    const rowCount = priceRows.filter((row) => row.date >= bucket.start && row.date < bucket.end).length;
+    // 没传 rows 时退化成"只看是否整年"，保持旧行为而不是把所有桶都当成无法评估。
+    const evaluable = fullYear && (priceRows.length === 0 || rowCount >= MIN_ROWS_FOR_YEAR_CHECK);
+    return { ...bucket, count, rowCount, fullYear, evaluable };
   });
-  const failingYears = buckets.filter((bucket) => bucket.fullYear && bucket.count < minPerYear);
+  const failingYears = buckets.filter((bucket) => bucket.evaluable && bucket.count < minPerYear);
   return {
     total,
     buckets,
@@ -53,9 +69,10 @@ function evaluateBuySampleGate(closedLots, startDate, latestDate, { minTotal, mi
   };
 }
 
-// 给日志用的一行摘要，例如 "合计14单(各年:5/4/3/2)"。
+// 给日志用的一行摘要，例如 "合计14单(各年:5/4/3/2*)"；带 * 的是未参与年度判定的桶
+// （不足一年，或行情数据太少无法评估）。
 function describeBuySampleGate(result) {
-  return `合计${result.total}单(各年:${result.buckets.map((b) => `${b.count}${b.fullYear ? "" : "*"}`).join("/")})`;
+  return `合计${result.total}单(各年:${result.buckets.map((b) => `${b.count}${b.evaluable ? "" : "*"}`).join("/")})`;
 }
 
 module.exports = { evaluateBuySampleGate, describeBuySampleGate, buildYearBuckets };

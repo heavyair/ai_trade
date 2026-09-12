@@ -243,7 +243,7 @@ async function main() {
       const sampleGate = evaluateBuySampleGate(
         engine.buildBuyWinStats(fullSpan.trades).closedLots,
         fullSpanStart, fullSpanEnd,
-        { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR }
+        { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR, rows: allRows }
       );
       const worstExpectancyPct = Math.min(
         buyWin1.expectancyPct === null ? -Infinity : buyWin1.expectancyPct,
