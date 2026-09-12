@@ -12248,11 +12248,19 @@ function buildBuyWinStats(trades) {
   };
 }
 
+// 低于这个已平仓买单数，胜率只是噪音：2 单全赢就是 100%，跟一个 78 单里赢 48 单的 61.5%
+// 没有可比性。数值照常显示（分母也一直带着），额外标一个"样本不足"提醒不要当真。
+const MIN_BUY_WIN_SAMPLE = 10;
+
+function buyWinSampleNote(closedCount) {
+  return Number(closedCount) > 0 && Number(closedCount) < MIN_BUY_WIN_SAMPLE ? "·样本不足" : "";
+}
+
 // 紧凑位置（列表行）只显示胜率；详情位置额外带上盈亏比和每买单期望值——胜率单独看会骗人，
 // 胜率 30% 但盈亏比 5:1 是赚的，胜率 70% 但盈亏比 1:5 是亏的。
 function formatBuyWinRate(stats) {
   if (!stats || stats.winRate === null) return "--";
-  return `${stats.winRate.toFixed(0)}%（${stats.winCount}/${stats.closedBuys}）`;
+  return `${stats.winRate.toFixed(0)}%（${stats.winCount}/${stats.closedBuys}${buyWinSampleNote(stats.closedBuys)}）`;
 }
 
 function formatBuyWinDetail(stats) {
@@ -12270,7 +12278,10 @@ function formatBuyWinDetail(stats) {
 // 那个吃的是 buildBuyWinStats 的返回值，这个吃的是拍平后的快照字段。
 function formatStoredBuyWinRate(winRate, closedCount) {
   if (winRate === null || winRate === undefined) return "--";
-  const suffix = closedCount !== null && closedCount !== undefined ? `（${Math.round((winRate / 100) * closedCount)}/${closedCount}）` : "";
+  const hasCount = closedCount !== null && closedCount !== undefined;
+  const suffix = hasCount
+    ? `（${Math.round((winRate / 100) * closedCount)}/${closedCount}${buyWinSampleNote(closedCount)}）`
+    : "";
   return `${Number(winRate).toFixed(0)}%${suffix}`;
 }
 
