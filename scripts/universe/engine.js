@@ -3048,6 +3048,66 @@ function scoreBacktestState(state) {
 }
 
 
+// 每个买单的赢单概率（胜率）及配套指标。
+//
+// 买卖都是按仓位比例分批成交的（见 buyByTarget / sellByReduction），一笔卖出可以同时平掉
+// 多个买单、一个买单也可能被拆成几笔卖出，所以不能"一买一卖"简单配对，必须逐股 FIFO 配对：
+// 每笔卖出按先进先出消耗最早的未平仓买单，买单全部卖完时才结算它的盈亏。
+//
+// 手续费两边都按股数占比分摊（买入费按该买单已平仓股数占比、卖出费按本次卖出中归属该买单的
+// 股数占比），否则整笔费用会全压在第一个配对上，把小额买单的盈亏算歪。
+//
+// 只有【已完全平仓】的买单计入胜率分母：还没卖完的买单没有最终结果，按最新价折算会让胜率随
+// 行情来回漂移。未平仓的数量单独用 openBuys 返回，需要的话可以另行展示浮盈浮亏。
+function buildBuyWinStats(trades) {
+  const open = [];
+  const closed = [];
+  for (const trade of Array.isArray(trades) ? trades : []) {
+    const shares = Number(trade.shares) || 0;
+    const price = Number(trade.price) || 0;
+    const fee = Number(trade.fee) || 0;
+    if (shares <= 0) continue;
+    if (trade.side === "buy") {
+      open.push({ date: trade.date, price, total: shares, left: shares, fee, cost: 0, proceeds: 0 });
+      continue;
+    }
+    if (trade.side !== "sell") continue;
+    let remaining = shares;
+    while (remaining > 0 && open.length > 0) {
+      const lot = open[0];
+      const matched = Math.min(remaining, lot.left);
+      lot.proceeds += matched * price - fee * (matched / shares);
+      lot.cost += matched * lot.price + lot.fee * (matched / lot.total);
+      lot.left -= matched;
+      remaining -= matched;
+      if (lot.left <= 0) {
+        lot.pnl = lot.proceeds - lot.cost;
+        closed.push(open.shift());
+      }
+    }
+  }
+  const wins = closed.filter((lot) => lot.pnl > 0);
+  const losses = closed.filter((lot) => lot.pnl <= 0);
+  const total = (list) => list.reduce((sum, lot) => sum + lot.pnl, 0);
+  const average = (list) => (list.length > 0 ? total(list) / list.length : 0);
+  const avgWin = average(wins);
+  const avgLoss = average(losses);
+  return {
+    closedBuys: closed.length,
+    openBuys: open.length,
+    winCount: wins.length,
+    lossCount: losses.length,
+    // null (not 0) when nothing has closed yet — "还没有已平仓买单" and "胜率 0%" are different
+    // things, and the UI needs to be able to show "--" instead of a misleading zero.
+    winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : null,
+    avgWin,
+    avgLoss,
+    payoffRatio: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : null,
+    expectancy: closed.length > 0 ? total(closed) / closed.length : null,
+  };
+}
+
+
 module.exports = {
   defaultBuyRules,
   defaultSellRules,
@@ -3077,4 +3137,5 @@ module.exports = {
   buildConfigFromDescriptorCombo,
   buildRangeValues,
   scoreBacktestState,
+  buildBuyWinStats,
 };
