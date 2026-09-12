@@ -642,6 +642,13 @@ async function initializeDatabase() {
     ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_token TEXT NOT NULL DEFAULT '';
     ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_expires_at TIMESTAMPTZ;
     ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
+
+    -- Which broker_connections.trading_mode this row was created/submitted under, frozen onto
+    -- the row itself: the connection's mode can be flipped paper<->live at any time, and
+    -- without this the local order history becomes ambiguous about which of its rows were
+    -- simulated and which were real money.
+    ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS trading_mode TEXT NOT NULL DEFAULT 'paper';
+    ALTER TABLE broker_orders ADD COLUMN IF NOT EXISTS trading_mode TEXT NOT NULL DEFAULT 'paper';
     CREATE UNIQUE INDEX IF NOT EXISTS trade_intents_confirmation_token_idx
       ON trade_intents(confirmation_token) WHERE confirmation_token <> '';
 
@@ -7524,6 +7531,7 @@ function mapTradeIntentRow(row) {
     brokerProvider: row.broker_provider || "ibkr-tws",
     brokerAccountId: row.broker_account_id || "",
     brokerOrderId: row.broker_order_id || "",
+    tradingMode: row.trading_mode || "paper",
     status: row.status || "pending_review",
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
     approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : "",
@@ -7918,9 +7926,9 @@ async function handleTradeIntentFromWatchApi(req, res) {
       INSERT INTO trade_intents (
         id, owner_user_id, owner_email, watch_id, preset_id, preset_label, symbol, symbol_name, market,
         side, quantity, order_type, limit_price, time_in_force, outside_rth, source_signal_date,
-        reason, estimated_notional, risk_status, risk_message, broker_account_id
+        reason, estimated_notional, risk_status, risk_message, broker_account_id, trading_mode
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18, $19)
       ON CONFLICT (owner_user_id, watch_id, source_signal_date, side) WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL DO UPDATE SET
         quantity = EXCLUDED.quantity,
         limit_price = EXCLUDED.limit_price,
@@ -7929,6 +7937,7 @@ async function handleTradeIntentFromWatchApi(req, res) {
         risk_status = EXCLUDED.risk_status,
         risk_message = EXCLUDED.risk_message,
         broker_account_id = EXCLUDED.broker_account_id,
+        trading_mode = EXCLUDED.trading_mode,
         updated_at = NOW()
       RETURNING *
     `, [
@@ -7936,6 +7945,7 @@ async function handleTradeIntentFromWatchApi(req, res) {
       watch.symbol, watch.symbol_name || watch.symbol, watch.market,
       side, quantity, limitPrice, signalDate, lastTrade.reason || watch.last_signal_reason || "",
       estimatedNotional, risk.status, risk.message, connection ? connection.account_id : "",
+      connection && connection.trading_mode ? connection.trading_mode : "paper",
     ]);
     sendJson(res, 200, { intent: mapTradeIntentRow(insertResult.rows[0]) });
   } catch (error) {
@@ -7948,6 +7958,9 @@ async function handleTradeIntentFromWatchApi(req, res) {
 // agent call / broker_orders bookkeeping / status transition once an intent is cleared to fire.
 async function submitTradeIntentOrder(intent, ownerUserId, connection) {
   const mappedIntent = mapTradeIntentRow(intent);
+  // Frozen onto the order row: which mode this specific submission actually went out under,
+  // so the local history stays unambiguous after the connection is switched paper<->live.
+  const tradingMode = connection && connection.trading_mode ? connection.trading_mode : (intent.trading_mode || "paper");
   let agentResult = null;
   try {
     agentResult = await postJson(`${IBKR_TWS_AGENT_URL}/orders`, {
@@ -7964,26 +7977,28 @@ async function submitTradeIntentOrder(intent, ownerUserId, connection) {
       failedAt: new Date().toISOString(),
     };
     await dbQuery(`
-      INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-      VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+      INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event, trading_mode)
+      VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb, $7)
     `, [
       randomId("border"), intent.id, ownerUserId, intent.broker_account_id || "",
       JSON.stringify(mappedIntent),
       JSON.stringify(failureEvent),
+      tradingMode,
     ]);
     await dbQuery(`UPDATE trade_intents SET updated_at = NOW() WHERE id = $1 AND owner_user_id = $2`, [intent.id, ownerUserId]);
     return { ok: false, error: failureEvent.error, brokerOrder: failureEvent };
   }
   const brokerOrderId = randomId("border");
   await dbQuery(`
-    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event, trading_mode)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb, $9)
   `, [
     brokerOrderId, intent.id, ownerUserId, intent.broker_account_id || "",
     String(agentResult.orderId || agentResult.brokerOrderId || ""),
     String(agentResult.status || "submitted"),
     JSON.stringify(mappedIntent),
     JSON.stringify(agentResult),
+    tradingMode,
   ]);
   const updated = await dbQuery(`
     UPDATE trade_intents SET status = 'submitted', submitted_at = NOW(), broker_order_id = $3, updated_at = NOW()

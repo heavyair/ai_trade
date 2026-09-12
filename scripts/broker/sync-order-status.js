@@ -175,8 +175,8 @@ function brokerConnectionAgentParams(connection) {
 
 async function insertBrokerOrderFailure(intent, event) {
   await pool.query(`
-    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-    VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb)
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event, trading_mode)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, '', 'rejected', $5::jsonb, $6::jsonb, $7)
   `, [
     `border_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
     intent.id,
@@ -184,13 +184,14 @@ async function insertBrokerOrderFailure(intent, event) {
     intent.broker_account_id || "",
     JSON.stringify(intent),
     JSON.stringify(event),
+    intent.trading_mode || "paper",
   ]);
 }
 
 async function insertBrokerOrderSuccess(intent, agentResult) {
   await pool.query(`
-    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event)
-    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb)
+    INSERT INTO broker_orders (id, intent_id, owner_user_id, provider, account_id, broker_order_id, status, submitted_payload, last_event, trading_mode)
+    VALUES ($1, $2, $3, 'ibkr-tws', $4, $5, $6, $7::jsonb, $8::jsonb, $9)
   `, [
     `border_${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
     intent.id,
@@ -200,6 +201,7 @@ async function insertBrokerOrderSuccess(intent, agentResult) {
     String(agentResult.status || "submitted"),
     JSON.stringify(intent),
     JSON.stringify(agentResult),
+    intent.trading_mode || "paper",
   ]);
 }
 

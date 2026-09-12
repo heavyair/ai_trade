@@ -3942,3 +3942,26 @@ tbody tr:last-child td {
     font-size: 24px;
   }
 }
+
+.trading-mode-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trading-mode-paper {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+/* Real money — deliberately louder than the paper badge so a live row can't be mistaken
+   for a simulated one at a glance. */
+.trading-mode-live {
+  border: 1px solid rgba(194, 65, 59, 0.5);
+  background: rgba(194, 65, 59, 0.12);
+  color: #c2413b;
+}

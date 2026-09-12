@@ -6806,6 +6806,14 @@ function brokerOrderStatusClass(order) {
   return "";
 }
 
+// Live orders are real money; paper ones are not. The distinction is recorded per row at
+// creation/submission time (trade_intents.trading_mode / broker_orders.trading_mode) rather
+// than read from the current connection, which can be switched at any time.
+function renderTradingModeBadge(tradingMode) {
+  const isLive = String(tradingMode || "paper").toLowerCase() === "live";
+  return `<span class="trading-mode-badge ${isLive ? "trading-mode-live" : "trading-mode-paper"}">${isLive ? "实盘 Live" : "模拟 Paper"}</span>`;
+}
+
 function renderBrokerTradeIntents(intents) {
   if (!brokerIntentList) return;
   if (!intents || intents.length === 0) {
@@ -6817,6 +6825,7 @@ function renderBrokerTradeIntents(intents) {
       <thead>
         <tr>
           <th>创建时间</th>
+          <th>模式</th>
           <th>股票</th>
           <th>方向</th>
           <th>数量</th>
@@ -6832,6 +6841,7 @@ function renderBrokerTradeIntents(intents) {
       <tbody>${intents.map((intent) => `
         <tr>
           <td>${escapeHtml(String(intent.createdAt || "").replace("T", " ").slice(0, 16))}</td>
+          <td>${renderTradingModeBadge(intent.tradingMode)}</td>
           <td>${escapeHtml(intent.symbolName || intent.symbol)}<br><span class="field-hint">${escapeHtml(intent.symbol || "")}</span></td>
           <td class="${intent.side === "buy" ? "up" : "down"}">${intent.side === "buy" ? "买入" : "卖出"}</td>
           <td>${Number(intent.quantity || 0).toFixed(0)}</td>

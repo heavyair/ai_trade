@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI Trade</title>
-    <link rel="stylesheet" href="/styles.css?v=20260912-watch-block-layout">
+    <link rel="stylesheet" href="/styles.css?v=20260912-trading-mode">
   </head>
   <body>
     <main class="shell">
@@ -1690,7 +1690,7 @@
         <div class="section-head">
           <div>
             <h2>账户状态</h2>
-            <p class="field-hint">只读读取 IBKR 资金、持仓、未成交订单和近期成交。</p>
+            <p class="field-hint">实时从 IBKR Gateway 读取，只反映当前登录的那个账户（模式见下方状态行）；不是本地历史记录。</p>
           </div>
           <button type="button" id="brokerRefreshAccountButton" class="ghost-button">刷新账户状态</button>
         </div>
@@ -1719,8 +1719,8 @@
         </div>
         <div class="section-head">
           <div>
-            <h2>交易意图</h2>
-            <p class="field-hint">从盯盘最新信号生成；审批后才能提交到 IBKR API agent（IB Gateway 或 TWS）。</p>
+            <h2>交易意图（本地历史提交记录）</h2>
+            <p class="field-hint">来自本地数据库，保留全部历史提交记录，不受 IBKR 端保留期限影响；每条都标注了当时是模拟盘还是实盘。</p>
           </div>
           <button type="button" id="brokerRefreshIntentsButton" class="ghost-button">刷新</button>
         </div>
@@ -1728,6 +1728,6 @@
       </section>
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
-    <script src="/app.js?v=20260911-watch-scroll-summary"></script>
+    <script src="/app.js?v=20260912-trading-mode"></script>
   </body>
 </html>

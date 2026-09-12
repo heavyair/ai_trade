@@ -318,9 +318,9 @@ async function autoSubmitPaperTrade(watch, lastTrade, signalDate) {
       id, owner_user_id, owner_email, watch_id, preset_id, preset_label, symbol, symbol_name, market,
       side, quantity, order_type, limit_price, time_in_force, outside_rth, source_signal_date,
       reason, estimated_notional, risk_status, risk_message, broker_account_id,
-      status, confirmation_token, confirmation_expires_at
+      status, confirmation_token, confirmation_expires_at, trading_mode
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18, $19, $20, $21)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'LMT', $12, 'DAY', FALSE, $13::date, $14, $15, $16, $17, $18, $19, $20, $21, $22)
     ON CONFLICT (owner_user_id, watch_id, source_signal_date, side) WHERE watch_id IS NOT NULL AND source_signal_date IS NOT NULL DO UPDATE SET
       quantity = EXCLUDED.quantity,
       limit_price = EXCLUDED.limit_price,
@@ -332,6 +332,7 @@ async function autoSubmitPaperTrade(watch, lastTrade, signalDate) {
       status = EXCLUDED.status,
       confirmation_token = EXCLUDED.confirmation_token,
       confirmation_expires_at = EXCLUDED.confirmation_expires_at,
+      trading_mode = EXCLUDED.trading_mode,
       updated_at = NOW()
     RETURNING *
   `, [
@@ -340,6 +341,7 @@ async function autoSubmitPaperTrade(watch, lastTrade, signalDate) {
     lastTrade.side, quantity, limitPrice, signalDate, lastTrade.reason || watch.last_signal_reason || "",
     estimatedNotional, risk.status, risk.message, connection ? connection.account_id : "",
     status, token, expiresAt,
+    connection && connection.trading_mode ? connection.trading_mode : "paper",
   ]);
   const intent = insertResult.rows[0];
   if (risk.status !== "passed") {
@@ -873,6 +875,8 @@ async function main() {
   await pool.query("ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_token TEXT NOT NULL DEFAULT ''");
   await pool.query("ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmation_expires_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ");
+  await pool.query("ALTER TABLE trade_intents ADD COLUMN IF NOT EXISTS trading_mode TEXT NOT NULL DEFAULT 'paper'");
+  await pool.query("ALTER TABLE broker_orders ADD COLUMN IF NOT EXISTS trading_mode TEXT NOT NULL DEFAULT 'paper'");
   await ensureModelValidationStateTable(pool);
   await expireStaleTradeConfirmations();
   const watches = await loadDueWatches();
