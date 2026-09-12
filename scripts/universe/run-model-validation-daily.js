@@ -110,14 +110,24 @@ function scoreWindow(rows, config, startDate) {
       annualizedReturn: null,
       maxDrawdown: null,
       trades: 0,
+      buyWinRate: null,
+      buyClosedCount: 0,
+      buyPayoffRatio: null,
+      buyExpectancy: null,
       buyHoldReturnRate: null,
       buyHoldMaxDrawdown: null,
     };
   }
   const scored = engine.buildScoredBacktestStates(rows, config, scoredRows[0].date);
   const buyHold = buyHoldSummary(scoredRows, config.initialCash, config.tradeFee);
+  // 累计区间的买单胜率——这张表只存成交笔数，事后无法反推，跟年化一起算好存下来。
+  const buyWin = engine.buildBuyWinStats(scored.trades);
   return {
     startDate: scoredRows[0].date,
+    buyWinRate: buyWin.winRate,
+    buyClosedCount: buyWin.closedBuys,
+    buyPayoffRatio: buyWin.payoffRatio,
+    buyExpectancy: buyWin.expectancy,
     days: scored.rowsScored || scoredRows.length,
     returnRate: scored.returnRate,
     annualizedReturn: annualizedReturnRate(scored.returnRate, scored.rowsScored || scoredRows.length),
@@ -309,7 +319,8 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       incremental_start_date, incremental_days, incremental_return_rate, incremental_annualized_return,
       incremental_max_drawdown, incremental_trades, incremental_buy_hold_return_rate, incremental_buy_hold_max_drawdown,
       target_percent, original_validation_max_drawdown, min_incremental_days, min_incremental_trades,
-      status, status_reason, last_checked_at, last_error, updated_at
+      status, status_reason, last_checked_at, last_error, updated_at,
+      cumulative_buy_win_rate, cumulative_buy_closed_count, cumulative_buy_payoff_ratio, cumulative_buy_expectancy
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7,
@@ -319,7 +330,8 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       $22, $23, $24, $25,
       $26, $27, $28, $29,
       $30, $31, $32, $33,
-      $34, $35, NOW(), '', NOW()
+      $34, $35, NOW(), '', NOW(),
+      $36, $37, $38, $39
     )
     ON CONFLICT (subject_type, subject_id) DO UPDATE SET
       scan_result_id = EXCLUDED.scan_result_id,
@@ -357,7 +369,11 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       status_reason = EXCLUDED.status_reason,
       last_checked_at = NOW(),
       last_error = '',
-      updated_at = NOW()
+      updated_at = NOW(),
+      cumulative_buy_win_rate = EXCLUDED.cumulative_buy_win_rate,
+      cumulative_buy_closed_count = EXCLUDED.cumulative_buy_closed_count,
+      cumulative_buy_payoff_ratio = EXCLUDED.cumulative_buy_payoff_ratio,
+      cumulative_buy_expectancy = EXCLUDED.cumulative_buy_expectancy
   `, [
     candidate.subject_type, candidate.subject_id, candidate.scan_result_id, candidate.preset_id, candidate.watch_id,
     candidate.owner_user_id, candidate.owner_email || "", candidate.symbol, candidate.dbMarket, candidate.model_label || "",
@@ -368,6 +384,7 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
     incremental.maxDrawdown, incremental.trades, incremental.buyHoldReturnRate, incremental.buyHoldMaxDrawdown,
     Number(candidate.target_percent) || options.targetPercent, candidate.original_validation_max_drawdown || null,
     options.minIncrementalDays, options.minIncrementalTrades, status.status, status.reason,
+    cumulative.buyWinRate, cumulative.buyClosedCount, cumulative.buyPayoffRatio, cumulative.buyExpectancy,
   ]);
   if (candidate.subject_type === "watch" && candidate.watch_id) {
     const isInvalid = status.status === "invalid";

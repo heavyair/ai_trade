@@ -2259,6 +2259,7 @@ function renderAdminRerunFrame() {
       <article><span>持仓比例</span><strong>${formatPercent(state.positionRatio)}</strong></article>
       <article><span>总资产</span><strong>${formatMoney(state.equity)}</strong></article>
       <article><span>交易次数</span><strong>${state.trades.length}</strong></article>
+      <article><span>买单胜率</span><strong>${escapeHtml(formatBuyWinRate(buildBuyWinStats(state.trades)))}</strong></article>
     `;
   }
   if (adminRerunProgressLabel) {
@@ -3494,9 +3495,9 @@ function renderRevalidateResult(payload) {
 
   revalidateResult.innerHTML = `
     <div class="admin-progress-banner-stats">
-      <div>训练期（${escapeHtml(payload.trainStartDate)} ~ ${escapeHtml(payload.trainEndDate)}）年化：${formatPercent(payload.trainAnnualizedReturn)}</div>
-      <div>验证第1年（${escapeHtml(payload.testYear1.startDate)} ~ ${escapeHtml(payload.testYear1.endDate)}）年化：${formatPercent(payload.testYear1.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear1.maxDrawdown)} · ${payload.testYear1.trades}笔交易</div>
-      <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear2.maxDrawdown)} · ${payload.testYear2.trades}笔交易</div>
+      <div>训练期（${escapeHtml(payload.trainStartDate)} ~ ${escapeHtml(payload.trainEndDate)}）年化：${formatPercent(payload.trainAnnualizedReturn)} · ${escapeHtml(formatBuyWinDetail(payload.trainBuyWin))}</div>
+      <div>验证第1年（${escapeHtml(payload.testYear1.startDate)} ~ ${escapeHtml(payload.testYear1.endDate)}）年化：${formatPercent(payload.testYear1.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear1.maxDrawdown)} · ${payload.testYear1.trades}笔交易 · ${escapeHtml(formatBuyWinDetail(payload.testYear1.buyWin))}</div>
+      <div>验证第2年（${escapeHtml(payload.testYear2.startDate)} ~ ${escapeHtml(payload.testYear2.endDate)}）年化：${formatPercent(payload.testYear2.annualizedReturn)} · 最大回撤${formatPercent(payload.testYear2.maxDrawdown)} · ${payload.testYear2.trades}笔交易 · ${escapeHtml(formatBuyWinDetail(payload.testYear2.buyWin))}</div>
       <div>目标年化收益率 ${formatPercent(payload.targetPercent)}：${badge}</div>
       <div>上行波动门槛（每年年化收益需≥当年上行标准差的${formatPercent(payload.upsideThresholdPercent)}）：${upsideBadge}</div>
       <div>逐年回撤门槛（每年最大回撤需小于当年买入持有的最大回撤×${(1 + Number(payload.drawdownTolerancePercent || 0) / 100).toFixed(2)}，即容差${formatPercent(payload.drawdownTolerancePercent)}）：${drawdownBadge}</div>
@@ -3974,6 +3975,7 @@ function renderMyModelDailyValidationCell(model) {
     validation.latestTradeDate ? `到 ${validation.latestTradeDate}` : "",
     `${Number(validation.cumulativeDays) || 0}天`,
     `累计年化 ${Number.isFinite(Number(validation.cumulativeAnnualizedReturn)) ? formatPercent(Number(validation.cumulativeAnnualizedReturn)) : "--"}`,
+    `买单胜率 ${formatStoredBuyWinRate(validation.cumulativeBuyWinRate, validation.cumulativeBuyClosedCount)}`,
     `累计交易 ${Number(validation.cumulativeTrades) || 0}次`,
     `新增 ${Number(validation.incrementalDays) || 0}天`,
     `新增交易 ${Number(validation.incrementalTrades) || 0}次`,
@@ -4033,7 +4035,7 @@ function renderMyModelWatchableRow(model) {
       })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
       <td class="watchable-audit-cell">
-        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)}</div>
+        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(model.trainBuyWinRate, model.trainBuyClosedCount))}</div>
         ${renderWatchableTrainAudit(model)}
       </td>
       <td class="watchable-audit-cell">
@@ -5636,6 +5638,7 @@ function formatWatchAlertAccountStats(watch) {
     <span>账户权益 <strong>${Number.isFinite(equity) ? formatMoney(equity) : "--"}</strong></span>
     <span class="${returnClass}">回报 ${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</span>
     <span class="${returnClass}">年化回报 ${Number.isFinite(annualizedReturn) ? `${annualizedReturn.toFixed(1)}%` : "--"}</span>
+    <span>${escapeHtml(formatBuyWinDetail(buildBuyWinStats(watch.accountTrades)))}</span>
   `;
 }
 
@@ -5808,6 +5811,7 @@ const watchAlertTableColumns = [
   { key: "equity", label: "账户权益", type: "number" },
   { key: "returnRate", label: "回报", type: "number" },
   { key: "annualizedReturn", label: "年化回报", type: "number" },
+  { key: "buyWinRate", label: "买单胜率", type: "number" },
   { key: "signal", label: "最近信号", type: "text" },
 ];
 
@@ -5827,6 +5831,11 @@ function getWatchAlertSortValue(watch, key) {
   if (key === "equity") return Number(watch.accountEquity);
   if (key === "returnRate") return Number(watch.accountReturnRate);
   if (key === "annualizedReturn") return Number(watch.accountAnnualizedReturn);
+  // 没有已平仓买单时排序值取 NaN（跟其他数值列缺失时一致），不要当成 0 排到最后
+  if (key === "buyWinRate") {
+    const stats = buildBuyWinStats(watch.accountTrades);
+    return stats.winRate === null ? NaN : stats.winRate;
+  }
   if (key === "signal") return String(watch.lastSignalDate || "");
   return "";
 }
@@ -5966,6 +5975,7 @@ function renderWatchAlertTableRow(watch) {
       <td>${Number.isFinite(equity) ? formatMoney(equity) : "--"}</td>
       <td class="${returnClass}">${Number.isFinite(returnRate) ? `${returnRate.toFixed(1)}%` : "--"}</td>
       <td class="${returnClass}">${Number.isFinite(annualizedReturn) ? `${annualizedReturn.toFixed(1)}%` : "--"}</td>
+      <td>${escapeHtml(formatBuyWinRate(buildBuyWinStats(watch.accountTrades)))}</td>
       <td>${signalCell}<br>${statusBits}</td>
       <td class="admin-row-actions">${renderWatchAlertActionsCell(watch)}${followersPart}</td>
     </tr>
@@ -6023,9 +6033,16 @@ function summarizeWatchAlertGroup(watches) {
   let totalEquity = 0;
   let totalInitial = 0;
   let annualizedWeighted = 0;
+  let closedBuys = 0;
+  let winBuys = 0;
   watches.forEach((watch) => {
     const trades = Array.isArray(watch.accountTrades) ? watch.accountTrades : [];
     orders += trades.length;
+    // 合并成一个池子再算胜率，而不是对每个盯盘各自的胜率取平均——后者会让只有 1 笔买单的
+    // 盯盘和有 50 笔的盯盘权重相同，把整体胜率带偏。
+    const winStats = buildBuyWinStats(trades);
+    closedBuys += winStats.closedBuys;
+    winBuys += winStats.winCount;
     const equity = Number(watch.accountEquity) || 0;
     const cash = Number(watch.accountCash) || 0;
     positionValue += Math.max(0, equity - cash);
@@ -6042,6 +6059,9 @@ function summarizeWatchAlertGroup(watches) {
     positionValue,
     returnRate: totalInitial > 0 ? ((totalEquity - totalInitial) / totalInitial) * 100 : 0,
     annualizedReturn: totalInitial > 0 ? annualizedWeighted / totalInitial : 0,
+    closedBuys,
+    winBuys,
+    buyWinRate: closedBuys > 0 ? (winBuys / closedBuys) * 100 : null,
   };
 }
 
@@ -6055,6 +6075,7 @@ function renderWatchAlertsSummaryRow(label, summary) {
       <span>持仓 ${formatMoney(summary.positionValue)}</span>
       <span class="${returnClass}">收益 ${formatPercent(summary.returnRate)}</span>
       <span class="${annualizedClass}">年化 ${formatPercent(summary.annualizedReturn)}</span>
+      <span>买单胜率 ${summary.buyWinRate === null ? "--" : `${summary.buyWinRate.toFixed(0)}%（${summary.winBuys}/${summary.closedBuys}）`}</span>
     </div>
   `;
 }
@@ -7508,7 +7529,7 @@ function renderWatchableAiModelRow(model) {
       })}</td>
       <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
       <td class="watchable-audit-cell">
-        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)}</div>
+        <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(model.trainBuyWinRate, model.trainBuyClosedCount))}</div>
         ${renderWatchableTrainAudit(model)}
       </td>
       <td class="watchable-audit-cell">
@@ -9410,6 +9431,7 @@ function renderSelectedResultSummary() {
   selectedResultSummary.innerHTML = `
     <strong>${escapeHtml(leading.label)}</strong>
     <span>收益 ${formatPercent(leading.finalState.returnRate)} · 年化 ${formatPercent(leadingAnnualized)} · 最大回撤 ${formatPercent(leading.finalState.maxDrawdown)} · ${escapeHtml(activeBacktestRangeLabel || "已完成模拟")}</span>
+    <span>${escapeHtml(formatBuyWinDetail(buildBuyWinStats(leading.finalState.trades)))}</span>
   `;
   if (openResultsDialogButton) openResultsDialogButton.disabled = false;
 }
@@ -12162,6 +12184,81 @@ function buildScoreRuleBacktestStates(rows, config) {
   return states;
 }
 
+// 浏览器端副本，必须和 scripts/universe/engine.js 的 buildBuyWinStats 保持一致（这个代码库
+// 的回测引擎本来就是前后端各一份，见本文件里的 buildBacktestStates）。口径说明见那一份的注释：
+// FIFO 逐股配对、手续费按股数占比分摊、只有已完全平仓的买单计入胜率分母。
+function buildBuyWinStats(trades) {
+  const open = [];
+  const closed = [];
+  for (const trade of Array.isArray(trades) ? trades : []) {
+    const shares = Number(trade.shares) || 0;
+    const price = Number(trade.price) || 0;
+    const fee = Number(trade.fee) || 0;
+    if (shares <= 0) continue;
+    if (trade.side === "buy") {
+      open.push({ date: trade.date, price, total: shares, left: shares, fee, cost: 0, proceeds: 0 });
+      continue;
+    }
+    if (trade.side !== "sell") continue;
+    let remaining = shares;
+    while (remaining > 0 && open.length > 0) {
+      const lot = open[0];
+      const matched = Math.min(remaining, lot.left);
+      lot.proceeds += matched * price - fee * (matched / shares);
+      lot.cost += matched * lot.price + lot.fee * (matched / lot.total);
+      lot.left -= matched;
+      remaining -= matched;
+      if (lot.left <= 0) {
+        lot.pnl = lot.proceeds - lot.cost;
+        closed.push(open.shift());
+      }
+    }
+  }
+  const wins = closed.filter((lot) => lot.pnl > 0);
+  const losses = closed.filter((lot) => lot.pnl <= 0);
+  const total = (list) => list.reduce((sum, lot) => sum + lot.pnl, 0);
+  const average = (list) => (list.length > 0 ? total(list) / list.length : 0);
+  const avgWin = average(wins);
+  const avgLoss = average(losses);
+  return {
+    closedBuys: closed.length,
+    openBuys: open.length,
+    winCount: wins.length,
+    lossCount: losses.length,
+    winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : null,
+    avgWin,
+    avgLoss,
+    payoffRatio: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : null,
+    expectancy: closed.length > 0 ? total(closed) / closed.length : null,
+  };
+}
+
+// 紧凑位置（列表行）只显示胜率；详情位置额外带上盈亏比和每买单期望值——胜率单独看会骗人，
+// 胜率 30% 但盈亏比 5:1 是赚的，胜率 70% 但盈亏比 1:5 是亏的。
+function formatBuyWinRate(stats) {
+  if (!stats || stats.winRate === null) return "--";
+  return `${stats.winRate.toFixed(0)}%（${stats.winCount}/${stats.closedBuys}）`;
+}
+
+function formatBuyWinDetail(stats) {
+  if (!stats || stats.winRate === null) {
+    return stats && stats.openBuys > 0 ? `胜率 --（${stats.openBuys} 笔买单未平仓）` : "胜率 --";
+  }
+  const parts = [`胜率 ${formatBuyWinRate(stats)}`];
+  if (stats.payoffRatio !== null) parts.push(`盈亏比 ${stats.payoffRatio.toFixed(2)}`);
+  if (stats.expectancy !== null) parts.push(`每买单期望 ${formatMoney(stats.expectancy)}`);
+  if (stats.openBuys > 0) parts.push(`${stats.openBuys} 笔未平仓`);
+  return parts.join(" · ");
+}
+
+// 数据库里存下来的胜率（B 类：只有聚合列，没有成交明细）。跟 formatBuyWinDetail 区分开：
+// 那个吃的是 buildBuyWinStats 的返回值，这个吃的是拍平后的快照字段。
+function formatStoredBuyWinRate(winRate, closedCount) {
+  if (winRate === null || winRate === undefined) return "--";
+  const suffix = closedCount !== null && closedCount !== undefined ? `（${Math.round((winRate / 100) * closedCount)}/${closedCount}）` : "";
+  return `${Number(winRate).toFixed(0)}%${suffix}`;
+}
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "block-rules") {
     return buildGenericBacktestStates(rows, config);
@@ -12972,7 +13069,7 @@ function renderModelListValidationAudit(validation) {
     `;
   }
   const trainAuditHtml = trainYears.length > 0
-    ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)}</div>${renderWatchableTrainAudit(validation)}</div>`
+    ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(validation.trainBuyWinRate, validation.trainBuyClosedCount))}</div>${renderWatchableTrainAudit(validation)}</div>`
     : "";
   const validationAuditHtml = validationYears.length > 0
     ? `<div class="watchable-audit-cell"><div class="field-hint">目标 ${formatPercent(validation.targetPercent)} · 上行门槛 ${formatPercent(validation.upsideThresholdPercent)} · 回撤容差 ${formatPercent(validation.drawdownTolerancePercent)}</div>${validationYears.map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, { upsideThresholdPercent: validation.upsideThresholdPercent, targetPercent: validation.targetPercent })).join("")}</div>`
