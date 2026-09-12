@@ -1790,8 +1790,8 @@ const adminScanPageSize = 10;
 // validation year's annualized return, not highest raw return (see
 // scripts/universe/run-optimization-scan.js's train/test split methodology — validation is two
 // separate 1-year windows, never blended into one number).
-let adminScanSortKey = "annualizedDiffYear2";
-let adminScanSortDirection = "asc";
+let adminScanSortKey = "testYear1BuyExpectancyPct";
+let adminScanSortDirection = "desc";
 let adminScanFilterSymbol = "";
 let adminScanFilterBuyHoldMax = 50;
 let adminScanFilterBestReturnMin = 100;
@@ -1815,6 +1815,8 @@ const ADMIN_SCAN_COLUMNS = [
   { key: "testYear2AnnualizedReturn", label: "验证期年化收益率(第2年)" },
   { key: "testYear1BuyWinRate", label: "买单胜率(第1年)" },
   { key: "testYear2BuyWinRate", label: "买单胜率(第2年)" },
+  { key: "testYear1BuyExpectancyPct", label: "每买单期望(第1年)" },
+  { key: "testYear2BuyExpectancyPct", label: "每买单期望(第2年)" },
   { key: "annualizedDiffYear1", label: "年化差异(第1年)" },
   { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
   { key: "bestTrades", label: "交易次数" },
@@ -1823,10 +1825,10 @@ const ADMIN_SCAN_COLUMNS = [
 ];
 
 function getAdminScanSortValue(record, key) {
-  // 胜率可能是 null（没有已平仓买单 / 老数据没算过）——返回 NaN 而不是 0，否则"没数据"会被
-  // 当成 0% 参与排序，排在真实的低胜率模型中间。
-  if (key === "testYear1BuyWinRate") return record.testYear1BuyWinRate === null ? NaN : Number(record.testYear1BuyWinRate);
-  if (key === "testYear2BuyWinRate") return record.testYear2BuyWinRate === null ? NaN : Number(record.testYear2BuyWinRate);
+  if (key === "testYear1BuyWinRate") return Number(record.testYear1BuyWinRate) || 0;
+  if (key === "testYear2BuyWinRate") return Number(record.testYear2BuyWinRate) || 0;
+  if (key === "testYear1BuyExpectancyPct") return Number(record.testYear1BuyExpectancyPct) || 0;
+  if (key === "testYear2BuyExpectancyPct") return Number(record.testYear2BuyExpectancyPct) || 0;
   if (key === "improvement") return record.bestReturnRate - record.baselineReturnRate;
   if (key === "vsBuyHold") return record.bestReturnRate - record.buyHoldReturnRate;
   if (key === "symbolName") return record.symbolName || record.symbol || "";
@@ -1873,6 +1875,11 @@ function sortAdminScanRecords(records) {
       const aMigrated = Boolean(a.trainStartDate);
       const bMigrated = Boolean(b.trainStartDate);
       if (aMigrated !== bMigrated) return aMigrated ? -1 : 1;
+    }
+    if (["testYear1BuyWinRate", "testYear2BuyWinRate", "testYear1BuyExpectancyPct", "testYear2BuyExpectancyPct"].includes(key)) {
+      const yearField = key.startsWith("testYear1") ? "testYear1BuyClosedCount" : "testYear2BuyClosedCount";
+      const sink = compareWithBuyWinSink(buyWinSortRank(a[yearField]), buyWinSortRank(b[yearField]));
+      if (sink !== null) return sink;
     }
     const va = getAdminScanSortValue(a, key);
     const vb = getAdminScanSortValue(b, key);
@@ -1963,8 +1970,10 @@ function renderAdminScanList() {
         <td class="${trainClass}">${hasTrainTest ? formatPercent(record.trainAnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear1Class}">${hasTrainTest ? formatPercent(record.testYear1AnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear2Class}">${hasTrainTest ? formatPercent(record.testYear2AnnualizedReturn) : "待重新扫描"}</td>
-        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear1BuyWinRate, record.testYear1BuyClosedCount))}${formatBuyWinSubLine(record.testYear1BuyPayoffRatio, record.testYear1BuyExpectancyPct)}</td>
-        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear2BuyWinRate, record.testYear2BuyClosedCount))}${formatBuyWinSubLine(record.testYear2BuyPayoffRatio, record.testYear2BuyExpectancyPct)}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear1BuyWinRate, record.testYear1BuyClosedCount))}${formatBuyWinPayoffSubLine(record.testYear1BuyPayoffRatio)}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear2BuyWinRate, record.testYear2BuyClosedCount))}${formatBuyWinPayoffSubLine(record.testYear2BuyPayoffRatio)}</td>
+        <td>${record.testYear1BuyExpectancyPct === null || record.testYear1BuyExpectancyPct === undefined ? "--" : `${Number(record.testYear1BuyExpectancyPct) >= 0 ? "+" : ""}${Number(record.testYear1BuyExpectancyPct).toFixed(2)}%`}</td>
+        <td>${record.testYear2BuyExpectancyPct === null || record.testYear2BuyExpectancyPct === undefined ? "--" : `${Number(record.testYear2BuyExpectancyPct) >= 0 ? "+" : ""}${Number(record.testYear2BuyExpectancyPct).toFixed(2)}%`}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear1) : "--"}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear2) : "--"}</td>
         <td>${record.bestTrades || 0}</td>
@@ -3605,6 +3614,8 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "testYear2Trades", label: "验证期交易数(第2年)" },
   { key: "testYear1BuyWinRate", label: "买单胜率(第1年)" },
   { key: "testYear2BuyWinRate", label: "买单胜率(第2年)" },
+  { key: "testYear1BuyExpectancyPct", label: "每买单期望(第1年)" },
+  { key: "testYear2BuyExpectancyPct", label: "每买单期望(第2年)" },
   { key: "testYear1UpsideRatio", label: "回报/上行标准差(第1年)" },
   { key: "testYear2UpsideRatio", label: "回报/上行标准差(第2年)" },
   { key: "bestTrades", label: "交易次数" },
@@ -3613,10 +3624,23 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "updatedAt", label: "更新时间" },
 ];
 
+// 排序用：样本不足或没数据的行一律沉到最后，不管升序降序——否则一个 2 单 100% 的噪音行
+// 会稳稳占据榜首。NaN 做不到这点：dir*(va-vb) 得到 NaN 时 sort 视同 0，顺序反而不确定。
+function buyWinSortRank(closedCount) {
+  const n = Number(closedCount);
+  if (!Number.isFinite(n) || n <= 0) return 2;
+  return n < MIN_BUY_WIN_SAMPLE ? 1 : 0;
+}
+
+function compareWithBuyWinSink(aRank, bRank) {
+  return aRank !== bRank ? aRank - bRank : null;
+}
+
 function getAdminAutoGenerateSortValue(record, key) {
-  // 同 getAdminScanSortValue：胜率为 null 时用 NaN，别把"没数据"当成 0% 排序。
-  if (key === "testYear1BuyWinRate") return record.testYear1BuyWinRate === null ? NaN : Number(record.testYear1BuyWinRate);
-  if (key === "testYear2BuyWinRate") return record.testYear2BuyWinRate === null ? NaN : Number(record.testYear2BuyWinRate);
+  if (key === "testYear1BuyWinRate") return Number(record.testYear1BuyWinRate) || 0;
+  if (key === "testYear2BuyWinRate") return Number(record.testYear2BuyWinRate) || 0;
+  if (key === "testYear1BuyExpectancyPct") return Number(record.testYear1BuyExpectancyPct) || 0;
+  if (key === "testYear2BuyExpectancyPct") return Number(record.testYear2BuyExpectancyPct) || 0;
   if (key === "targetSymbol") return record.targetSymbol || "";
   if (key === "label") return record.label || "";
   if (key === "strategyType") return getStrategyTypeLabel(record.strategyType);
@@ -3707,6 +3731,11 @@ function sortAiGeneratedRecords(records, sortKey, sortDirection, bucketByReached
       const aMigrated = Boolean(a.trainStartDate);
       const bMigrated = Boolean(b.trainStartDate);
       if (aMigrated !== bMigrated) return aMigrated ? -1 : 1;
+    }
+    if (["testYear1BuyWinRate", "testYear2BuyWinRate", "testYear1BuyExpectancyPct", "testYear2BuyExpectancyPct"].includes(sortKey)) {
+      const yearField = sortKey.startsWith("testYear1") ? "testYear1BuyClosedCount" : "testYear2BuyClosedCount";
+      const sink = compareWithBuyWinSink(buyWinSortRank(a[yearField]), buyWinSortRank(b[yearField]));
+      if (sink !== null) return sink;
     }
     const va = getAdminAutoGenerateSortValue(a, sortKey);
     const vb = getAdminAutoGenerateSortValue(b, sortKey);
@@ -3809,8 +3838,10 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear2) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear1Trades || 0) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear2Trades || 0) : "--"}</td>
-      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear1BuyWinRate, p.testYear1BuyClosedCount))}${formatBuyWinSubLine(p.testYear1BuyPayoffRatio, p.testYear1BuyExpectancyPct)}</td>
-      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear2BuyWinRate, p.testYear2BuyClosedCount))}${formatBuyWinSubLine(p.testYear2BuyPayoffRatio, p.testYear2BuyExpectancyPct)}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear1BuyWinRate, p.testYear1BuyClosedCount))}${formatBuyWinPayoffSubLine(p.testYear1BuyPayoffRatio)}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear2BuyWinRate, p.testYear2BuyClosedCount))}${formatBuyWinPayoffSubLine(p.testYear2BuyPayoffRatio)}</td>
+      <td>${p.testYear1BuyExpectancyPct === null || p.testYear1BuyExpectancyPct === undefined ? "--" : `${Number(p.testYear1BuyExpectancyPct) >= 0 ? "+" : ""}${Number(p.testYear1BuyExpectancyPct).toFixed(2)}%`}</td>
+      <td>${p.testYear2BuyExpectancyPct === null || p.testYear2BuyExpectancyPct === undefined ? "--" : `${Number(p.testYear2BuyExpectancyPct) >= 0 ? "+" : ""}${Number(p.testYear2BuyExpectancyPct).toFixed(2)}%`}</td>
       <td>${formatUpsideRatioCell(p, 1)}</td>
       <td>${formatUpsideRatioCell(p, 2)}</td>
       <td>${p.bestTrades || 0}</td>
@@ -5848,10 +5879,9 @@ function getWatchAlertSortValue(watch, key) {
   if (key === "equity") return Number(watch.accountEquity);
   if (key === "returnRate") return Number(watch.accountReturnRate);
   if (key === "annualizedReturn") return Number(watch.accountAnnualizedReturn);
-  // 没有已平仓买单时排序值取 NaN（跟其他数值列缺失时一致），不要当成 0 排到最后
   if (key === "buyWinRate") {
     const stats = buildBuyWinStats(watch.accountTrades);
-    return stats.winRate === null ? NaN : stats.winRate;
+    return stats.winRate === null ? 0 : stats.winRate;
   }
   if (key === "signal") return String(watch.lastSignalDate || "");
   return "";
@@ -12305,15 +12335,10 @@ function formatStoredBuyWinRate(winRate, closedCount) {
 
 // 三个指标一起显示的完整版（B 类：数据库里拍平的列）。胜率 + 盈亏比 + 每买单期望缺一不可：
 // 胜率 80%/盈亏比 0.54 的模型，每买单期望不如胜率 45%/盈亏比 2.63 的——只看胜率会挑反。
-// 表格单元格里的第二行小字——表本来就很宽，再为盈亏比/期望各加两列会挤爆，放在胜率下面。
-function formatBuyWinSubLine(payoffRatio, expectancyPct) {
-  const parts = [];
-  if (payoffRatio !== null && payoffRatio !== undefined) parts.push(`盈亏比 ${Number(payoffRatio).toFixed(2)}`);
-  if (expectancyPct !== null && expectancyPct !== undefined) {
-    parts.push(`期望 ${Number(expectancyPct) >= 0 ? "+" : ""}${Number(expectancyPct).toFixed(2)}%`);
-  }
-  if (parts.length === 0) return "";
-  return `<br><span class="field-hint">${escapeHtml(parts.join(" · "))}</span>`;
+// 胜率单元格下面的小字。期望已经单独成列（可排序），这里只剩盈亏比。
+function formatBuyWinPayoffSubLine(payoffRatio) {
+  if (payoffRatio === null || payoffRatio === undefined) return "";
+  return `<br><span class="field-hint">盈亏比 ${escapeHtml(Number(payoffRatio).toFixed(2))}</span>`;
 }
 
 function formatStoredBuyWinFull(winRate, closedCount, payoffRatio, expectancyPct, expectancy) {
