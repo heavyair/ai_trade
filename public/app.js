@@ -2361,13 +2361,16 @@ async function runAdminRerunPlayback({ title, symbol, config, strategyType, star
 async function openAdminRerun(scanId) {
   const record = adminScanCache.find((item) => item.id === scanId);
   if (!record || !adminRerunDialog) return;
+  // 原始训练起始日 ~ 最近交易日, not a trailing 5-year window — same cumulative rule as
+  // 重新验证/历史模拟/查看历史交易记录.
+  const range = getModelContextSimulationRange(record);
   await runAdminRerunPlayback({
     title: `重新运行：${record.symbolName || record.symbol}（${record.presetLabel}）`,
     symbol: record.symbol,
     config: record.bestConfig || {},
     strategyType: record.strategyType,
-    start: formatDate(shiftYears(new Date(), -5)),
-    end: todayText(),
+    start: range.start,
+    end: range.end,
   });
 }
 
@@ -3006,13 +3009,16 @@ function openAdminValidatedSearchParamViewer(presetId) {
 
 async function openAiGeneratedRerun(record) {
   if (!record || !adminRerunDialog) return;
+  // 原始训练起始日 ~ 最近交易日, not a trailing 5-year window — same cumulative rule as
+  // 重新验证/历史模拟/查看历史交易记录.
+  const range = getModelContextSimulationRange(record);
   await runAdminRerunPlayback({
     title: `交易记录：${record.targetSymbol}（${record.label}）`,
     symbol: record.targetSymbol,
     config: record.bestConfig || {},
     strategyType: record.strategyType,
-    start: formatDate(shiftYears(new Date(), -5)),
-    end: todayText(),
+    start: range.start,
+    end: range.end,
   });
 }
 
