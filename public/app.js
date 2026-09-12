@@ -3119,13 +3119,16 @@ if (modelActionViewTradesButton) {
     const context = modelActionContext;
     if (!context || !context.symbol) return;
     closeDialog(modelActionDialog);
+    // Cumulative window (原始训练起始日 ~ 最近交易日), not a trailing 5-year one — the trade
+    // history has to cover the model's whole life, same rule as 重新验证/历史模拟.
+    const range = getModelContextSimulationRange(context);
     await runAdminRerunPlayback({
       title: `交易记录：${context.symbol}（${context.label}）`,
       symbol: context.symbol,
       config: context.config || {},
       strategyType: context.strategyType,
-      start: formatDate(shiftYears(new Date(), -5)),
-      end: todayText(),
+      start: range.start,
+      end: range.end,
     });
   });
 }
