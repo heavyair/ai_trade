@@ -5679,6 +5679,9 @@ function renderWatchAlertEntry(watch, options = {}) {
       id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
       config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
       originalText: watch.presetOriginalText, modelText: watch.presetModelText,
+      // Without these the popup's 历史模拟/查看历史交易记录 has no training origin to anchor to
+      // and silently falls back to a trailing 5-year window instead of the cumulative one.
+      trainStartDate: watch.trainStartDate, dailyValidation: watch.dailyValidation,
       isOwner: false, name: null,
     });
   const targetLabel = isIndexWatch
@@ -5916,6 +5919,9 @@ function renderWatchAlertTableRow(watch) {
       id: watch.presetId, numericId: watch.presetNumericId, label: watch.presetLabel,
       config: watch.presetConfig, strategyType: watch.presetStrategyType, symbol: watch.symbol,
       originalText: watch.presetOriginalText, modelText: watch.presetModelText,
+      // Without these the popup's 历史模拟/查看历史交易记录 has no training origin to anchor to
+      // and silently falls back to a trailing 5-year window instead of the cumulative one.
+      trainStartDate: watch.trainStartDate, dailyValidation: watch.dailyValidation,
       isOwner: false, name: null,
     });
   const targetCell = isIndexWatch

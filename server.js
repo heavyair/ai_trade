@@ -4123,6 +4123,9 @@ function mapWatchAlertRow(row, {
     enabled: row.enabled,
     tradeEnabled: Boolean(row.trade_enabled),
     tradeCapital: isFollowerView ? 0 : (Number(row.trade_capital) || 0),
+    // Origin for the cumulative 历史模拟/交易记录 window — just a date, not a model parameter,
+    // so it is not masked for follower/shared-code views the way presetConfig is.
+    trainStartDate: row.preset_train_start_date ? new Date(row.preset_train_start_date).toISOString().slice(0, 10) : "",
     lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : "",
     lastSignalDate: row.last_signal_date ? new Date(row.last_signal_date).toISOString().slice(0, 10) : "",
     lastSignalAction: row.last_signal_action || "",
@@ -4225,9 +4228,14 @@ async function handleWatchAlertsApi(req, res) {
           mvs.last_checked_at AS watch_validation_last_checked_at,
           mvs.last_error AS watch_validation_last_error,
           latest_price.trade_date AS last_price_date,
-          latest_price.close AS last_price
+          latest_price.close AS last_price,
+          -- The source model's ORIGINAL training start date. Carried on the watch so the model
+          -- popup's 历史模拟/查看历史交易记录 can anchor to it (see getModelContextTrainStartDate
+          -- in app.js) instead of silently falling back to a trailing 5-year window.
+          wpvs.train_start_date AS preset_train_start_date
         FROM watch_alerts
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN preset_validation_snapshots wpvs ON wpvs.preset_id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
         LEFT JOIN LATERAL (
           SELECT dp.trade_date, dp.close
@@ -4295,10 +4303,12 @@ async function handleWatchAlertsApi(req, res) {
           mvs.last_checked_at AS watch_validation_last_checked_at,
           mvs.last_error AS watch_validation_last_error,
           latest_price.trade_date AS last_price_date,
-          latest_price.close AS last_price
+          latest_price.close AS last_price,
+          wpvs.train_start_date AS preset_train_start_date
         FROM watch_alert_followers waf
         JOIN watch_alerts ON watch_alerts.id = waf.watch_id
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN preset_validation_snapshots wpvs ON wpvs.preset_id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
         LEFT JOIN LATERAL (
           SELECT dp.trade_date, dp.close
@@ -4323,11 +4333,13 @@ async function handleWatchAlertsApi(req, res) {
           sp.original_text AS preset_original_text, sp.model_text AS preset_model_text,
           wsc.allow_view_params, wsc.allow_copy,
           latest_price.trade_date AS last_price_date,
-          latest_price.close AS last_price
+          latest_price.close AS last_price,
+          wpvs.train_start_date AS preset_train_start_date
         FROM watch_share_code_users wsu
         JOIN watch_share_codes wsc ON wsc.id = wsu.share_code_id AND wsc.enabled = TRUE
         JOIN watch_alerts ON watch_alerts.owner_user_id = wsc.owner_user_id
         LEFT JOIN strategy_presets sp ON sp.id = watch_alerts.preset_id
+        LEFT JOIN preset_validation_snapshots wpvs ON wpvs.preset_id = watch_alerts.preset_id
         LEFT JOIN model_validation_states mvs ON mvs.subject_type = 'watch' AND mvs.subject_id = watch_alerts.id
         LEFT JOIN LATERAL (
           SELECT dp.trade_date, dp.close
