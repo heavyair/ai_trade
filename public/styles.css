@@ -1007,7 +1007,6 @@ button:disabled {
 
 @media (max-width: 720px) {
   .watch-alerts-dialog .param-dialog-body {
-    gap: 10px;
     padding: 12px;
   }
 
@@ -2709,17 +2708,24 @@ textarea:focus {
   justify-content: flex-end;
 }
 
-/* Every earlier attempt here split overflow-x/overflow-y into separate declarations (one axis
-   auto, the other left at its visible default, or explicitly hidden) — CSS forces a mismatched
-   auto/visible pair onto a single computed value in a way that's easy to get wrong, and it kept
-   producing a nested scroll region that swallowed the page's vertical swipe on mobile Safari.
-   .optimization-dialog (below) solves the exact same "full-screen dialog, sticky header, needs
-   to scroll on mobile" problem with the plain `overflow: auto` SHORTHAND (both axes at once,
-   never mismatched) — mirror that exactly here instead of re-deriving it. */
+/* The thing that makes this dialog different from every other .param-dialog (which scroll fine)
+   is the 1380px-wide watch table it contains. The base .param-dialog-body is `display: grid`,
+   and an auto-sized grid track is sized to its items' MAX-CONTENT — so that one wide table
+   inflates the single grid column to 1380px, stretching the sticky header, the tabs and the
+   summary to 1380px inside a ~390px phone screen. The dialog then overflows massively sideways
+   and the vertical swipe never behaves. Switching to `display: block` for this dialog is the
+   actual fix: a block-level child is width:auto (fills the parent, never inflates it), so the
+   wide table stays contained in #watchAlertsList's own horizontal scroller below. */
 .watch-alerts-dialog .param-dialog-body {
+  display: block;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   padding-bottom: calc(18px + env(safe-area-inset-bottom));
+}
+
+/* display:block loses the grid `gap`, so restore the spacing between the dialog's sections. */
+.watch-alerts-dialog .param-dialog-body > * + * {
+  margin-top: 14px;
 }
 
 .watch-alerts-dialog .dialog-head {
@@ -2761,6 +2767,8 @@ textarea:focus {
    below) is wider than the phone screen — that's what makes the "操作" column with the Enable
    trade switch reachable by swiping sideways within the table area. */
 .watch-alerts-dialog .admin-ranking-list {
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   padding-bottom: 18px;
