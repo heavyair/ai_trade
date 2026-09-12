@@ -28,8 +28,14 @@ function toIso(value) {
   return value ? new Date(value).toISOString().slice(0, 10) : null;
 }
 
-function inferDbMarket(symbol) {
-  return /^\d{6}$/.test(String(symbol || "").trim()) ? "CN" : "US";
+// daily_prices.market 存的 A 股是 "1"(沪) / "0"(深)，不是 "CN"——跟
+// run-model-validation-daily.js 的同名函数保持一致，用 "CN" 会一行都查不到。
+function inferDbMarket(symbol, market) {
+  const normalizedMarket = String(market || "").trim().toUpperCase();
+  if (normalizedMarket === "US") return "US";
+  const code = String(symbol || "").trim().toUpperCase();
+  if (/^\d{6}$/.test(code)) return /^[569]/.test(code) ? "1" : "0";
+  return normalizedMarket === "1" || normalizedMarket === "0" ? normalizedMarket : "US";
 }
 
 // rows 缓存：同一只股票会被多条记录用到，重复加载是这个脚本最大的耗时来源。
@@ -136,7 +142,7 @@ async function backfillValidationStates() {
   for (const row of result.rows) {
     const symbol = String(row.symbol || "").trim().toUpperCase();
     try {
-      const market = row.market || inferDbMarket(symbol);
+      const market = inferDbMarket(symbol, row.market);
       const rows = await cachedRows(symbol, market);
       if (!rows.length) { skipped += 1; console.log(`[skip] ${symbol}: 没有历史数据`); continue; }
       engine.setActiveLotSizeSymbol(symbol);
