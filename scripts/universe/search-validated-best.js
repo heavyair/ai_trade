@@ -75,6 +75,13 @@ const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent"
 const MIN_CLOSED_BUYS = Math.max(0, Math.round(getArg("minClosedBuys", 10)));
 const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
 const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
+// 训练阶段的早退门槛：跑赢买入持有之后、进入验证阶段之前，先用训练期自身的每笔统计筛一道。
+// 目的是别把验证算力（每个候选要跑两年重置账户回测再入库）花在肯定没用的候选上。
+// 阈值是拿 706 条真实结果反推的：训练期已平仓买单<10 砍掉 21.4% 只误杀 1 个有用模型，
+// 训练期盈亏比<1 砍掉 28.3% 同样只误杀 1 个，两者取或砍掉 33.4% 误杀 2/87。再往上加
+// "训练期期望<0" 只多砍 2.4% 却把误杀抬到 5 个，性价比明显变差，所以没有加。
+const MIN_TRAIN_CLOSED_BUYS = Math.max(0, Math.round(getArg("minTrainClosedBuys", 10)));
+const MIN_TRAIN_PAYOFF_RATIO = getArg("minTrainPayoffRatio", 1);
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 60));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 400));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
@@ -229,7 +236,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffRatio=${MIN_TRAIN_PAYOFF_RATIO} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -444,6 +451,24 @@ async function main() {
           continue;
         }
 
+        // 早退：训练期自身的每笔统计就已经说明没有边际优势的，不值得再花两年验证回测。
+        // 注意用 best.last.trades（训练期完整成交流水），跟入库时写 train_buy_* 的是同一份数据。
+        const trainBuyWin = engine.buildBuyWinStats(best.last.trades);
+        const trainPayoff = trainBuyWin.payoffRatio;
+        if (trainBuyWin.closedBuys < MIN_TRAIN_CLOSED_BUYS) {
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期只有 ${trainBuyWin.closedBuys} 个完整平仓买单(<${MIN_TRAIN_CLOSED_BUYS}) — skipping`);
+          continue;
+        }
+        // payoffRatio 为 null 有两种含义：没有已平仓买单（上面那道门已经排除），或者一笔亏损都
+        // 没有（avgLoss===0，除法没有意义）。后者是全胜，应当放行而不是当成"没有盈亏比"淘汰。
+        const trainPayoffPasses = trainBuyWin.lossCount === 0
+          ? true
+          : Number.isFinite(trainPayoff) && trainPayoff >= MIN_TRAIN_PAYOFF_RATIO;
+        if (!trainPayoffPasses) {
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期盈亏比 ${Number.isFinite(trainPayoff) ? trainPayoff.toFixed(2) : "无"}(<${MIN_TRAIN_PAYOFF_RATIO}) — skipping`);
+          continue;
+        }
+
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
         qualifyingAttempts.push({
           model, best, trainAnnualized, trainYearBreakdown,
@@ -525,11 +550,26 @@ async function main() {
       // before) so "继续寻找" progress tracking still shows how close this symbol got.
       // 回退选择也改用"最差年每买单期望"而不是最差年年化——否则达标标准换了口径、回退路径
       // 却还在按旧口径挑模型，"继续寻找"的进度会指向错误的方向。
+      // 回退保存还要过一道最低体面线。没有这道线时，历史数据里 706 条结果有 3.5% 是两年合计
+      // 不到 3 笔、7.1% 是有一整年一个完整平仓买单都没有、0.7% 是较差年年化为负——这些既算不出
+      // 胜率/盈亏比/期望，也不可能靠"再找找"变好，留在库里只会把界面的模型列表撑满噪音。
+      // 达标模型不受这道线约束（它们已经过了更严的门槛）。
+      const worthKeepingAsFallback = (entry) => {
+        const totalTrades = (entry.scoredYear1.trades || []).length + (entry.scoredYear2.trades || []).length;
+        if (totalTrades < 3) return false;
+        if (entry.buyWin1.closedBuys === 0 || entry.buyWin2.closedBuys === 0) return false;
+        if (!(entry.worstTestAnnualized > 0)) return false;
+        return true;
+      };
+      const fallbackPool = validated.filter(worthKeepingAsFallback);
       const toSave = passing.length > 0
         ? passing
-        : (validated.length > 0
-          ? [validated.reduce((a, b) => (b.worstExpectancyPct > a.worstExpectancyPct ? b : a), validated[0])]
+        : (fallbackPool.length > 0
+          ? [fallbackPool.reduce((a, b) => (b.worstExpectancyPct > a.worstExpectancyPct ? b : a), fallbackPool[0])]
           : []);
+      if (passing.length === 0 && validated.length > 0 && fallbackPool.length === 0) {
+        console.log(`[${symbolEntry.code}] ${validated.length} 个候选全部达不到回退保存的最低线（两年合计≥3笔、每年都要有完整平仓买单、较差年年化>0），本轮不留记录`);
+      }
       toSave.forEach((entry) => results.push({ symbol: symbolEntry.code, ...entry }));
 
       if (toSave.length > 0) {
