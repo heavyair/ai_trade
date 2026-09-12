@@ -669,11 +669,16 @@ async function initializeDatabase() {
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year1_buy_expectancy DOUBLE PRECISION;
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_payoff_ratio DOUBLE PRECISION;
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_expectancy DOUBLE PRECISION;
+    -- 每买单期望的百分比口径（首选）。绝对金额受仓位大小和复利放大，跨模型比较会失真。
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS train_buy_expectancy_pct DOUBLE PRECISION;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year1_buy_expectancy_pct DOUBLE PRECISION;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_expectancy_pct DOUBLE PRECISION;
 
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_win_rate DOUBLE PRECISION;
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_closed_count INTEGER;
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_payoff_ratio DOUBLE PRECISION;
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_expectancy DOUBLE PRECISION;
+    ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_expectancy_pct DOUBLE PRECISION;
 
     CREATE TABLE IF NOT EXISTS broker_orders (
       id TEXT PRIMARY KEY,
@@ -3219,6 +3224,7 @@ async function queryAiGeneratedPresets({ source }) {
       test_year1_buy_payoff_ratio, test_year1_buy_expectancy,
       test_year2_buy_win_rate, test_year2_buy_closed_count,
       test_year2_buy_payoff_ratio, test_year2_buy_expectancy,
+      train_buy_expectancy_pct, test_year1_buy_expectancy_pct, test_year2_buy_expectancy_pct,
       best_trades, tested_candidates, reached_target, scanned_at,
       last_rechecked_at, recheck_still_qualifies, recheck_year1_annualized_return,
       recheck_year2_annualized_return, recheck_target_percent, recheck_error
@@ -3265,6 +3271,9 @@ async function queryAiGeneratedPresets({ source }) {
     testYear1BuyExpectancy: row.test_year1_buy_expectancy === null || row.test_year1_buy_expectancy === undefined ? null : Number(row.test_year1_buy_expectancy),
     testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio === null || row.test_year2_buy_payoff_ratio === undefined ? null : Number(row.test_year2_buy_payoff_ratio),
     testYear2BuyExpectancy: row.test_year2_buy_expectancy === null || row.test_year2_buy_expectancy === undefined ? null : Number(row.test_year2_buy_expectancy),
+    trainBuyExpectancyPct: row.train_buy_expectancy_pct === null || row.train_buy_expectancy_pct === undefined ? null : Number(row.train_buy_expectancy_pct),
+    testYear1BuyExpectancyPct: row.test_year1_buy_expectancy_pct === null || row.test_year1_buy_expectancy_pct === undefined ? null : Number(row.test_year1_buy_expectancy_pct),
+    testYear2BuyExpectancyPct: row.test_year2_buy_expectancy_pct === null || row.test_year2_buy_expectancy_pct === undefined ? null : Number(row.test_year2_buy_expectancy_pct),
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
     reachedTarget: Boolean(row.reached_target),
@@ -3373,6 +3382,7 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
           osr.test_year1_buy_payoff_ratio, osr.test_year1_buy_expectancy,
           osr.test_year2_buy_win_rate, osr.test_year2_buy_closed_count,
           osr.test_year2_buy_payoff_ratio, osr.test_year2_buy_expectancy,
+          osr.train_buy_expectancy_pct, osr.test_year1_buy_expectancy_pct, osr.test_year2_buy_expectancy_pct,
           osr.train_year_breakdown, osr.target_percent, osr.upside_threshold_percent, osr.drawdown_tolerance_percent,
           osr.best_trades, osr.tested_candidates,
           COALESCE(mvs.status, 'valid') AS validation_status,
@@ -3502,6 +3512,9 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
     testYear1BuyExpectancy: row.test_year1_buy_expectancy === null || row.test_year1_buy_expectancy === undefined ? null : Number(row.test_year1_buy_expectancy),
     testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio === null || row.test_year2_buy_payoff_ratio === undefined ? null : Number(row.test_year2_buy_payoff_ratio),
     testYear2BuyExpectancy: row.test_year2_buy_expectancy === null || row.test_year2_buy_expectancy === undefined ? null : Number(row.test_year2_buy_expectancy),
+    trainBuyExpectancyPct: row.train_buy_expectancy_pct === null || row.train_buy_expectancy_pct === undefined ? null : Number(row.train_buy_expectancy_pct),
+    testYear1BuyExpectancyPct: row.test_year1_buy_expectancy_pct === null || row.test_year1_buy_expectancy_pct === undefined ? null : Number(row.test_year1_buy_expectancy_pct),
+    testYear2BuyExpectancyPct: row.test_year2_buy_expectancy_pct === null || row.test_year2_buy_expectancy_pct === undefined ? null : Number(row.test_year2_buy_expectancy_pct),
         bestTrades: row.best_trades || 0,
         testedCandidates: row.tested_candidates || 0,
         totalTestTrades: row.total_test_trades || 0,
@@ -4277,10 +4290,13 @@ async function handleWatchAlertsApi(req, res) {
         mvs.cumulative_buy_closed_count AS watch_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS watch_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS watch_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
           mvs.cumulative_buy_win_rate AS watch_validation_cumulative_buy_win_rate,
           mvs.cumulative_buy_closed_count AS watch_validation_cumulative_buy_closed_count,
           mvs.cumulative_buy_payoff_ratio AS watch_validation_cumulative_buy_payoff_ratio,
           mvs.cumulative_buy_expectancy AS watch_validation_cumulative_buy_expectancy,
+          mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
+        mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
           mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
           mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
           mvs.incremental_start_date AS watch_validation_incremental_start_date,
@@ -4360,10 +4376,13 @@ async function handleWatchAlertsApi(req, res) {
         mvs.cumulative_buy_closed_count AS watch_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS watch_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS watch_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
           mvs.cumulative_buy_win_rate AS watch_validation_cumulative_buy_win_rate,
           mvs.cumulative_buy_closed_count AS watch_validation_cumulative_buy_closed_count,
           mvs.cumulative_buy_payoff_ratio AS watch_validation_cumulative_buy_payoff_ratio,
           mvs.cumulative_buy_expectancy AS watch_validation_cumulative_buy_expectancy,
+          mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
+        mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
           mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
           mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
           mvs.incremental_start_date AS watch_validation_incremental_start_date,
@@ -6816,9 +6835,10 @@ async function handlePresetRevalidateApi(req, res) {
             test_year1_buy_payoff_ratio, test_year1_buy_expectancy,
             test_year2_buy_win_rate, test_year2_buy_closed_count,
             test_year2_buy_payoff_ratio, test_year2_buy_expectancy,
+            train_buy_expectancy_pct, test_year1_buy_expectancy_pct, test_year2_buy_expectancy_pct,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, NOW())
+          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, NOW())
           ON CONFLICT (preset_id) DO UPDATE SET
             train_years = EXCLUDED.train_years,
             test_years = EXCLUDED.test_years,
@@ -6857,6 +6877,9 @@ async function handlePresetRevalidateApi(req, res) {
             test_year2_buy_closed_count = EXCLUDED.test_year2_buy_closed_count,
             test_year2_buy_payoff_ratio = EXCLUDED.test_year2_buy_payoff_ratio,
             test_year2_buy_expectancy = EXCLUDED.test_year2_buy_expectancy,
+            train_buy_expectancy_pct = EXCLUDED.train_buy_expectancy_pct,
+            test_year1_buy_expectancy_pct = EXCLUDED.test_year1_buy_expectancy_pct,
+            test_year2_buy_expectancy_pct = EXCLUDED.test_year2_buy_expectancy_pct,
             updated_at = NOW()
         `, [
           presetId, trainYears, testYears,
@@ -6871,6 +6894,7 @@ async function handlePresetRevalidateApi(req, res) {
           testYear1BuyWin.payoffRatio, testYear1BuyWin.expectancy,
           testYear2BuyWin.winRate, testYear2BuyWin.closedBuys,
           testYear2BuyWin.payoffRatio, testYear2BuyWin.expectancy,
+          trainBuyWin.expectancyPct, testYear1BuyWin.expectancyPct, testYear2BuyWin.expectancyPct,
         ]);
       }
     }
@@ -6958,6 +6982,9 @@ function mapPresetValidationRow(row) {
     testYear1BuyExpectancy: row.test_year1_buy_expectancy !== null && row.test_year1_buy_expectancy !== undefined ? Number(row.test_year1_buy_expectancy) : null,
     testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio !== null && row.test_year2_buy_payoff_ratio !== undefined ? Number(row.test_year2_buy_payoff_ratio) : null,
     testYear2BuyExpectancy: row.test_year2_buy_expectancy !== null && row.test_year2_buy_expectancy !== undefined ? Number(row.test_year2_buy_expectancy) : null,
+    trainBuyExpectancyPct: row.train_buy_expectancy_pct !== null && row.train_buy_expectancy_pct !== undefined ? Number(row.train_buy_expectancy_pct) : null,
+    testYear1BuyExpectancyPct: row.test_year1_buy_expectancy_pct !== null && row.test_year1_buy_expectancy_pct !== undefined ? Number(row.test_year1_buy_expectancy_pct) : null,
+    testYear2BuyExpectancyPct: row.test_year2_buy_expectancy_pct !== null && row.test_year2_buy_expectancy_pct !== undefined ? Number(row.test_year2_buy_expectancy_pct) : null,
     trainYears: row.train_years !== null && row.train_years !== undefined ? Number(row.train_years) : null,
     testYears: row.test_years !== null && row.test_years !== undefined ? Number(row.test_years) : null,
     trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
@@ -7024,6 +7051,7 @@ function mapModelValidationState(row, prefix = "model_validation") {
     cumulativeBuyClosedCount: numberOrNull(row[`${prefix}_cumulative_buy_closed_count`]),
     cumulativeBuyPayoffRatio: numberOrNull(row[`${prefix}_cumulative_buy_payoff_ratio`]),
     cumulativeBuyExpectancy: numberOrNull(row[`${prefix}_cumulative_buy_expectancy`]),
+    cumulativeBuyExpectancyPct: numberOrNull(row[`${prefix}_cumulative_buy_expectancy_pct`]),
     cumulativeBuyHoldReturnRate: numberOrNull(row[`${prefix}_cumulative_buy_hold_return_rate`]),
     cumulativeBuyHoldMaxDrawdown: numberOrNull(row[`${prefix}_cumulative_buy_hold_max_drawdown`]),
     incrementalStartDate: row[`${prefix}_incremental_start_date`] ? new Date(row[`${prefix}_incremental_start_date`]).toISOString().slice(0, 10) : "",
@@ -7131,6 +7159,7 @@ async function handleModelListApi(req, res) {
         mvs.cumulative_buy_closed_count AS watch_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS watch_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS watch_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS watch_validation_cumulative_buy_expectancy_pct,
         mvs.cumulative_buy_hold_return_rate AS watch_validation_cumulative_buy_hold_return_rate,
         mvs.cumulative_buy_hold_max_drawdown AS watch_validation_cumulative_buy_hold_max_drawdown,
         mvs.incremental_start_date AS watch_validation_incremental_start_date,
@@ -7172,6 +7201,7 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
         pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
+        pvs.train_buy_expectancy_pct, pvs.test_year1_buy_expectancy_pct, pvs.test_year2_buy_expectancy_pct,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7186,6 +7216,7 @@ async function handleModelListApi(req, res) {
         mvs.cumulative_buy_closed_count AS model_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS model_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS model_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS model_validation_cumulative_buy_expectancy_pct,
         mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
         mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
         mvs.incremental_start_date AS model_validation_incremental_start_date,
@@ -7235,6 +7266,7 @@ async function handleModelListApi(req, res) {
         pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
         pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
+        pvs.train_buy_expectancy_pct, pvs.test_year1_buy_expectancy_pct, pvs.test_year2_buy_expectancy_pct,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7249,6 +7281,7 @@ async function handleModelListApi(req, res) {
         mvs.cumulative_buy_closed_count AS model_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS model_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS model_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS model_validation_cumulative_buy_expectancy_pct,
         mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
         mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
         mvs.incremental_start_date AS model_validation_incremental_start_date,
@@ -7313,6 +7346,7 @@ async function handleMyModelsApi(req, res) {
         pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
         pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
+        pvs.train_buy_expectancy_pct, pvs.test_year1_buy_expectancy_pct, pvs.test_year2_buy_expectancy_pct,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7327,6 +7361,7 @@ async function handleMyModelsApi(req, res) {
         mvs.cumulative_buy_closed_count AS model_validation_cumulative_buy_closed_count,
         mvs.cumulative_buy_payoff_ratio AS model_validation_cumulative_buy_payoff_ratio,
         mvs.cumulative_buy_expectancy AS model_validation_cumulative_buy_expectancy,
+        mvs.cumulative_buy_expectancy_pct AS model_validation_cumulative_buy_expectancy_pct,
         mvs.cumulative_buy_hold_return_rate AS model_validation_cumulative_buy_hold_return_rate,
         mvs.cumulative_buy_hold_max_drawdown AS model_validation_cumulative_buy_hold_max_drawdown,
         mvs.incremental_start_date AS model_validation_incremental_start_date,
@@ -7560,6 +7595,7 @@ async function handlePublicModelsApi(req, res) {
         pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
         pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
+        pvs.train_buy_expectancy_pct, pvs.test_year1_buy_expectancy_pct, pvs.test_year2_buy_expectancy_pct,
         pvs.updated_at AS snapshot_updated_at
       FROM strategy_presets sp
       INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id

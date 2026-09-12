@@ -3082,6 +3082,10 @@ function buildBuyWinStats(trades) {
       remaining -= matched;
       if (lot.left <= 0) {
         lot.pnl = lot.proceeds - lot.cost;
+        // 单个买单的收益率：盈亏 ÷ 该买单自己的建仓成本。绝对金额会被仓位大小和复利放大
+        // （账户滚大之后每笔的绝对盈亏自然变大），百分比把这两个干扰都消掉，衡量的才是
+        // 模型本身的边际效率，也才能跨股票、跨资金规模比较。
+        lot.pnlPct = lot.cost > 0 ? (lot.pnl / lot.cost) * 100 : 0;
         closed.push(open.shift());
       }
     }
@@ -3092,6 +3096,7 @@ function buildBuyWinStats(trades) {
   const average = (list) => (list.length > 0 ? total(list) / list.length : 0);
   const avgWin = average(wins);
   const avgLoss = average(losses);
+  const totalPct = (list) => list.reduce((sum, lot) => sum + lot.pnlPct, 0);
   return {
     closedBuys: closed.length,
     openBuys: open.length,
@@ -3104,6 +3109,10 @@ function buildBuyWinStats(trades) {
     avgLoss,
     payoffRatio: avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : null,
     expectancy: closed.length > 0 ? total(closed) / closed.length : null,
+    // 首选口径（见 pnlPct 的注释）；expectancy 是同一批买单的绝对金额版本，详情位置作为副信息。
+    expectancyPct: closed.length > 0 ? totalPct(closed) / closed.length : null,
+    avgWinPct: wins.length > 0 ? totalPct(wins) / wins.length : 0,
+    avgLossPct: losses.length > 0 ? totalPct(losses) / losses.length : 0,
   };
 }
 

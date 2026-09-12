@@ -114,6 +114,7 @@ function scoreWindow(rows, config, startDate) {
       buyClosedCount: 0,
       buyPayoffRatio: null,
       buyExpectancy: null,
+      buyExpectancyPct: null,
       buyHoldReturnRate: null,
       buyHoldMaxDrawdown: null,
     };
@@ -128,6 +129,7 @@ function scoreWindow(rows, config, startDate) {
     buyClosedCount: buyWin.closedBuys,
     buyPayoffRatio: buyWin.payoffRatio,
     buyExpectancy: buyWin.expectancy,
+    buyExpectancyPct: buyWin.expectancyPct,
     days: scored.rowsScored || scoredRows.length,
     returnRate: scored.returnRate,
     annualizedReturn: annualizedReturnRate(scored.returnRate, scored.rowsScored || scoredRows.length),
@@ -320,7 +322,8 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       incremental_max_drawdown, incremental_trades, incremental_buy_hold_return_rate, incremental_buy_hold_max_drawdown,
       target_percent, original_validation_max_drawdown, min_incremental_days, min_incremental_trades,
       status, status_reason, last_checked_at, last_error, updated_at,
-      cumulative_buy_win_rate, cumulative_buy_closed_count, cumulative_buy_payoff_ratio, cumulative_buy_expectancy
+      cumulative_buy_win_rate, cumulative_buy_closed_count, cumulative_buy_payoff_ratio, cumulative_buy_expectancy,
+      cumulative_buy_expectancy_pct
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7,
@@ -331,7 +334,8 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       $26, $27, $28, $29,
       $30, $31, $32, $33,
       $34, $35, NOW(), '', NOW(),
-      $36, $37, $38, $39
+      $36, $37, $38, $39,
+      $40
     )
     ON CONFLICT (subject_type, subject_id) DO UPDATE SET
       scan_result_id = EXCLUDED.scan_result_id,
@@ -373,7 +377,8 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
       cumulative_buy_win_rate = EXCLUDED.cumulative_buy_win_rate,
       cumulative_buy_closed_count = EXCLUDED.cumulative_buy_closed_count,
       cumulative_buy_payoff_ratio = EXCLUDED.cumulative_buy_payoff_ratio,
-      cumulative_buy_expectancy = EXCLUDED.cumulative_buy_expectancy
+      cumulative_buy_expectancy = EXCLUDED.cumulative_buy_expectancy,
+      cumulative_buy_expectancy_pct = EXCLUDED.cumulative_buy_expectancy_pct
   `, [
     candidate.subject_type, candidate.subject_id, candidate.scan_result_id, candidate.preset_id, candidate.watch_id,
     candidate.owner_user_id, candidate.owner_email || "", candidate.symbol, candidate.dbMarket, candidate.model_label || "",
@@ -385,6 +390,7 @@ async function saveState(pool, candidate, rows, cumulative, incremental, status,
     Number(candidate.target_percent) || options.targetPercent, candidate.original_validation_max_drawdown || null,
     options.minIncrementalDays, options.minIncrementalTrades, status.status, status.reason,
     cumulative.buyWinRate, cumulative.buyClosedCount, cumulative.buyPayoffRatio, cumulative.buyExpectancy,
+    cumulative.buyExpectancyPct,
   ]);
   if (candidate.subject_type === "watch" && candidate.watch_id) {
     const isInvalid = status.status === "invalid";

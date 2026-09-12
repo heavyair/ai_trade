@@ -70,7 +70,7 @@ async function backfillSnapshots() {
            sp.config, sp.strategy_type, sp.label, sp.meta
     FROM preset_validation_snapshots pvs
     JOIN strategy_presets sp ON sp.id = pvs.preset_id
-    WHERE pvs.train_buy_win_rate IS NULL OR (pvs.test_year1_buy_win_rate IS NOT NULL AND pvs.test_year1_buy_payoff_ratio IS NULL)
+    WHERE pvs.train_buy_win_rate IS NULL OR (pvs.train_buy_win_rate IS NOT NULL AND pvs.train_buy_expectancy_pct IS NULL)
     ORDER BY pvs.updated_at DESC
     ${LIMIT ? `LIMIT ${LIMIT}` : ""}
   `);
@@ -103,7 +103,8 @@ async function backfillSnapshots() {
             test_year1_buy_win_rate = $6, test_year1_buy_closed_count = $7,
             test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9,
             test_year1_buy_payoff_ratio = $10, test_year1_buy_expectancy = $11,
-            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13
+            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13,
+            train_buy_expectancy_pct = $14, test_year1_buy_expectancy_pct = $15, test_year2_buy_expectancy_pct = $16
           WHERE preset_id = $1
         `, [
           row.preset_id,
@@ -112,6 +113,7 @@ async function backfillSnapshots() {
           year2 ? year2.winRate : null, year2 ? year2.closedBuys : null,
           year1 ? year1.payoffRatio : null, year1 ? year1.expectancy : null,
           year2 ? year2.payoffRatio : null, year2 ? year2.expectancy : null,
+          train.expectancyPct, year1 ? year1.expectancyPct : null, year2 ? year2.expectancyPct : null,
         ]);
       }
       done += 1;
@@ -136,7 +138,7 @@ async function backfillValidationStates() {
     LEFT JOIN watch_alerts wa ON wa.id = mvs.watch_id
     LEFT JOIN strategy_presets sp ON sp.id = mvs.preset_id
     LEFT JOIN optimization_scan_results osr ON osr.id = mvs.scan_result_id
-    WHERE mvs.cumulative_buy_win_rate IS NULL AND mvs.validation_start_date IS NOT NULL
+    WHERE (mvs.cumulative_buy_win_rate IS NULL OR (mvs.cumulative_buy_win_rate IS NOT NULL AND mvs.cumulative_buy_expectancy_pct IS NULL)) AND mvs.validation_start_date IS NOT NULL
     ORDER BY mvs.updated_at DESC
     ${LIMIT ? `LIMIT ${LIMIT}` : ""}
   `);
@@ -158,9 +160,10 @@ async function backfillValidationStates() {
         await pool.query(`
           UPDATE model_validation_states SET
             cumulative_buy_win_rate = $3, cumulative_buy_closed_count = $4,
-            cumulative_buy_payoff_ratio = $5, cumulative_buy_expectancy = $6
+            cumulative_buy_payoff_ratio = $5, cumulative_buy_expectancy = $6,
+            cumulative_buy_expectancy_pct = $7
           WHERE subject_type = $1 AND subject_id = $2
-        `, [row.subject_type, row.subject_id, stats.winRate, stats.closedBuys, stats.payoffRatio, stats.expectancy]);
+        `, [row.subject_type, row.subject_id, stats.winRate, stats.closedBuys, stats.payoffRatio, stats.expectancy, stats.expectancyPct]);
       }
       done += 1;
       console.log(`[ok] ${row.subject_type}:${symbol} 累计胜率 ${stats.winRate === null ? "--" : stats.winRate.toFixed(1) + "%"}（${stats.closedBuys} 个已平仓买单）`);
@@ -179,7 +182,7 @@ async function backfillScanResults() {
            test_year1_start_date, test_year1_end_date,
            test_year2_start_date, test_year2_end_date
     FROM optimization_scan_results
-    WHERE (train_buy_win_rate IS NULL OR (test_year1_buy_win_rate IS NOT NULL AND test_year1_buy_payoff_ratio IS NULL))
+    WHERE (train_buy_win_rate IS NULL OR (train_buy_win_rate IS NOT NULL AND train_buy_expectancy_pct IS NULL))
       AND train_start_date IS NOT NULL
     ORDER BY scanned_at DESC
     ${LIMIT ? `LIMIT ${LIMIT}` : ""}
@@ -207,7 +210,8 @@ async function backfillScanResults() {
             test_year1_buy_win_rate = $6, test_year1_buy_closed_count = $7,
             test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9,
             test_year1_buy_payoff_ratio = $10, test_year1_buy_expectancy = $11,
-            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13
+            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13,
+            train_buy_expectancy_pct = $14, test_year1_buy_expectancy_pct = $15, test_year2_buy_expectancy_pct = $16
           WHERE id = $1
         `, [
           row.id,
@@ -216,6 +220,7 @@ async function backfillScanResults() {
           year2 ? year2.winRate : null, year2 ? year2.closedBuys : null,
           year1 ? year1.payoffRatio : null, year1 ? year1.expectancy : null,
           year2 ? year2.payoffRatio : null, year2 ? year2.expectancy : null,
+          train.expectancyPct, year1 ? year1.expectancyPct : null, year2 ? year2.expectancyPct : null,
         ]);
       }
       done += 1;

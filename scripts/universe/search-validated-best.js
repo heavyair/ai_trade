@@ -516,7 +516,7 @@ async function main() {
               ...(entry.scoredYear2.trades || []),
             ]);
             const winPart = labelWin.winRate !== null && labelWin.closedBuys >= 10
-              ? `·胜率${labelWin.winRate.toFixed(0)}%${labelWin.payoffRatio !== null ? `·盈亏比${labelWin.payoffRatio.toFixed(2)}` : ""}`
+              ? `·胜率${labelWin.winRate.toFixed(0)}%${labelWin.payoffRatio !== null ? `·盈亏比${labelWin.payoffRatio.toFixed(2)}` : ""}${labelWin.expectancyPct !== null ? `·期望${labelWin.expectancyPct >= 0 ? "+" : ""}${labelWin.expectancyPct.toFixed(1)}%` : ""}`
               : "";
             const label = entry.reachedTarget
               ? `AI验证达标·${symbolEntry.code}·第1年+${entry.year1Annualized.toFixed(1)}%·第2年+${entry.year2Annualized.toFixed(1)}%${winPart}·${dateSlug}`
