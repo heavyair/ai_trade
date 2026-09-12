@@ -8,3 +8,6 @@ data/*.json
 data/*.tmp
 .env.local
 .env.local.tmp
+*.log
+*.out
+*.err
