@@ -2709,16 +2709,27 @@ textarea:focus {
   justify-content: flex-end;
 }
 
-/* This dialog used to split into a fixed (non-scrolling) header area plus a separately
-   scrolling #watchAlertsList, then a flex+sticky-header rewrite of that — both ran into mobile
-   Safari quirks (content pushed off-screen with no way to reach it; a nested overflow:auto
-   region swallowing the page's vertical swipe). Simplest fix: no sticky header, no nested flex
-   scroll region — just the same plain overflow:auto column every other .param-dialog-body
-   already uses, so there is exactly one scroll container and nothing to trap the gesture. */
+/* Every earlier attempt here split overflow-x/overflow-y into separate declarations (one axis
+   auto, the other left at its visible default, or explicitly hidden) — CSS forces a mismatched
+   auto/visible pair onto a single computed value in a way that's easy to get wrong, and it kept
+   producing a nested scroll region that swallowed the page's vertical swipe on mobile Safari.
+   .optimization-dialog (below) solves the exact same "full-screen dialog, sticky header, needs
+   to scroll on mobile" problem with the plain `overflow: auto` SHORTHAND (both axes at once,
+   never mismatched) — mirror that exactly here instead of re-deriving it. */
 .watch-alerts-dialog .param-dialog-body {
-  overflow-y: auto;
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
   padding-bottom: calc(18px + env(safe-area-inset-bottom));
+}
+
+.watch-alerts-dialog .dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -18px -18px 0;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
 }
 
 .watch-alerts-summary {
@@ -2744,19 +2755,13 @@ textarea:focus {
   font-weight: 600;
 }
 
-/* Vertical scroll now belongs to .param-dialog-body (the whole dialog scrolls as one column —
-   see its comment above), but the table itself is still wider (min-width below) than a phone
-   screen, so this still needs its OWN horizontal scrollbar or the columns past the viewport
-   edge — including "操作" with the Enable trade switch — become unreachable.
-   overflow-y is explicitly "hidden", not "visible": per the CSS overflow spec, pairing
-   overflow-x:auto with overflow-y:visible gets silently computed as overflow-y:auto instead
-   (browsers refuse "auto one axis, visible the other"), which turns this into its own
-   vertical scroll container too — with -webkit-overflow-scrolling:touch that's exactly the
-   nested-scroll-container trap that swallows the page's vertical swipe on iOS Safari. Explicit
-   "hidden" (a value other than visible) skips that forced conversion. */
+/* This element has no explicit height (grows to fit its content), so `overflow: auto` here
+   never actually scrolls vertically on its own — the outer .param-dialog-body remains the only
+   thing that scrolls the page. It only ever kicks in horizontally, when the table (min-width
+   below) is wider than the phone screen — that's what makes the "操作" column with the Enable
+   trade switch reachable by swiping sideways within the table area. */
 .watch-alerts-dialog .admin-ranking-list {
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
   padding-bottom: 18px;
 }
