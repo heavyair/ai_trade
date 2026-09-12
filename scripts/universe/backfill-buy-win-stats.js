@@ -70,7 +70,7 @@ async function backfillSnapshots() {
            sp.config, sp.strategy_type, sp.label, sp.meta
     FROM preset_validation_snapshots pvs
     JOIN strategy_presets sp ON sp.id = pvs.preset_id
-    WHERE pvs.train_buy_win_rate IS NULL
+    WHERE pvs.train_buy_win_rate IS NULL OR (pvs.test_year1_buy_win_rate IS NOT NULL AND pvs.test_year1_buy_payoff_ratio IS NULL)
     ORDER BY pvs.updated_at DESC
     ${LIMIT ? `LIMIT ${LIMIT}` : ""}
   `);
@@ -101,13 +101,17 @@ async function backfillSnapshots() {
             train_buy_win_rate = $2, train_buy_closed_count = $3,
             train_buy_payoff_ratio = $4, train_buy_expectancy = $5,
             test_year1_buy_win_rate = $6, test_year1_buy_closed_count = $7,
-            test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9
+            test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9,
+            test_year1_buy_payoff_ratio = $10, test_year1_buy_expectancy = $11,
+            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13
           WHERE preset_id = $1
         `, [
           row.preset_id,
           train.winRate, train.closedBuys, train.payoffRatio, train.expectancy,
           year1 ? year1.winRate : null, year1 ? year1.closedBuys : null,
           year2 ? year2.winRate : null, year2 ? year2.closedBuys : null,
+          year1 ? year1.payoffRatio : null, year1 ? year1.expectancy : null,
+          year2 ? year2.payoffRatio : null, year2 ? year2.expectancy : null,
         ]);
       }
       done += 1;
@@ -175,7 +179,8 @@ async function backfillScanResults() {
            test_year1_start_date, test_year1_end_date,
            test_year2_start_date, test_year2_end_date
     FROM optimization_scan_results
-    WHERE train_buy_win_rate IS NULL AND train_start_date IS NOT NULL
+    WHERE (train_buy_win_rate IS NULL OR (test_year1_buy_win_rate IS NOT NULL AND test_year1_buy_payoff_ratio IS NULL))
+      AND train_start_date IS NOT NULL
     ORDER BY scanned_at DESC
     ${LIMIT ? `LIMIT ${LIMIT}` : ""}
   `);
@@ -200,13 +205,17 @@ async function backfillScanResults() {
             train_buy_win_rate = $2, train_buy_closed_count = $3,
             train_buy_payoff_ratio = $4, train_buy_expectancy = $5,
             test_year1_buy_win_rate = $6, test_year1_buy_closed_count = $7,
-            test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9
+            test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9,
+            test_year1_buy_payoff_ratio = $10, test_year1_buy_expectancy = $11,
+            test_year2_buy_payoff_ratio = $12, test_year2_buy_expectancy = $13
           WHERE id = $1
         `, [
           row.id,
           train.winRate, train.closedBuys, train.payoffRatio, train.expectancy,
           year1 ? year1.winRate : null, year1 ? year1.closedBuys : null,
           year2 ? year2.winRate : null, year2 ? year2.closedBuys : null,
+          year1 ? year1.payoffRatio : null, year1 ? year1.expectancy : null,
+          year2 ? year2.payoffRatio : null, year2 ? year2.expectancy : null,
         ]);
       }
       done += 1;

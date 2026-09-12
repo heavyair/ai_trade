@@ -663,6 +663,12 @@ async function initializeDatabase() {
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year1_buy_closed_count INTEGER;
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_win_rate DOUBLE PRECISION;
     ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_closed_count INTEGER;
+    -- 验证年的盈亏比/每买单期望。实测下来这两个比胜率更能说明问题：胜率 80% 但盈亏比 0.54
+    -- 的模型，每买单期望反而不如胜率 45% 但盈亏比 2.63 的——只看胜率会挑反。
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year1_buy_payoff_ratio DOUBLE PRECISION;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year1_buy_expectancy DOUBLE PRECISION;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_payoff_ratio DOUBLE PRECISION;
+    ALTER TABLE preset_validation_snapshots ADD COLUMN IF NOT EXISTS test_year2_buy_expectancy DOUBLE PRECISION;
 
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_win_rate DOUBLE PRECISION;
     ALTER TABLE model_validation_states ADD COLUMN IF NOT EXISTS cumulative_buy_closed_count INTEGER;
@@ -3210,7 +3216,9 @@ async function queryAiGeneratedPresets({ source }) {
       test_year1_upside_deviation, test_year2_upside_deviation,
       train_buy_win_rate, train_buy_closed_count, train_buy_payoff_ratio, train_buy_expectancy,
       test_year1_buy_win_rate, test_year1_buy_closed_count,
+      test_year1_buy_payoff_ratio, test_year1_buy_expectancy,
       test_year2_buy_win_rate, test_year2_buy_closed_count,
+      test_year2_buy_payoff_ratio, test_year2_buy_expectancy,
       best_trades, tested_candidates, reached_target, scanned_at,
       last_rechecked_at, recheck_still_qualifies, recheck_year1_annualized_return,
       recheck_year2_annualized_return, recheck_target_percent, recheck_error
@@ -3253,6 +3261,10 @@ async function queryAiGeneratedPresets({ source }) {
     testYear1BuyClosedCount: row.test_year1_buy_closed_count === null || row.test_year1_buy_closed_count === undefined ? null : Number(row.test_year1_buy_closed_count),
     testYear2BuyWinRate: row.test_year2_buy_win_rate === null || row.test_year2_buy_win_rate === undefined ? null : Number(row.test_year2_buy_win_rate),
     testYear2BuyClosedCount: row.test_year2_buy_closed_count === null || row.test_year2_buy_closed_count === undefined ? null : Number(row.test_year2_buy_closed_count),
+    testYear1BuyPayoffRatio: row.test_year1_buy_payoff_ratio === null || row.test_year1_buy_payoff_ratio === undefined ? null : Number(row.test_year1_buy_payoff_ratio),
+    testYear1BuyExpectancy: row.test_year1_buy_expectancy === null || row.test_year1_buy_expectancy === undefined ? null : Number(row.test_year1_buy_expectancy),
+    testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio === null || row.test_year2_buy_payoff_ratio === undefined ? null : Number(row.test_year2_buy_payoff_ratio),
+    testYear2BuyExpectancy: row.test_year2_buy_expectancy === null || row.test_year2_buy_expectancy === undefined ? null : Number(row.test_year2_buy_expectancy),
     bestTrades: row.best_trades || 0,
     testedCandidates: row.tested_candidates || 0,
     reachedTarget: Boolean(row.reached_target),
@@ -3358,7 +3370,9 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
           osr.annualized_diff_year2, osr.test_year1_upside_deviation, osr.test_year2_upside_deviation,
           osr.train_buy_win_rate, osr.train_buy_closed_count, osr.train_buy_payoff_ratio, osr.train_buy_expectancy,
           osr.test_year1_buy_win_rate, osr.test_year1_buy_closed_count,
+          osr.test_year1_buy_payoff_ratio, osr.test_year1_buy_expectancy,
           osr.test_year2_buy_win_rate, osr.test_year2_buy_closed_count,
+          osr.test_year2_buy_payoff_ratio, osr.test_year2_buy_expectancy,
           osr.train_year_breakdown, osr.target_percent, osr.upside_threshold_percent, osr.drawdown_tolerance_percent,
           osr.best_trades, osr.tested_candidates,
           COALESCE(mvs.status, 'valid') AS validation_status,
@@ -3484,6 +3498,10 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
     testYear1BuyClosedCount: row.test_year1_buy_closed_count === null || row.test_year1_buy_closed_count === undefined ? null : Number(row.test_year1_buy_closed_count),
     testYear2BuyWinRate: row.test_year2_buy_win_rate === null || row.test_year2_buy_win_rate === undefined ? null : Number(row.test_year2_buy_win_rate),
     testYear2BuyClosedCount: row.test_year2_buy_closed_count === null || row.test_year2_buy_closed_count === undefined ? null : Number(row.test_year2_buy_closed_count),
+    testYear1BuyPayoffRatio: row.test_year1_buy_payoff_ratio === null || row.test_year1_buy_payoff_ratio === undefined ? null : Number(row.test_year1_buy_payoff_ratio),
+    testYear1BuyExpectancy: row.test_year1_buy_expectancy === null || row.test_year1_buy_expectancy === undefined ? null : Number(row.test_year1_buy_expectancy),
+    testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio === null || row.test_year2_buy_payoff_ratio === undefined ? null : Number(row.test_year2_buy_payoff_ratio),
+    testYear2BuyExpectancy: row.test_year2_buy_expectancy === null || row.test_year2_buy_expectancy === undefined ? null : Number(row.test_year2_buy_expectancy),
         bestTrades: row.best_trades || 0,
         testedCandidates: row.tested_candidates || 0,
         totalTestTrades: row.total_test_trades || 0,
@@ -6795,10 +6813,12 @@ async function handlePresetRevalidateApi(req, res) {
             target_percent, upside_threshold_percent, drawdown_tolerance_percent,
             train_buy_win_rate, train_buy_closed_count, train_buy_payoff_ratio, train_buy_expectancy,
             test_year1_buy_win_rate, test_year1_buy_closed_count,
+            test_year1_buy_payoff_ratio, test_year1_buy_expectancy,
             test_year2_buy_win_rate, test_year2_buy_closed_count,
+            test_year2_buy_payoff_ratio, test_year2_buy_expectancy,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, NOW())
+          VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10, $11::date, $12::date, $13, $14, $15, $16, $17::date, $18::date, $19, $20, $21, $22::jsonb, $23::jsonb, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, NOW())
           ON CONFLICT (preset_id) DO UPDATE SET
             train_years = EXCLUDED.train_years,
             test_years = EXCLUDED.test_years,
@@ -6831,8 +6851,12 @@ async function handlePresetRevalidateApi(req, res) {
             train_buy_expectancy = EXCLUDED.train_buy_expectancy,
             test_year1_buy_win_rate = EXCLUDED.test_year1_buy_win_rate,
             test_year1_buy_closed_count = EXCLUDED.test_year1_buy_closed_count,
+            test_year1_buy_payoff_ratio = EXCLUDED.test_year1_buy_payoff_ratio,
+            test_year1_buy_expectancy = EXCLUDED.test_year1_buy_expectancy,
             test_year2_buy_win_rate = EXCLUDED.test_year2_buy_win_rate,
             test_year2_buy_closed_count = EXCLUDED.test_year2_buy_closed_count,
+            test_year2_buy_payoff_ratio = EXCLUDED.test_year2_buy_payoff_ratio,
+            test_year2_buy_expectancy = EXCLUDED.test_year2_buy_expectancy,
             updated_at = NOW()
         `, [
           presetId, trainYears, testYears,
@@ -6844,7 +6868,9 @@ async function handlePresetRevalidateApi(req, res) {
           targetPercent, upsideThresholdPercent, drawdownTolerancePercent,
           trainBuyWin.winRate, trainBuyWin.closedBuys, trainBuyWin.payoffRatio, trainBuyWin.expectancy,
           testYear1BuyWin.winRate, testYear1BuyWin.closedBuys,
+          testYear1BuyWin.payoffRatio, testYear1BuyWin.expectancy,
           testYear2BuyWin.winRate, testYear2BuyWin.closedBuys,
+          testYear2BuyWin.payoffRatio, testYear2BuyWin.expectancy,
         ]);
       }
     }
@@ -6928,6 +6954,10 @@ function mapPresetValidationRow(row) {
     testYear1BuyClosedCount: row.test_year1_buy_closed_count !== null && row.test_year1_buy_closed_count !== undefined ? Number(row.test_year1_buy_closed_count) : null,
     testYear2BuyWinRate: row.test_year2_buy_win_rate !== null && row.test_year2_buy_win_rate !== undefined ? Number(row.test_year2_buy_win_rate) : null,
     testYear2BuyClosedCount: row.test_year2_buy_closed_count !== null && row.test_year2_buy_closed_count !== undefined ? Number(row.test_year2_buy_closed_count) : null,
+    testYear1BuyPayoffRatio: row.test_year1_buy_payoff_ratio !== null && row.test_year1_buy_payoff_ratio !== undefined ? Number(row.test_year1_buy_payoff_ratio) : null,
+    testYear1BuyExpectancy: row.test_year1_buy_expectancy !== null && row.test_year1_buy_expectancy !== undefined ? Number(row.test_year1_buy_expectancy) : null,
+    testYear2BuyPayoffRatio: row.test_year2_buy_payoff_ratio !== null && row.test_year2_buy_payoff_ratio !== undefined ? Number(row.test_year2_buy_payoff_ratio) : null,
+    testYear2BuyExpectancy: row.test_year2_buy_expectancy !== null && row.test_year2_buy_expectancy !== undefined ? Number(row.test_year2_buy_expectancy) : null,
     trainYears: row.train_years !== null && row.train_years !== undefined ? Number(row.train_years) : null,
     testYears: row.test_years !== null && row.test_years !== undefined ? Number(row.test_years) : null,
     trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
@@ -7139,7 +7169,9 @@ async function handleModelListApi(req, res) {
         pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.train_buy_win_rate, pvs.train_buy_closed_count, pvs.train_buy_payoff_ratio, pvs.train_buy_expectancy,
         pvs.test_year1_buy_win_rate, pvs.test_year1_buy_closed_count,
+        pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
+        pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7200,7 +7232,9 @@ async function handleModelListApi(req, res) {
         pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.train_buy_win_rate, pvs.train_buy_closed_count, pvs.train_buy_payoff_ratio, pvs.train_buy_expectancy,
         pvs.test_year1_buy_win_rate, pvs.test_year1_buy_closed_count,
+        pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
+        pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7276,7 +7310,9 @@ async function handleMyModelsApi(req, res) {
         pvs.target_percent, pvs.upside_threshold_percent, pvs.drawdown_tolerance_percent,
         pvs.train_buy_win_rate, pvs.train_buy_closed_count, pvs.train_buy_payoff_ratio, pvs.train_buy_expectancy,
         pvs.test_year1_buy_win_rate, pvs.test_year1_buy_closed_count,
+        pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
+        pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
         pvs.updated_at AS snapshot_updated_at,
         mvs.status AS model_validation_status, mvs.status_reason AS model_validation_status_reason,
         mvs.validation_start_date AS model_validation_validation_start_date,
@@ -7521,7 +7557,9 @@ async function handlePublicModelsApi(req, res) {
         pvs.annualized_diff_year1, pvs.annualized_diff_year2, pvs.reached_target,
         pvs.train_buy_win_rate, pvs.train_buy_closed_count, pvs.train_buy_payoff_ratio, pvs.train_buy_expectancy,
         pvs.test_year1_buy_win_rate, pvs.test_year1_buy_closed_count,
+        pvs.test_year1_buy_payoff_ratio, pvs.test_year1_buy_expectancy,
         pvs.test_year2_buy_win_rate, pvs.test_year2_buy_closed_count,
+        pvs.test_year2_buy_payoff_ratio, pvs.test_year2_buy_expectancy,
         pvs.updated_at AS snapshot_updated_at
       FROM strategy_presets sp
       INNER JOIN preset_validation_snapshots pvs ON pvs.preset_id = sp.id

@@ -508,9 +508,19 @@ async function main() {
             const entry = toSave[i];
             const dateSlug = new Date().toISOString().slice(0, 10).replace(/-/g, "");
             const name = `ai_validated_${symbolEntry.code}_${dateSlug}_${i + 1}`;
+            // 模型名里直接带上验证期的胜率/盈亏比——只看年化会挑反：实测里胜率 80%、盈亏比
+            // 0.54 的模型，每买单期望还不如胜率 45%、盈亏比 2.63 的。两个验证年合起来统计，
+            // 样本太少（<10 单）就不写进名字，免得给出误导性的 100%。
+            const labelWin = engine.buildBuyWinStats([
+              ...(entry.scoredYear1.trades || []),
+              ...(entry.scoredYear2.trades || []),
+            ]);
+            const winPart = labelWin.winRate !== null && labelWin.closedBuys >= 10
+              ? `·胜率${labelWin.winRate.toFixed(0)}%${labelWin.payoffRatio !== null ? `·盈亏比${labelWin.payoffRatio.toFixed(2)}` : ""}`
+              : "";
             const label = entry.reachedTarget
-              ? `AI验证达标·${symbolEntry.code}·第1年+${entry.year1Annualized.toFixed(1)}%·第2年+${entry.year2Annualized.toFixed(1)}%·${dateSlug}`
-              : `AI搜索中·${symbolEntry.code}·当前最差年份+${entry.worstTestAnnualized.toFixed(1)}%年化·${dateSlug}`;
+              ? `AI验证达标·${symbolEntry.code}·第1年+${entry.year1Annualized.toFixed(1)}%·第2年+${entry.year2Annualized.toFixed(1)}%${winPart}·${dateSlug}`
+              : `AI搜索中·${symbolEntry.code}·当前最差年份+${entry.worstTestAnnualized.toFixed(1)}%年化${winPart}·${dateSlug}`;
             // This candidate never touches strategy_presets — it only ever lives in
             // optimization_scan_results (see that file's header comment). presetId is just an
             // internal candidate-pool key, not a real strategy_presets.id; a human promotes it

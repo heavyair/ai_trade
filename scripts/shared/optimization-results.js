@@ -90,6 +90,10 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_buy_closed_count INTEGER;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_win_rate DOUBLE PRECISION;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_closed_count INTEGER;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_buy_payoff_ratio DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_buy_expectancy DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_payoff_ratio DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_expectancy DOUBLE PRECISION;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_end_date DATE;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year1 DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year2 DOUBLE PRECISION NOT NULL DEFAULT 0;
@@ -204,7 +208,9 @@ async function saveOptimizationResult(pool, row) {
       reached_target, source, model_reason, used_prior_examples, scanned_at,
       train_buy_win_rate, train_buy_closed_count, train_buy_payoff_ratio, train_buy_expectancy,
       test_year1_buy_win_rate, test_year1_buy_closed_count,
-      test_year2_buy_win_rate, test_year2_buy_closed_count
+      test_year1_buy_payoff_ratio, test_year1_buy_expectancy,
+      test_year2_buy_win_rate, test_year2_buy_closed_count,
+      test_year2_buy_payoff_ratio, test_year2_buy_expectancy
     )
     VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
@@ -216,8 +222,8 @@ async function saveOptimizationResult(pool, row) {
       $40::jsonb,$41,$42,$43,
       $44,$45,$46,$47,NOW(),
       $48,$49,$50,$51,
-      $52,$53,
-      $54,$55
+      $52,$53,$54,$55,
+      $56,$57,$58,$59
     )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
@@ -270,8 +276,12 @@ async function saveOptimizationResult(pool, row) {
       train_buy_expectancy = EXCLUDED.train_buy_expectancy,
       test_year1_buy_win_rate = EXCLUDED.test_year1_buy_win_rate,
       test_year1_buy_closed_count = EXCLUDED.test_year1_buy_closed_count,
+      test_year1_buy_payoff_ratio = EXCLUDED.test_year1_buy_payoff_ratio,
+      test_year1_buy_expectancy = EXCLUDED.test_year1_buy_expectancy,
       test_year2_buy_win_rate = EXCLUDED.test_year2_buy_win_rate,
-      test_year2_buy_closed_count = EXCLUDED.test_year2_buy_closed_count
+      test_year2_buy_closed_count = EXCLUDED.test_year2_buy_closed_count,
+      test_year2_buy_payoff_ratio = EXCLUDED.test_year2_buy_payoff_ratio,
+      test_year2_buy_expectancy = EXCLUDED.test_year2_buy_expectancy
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
     row.baselineReturnRate, row.baselineMaxDrawdown, row.bestReturnRate, row.bestMaxDrawdown,
@@ -294,7 +304,9 @@ async function saveOptimizationResult(pool, row) {
     pick(row.trainBuyWin, "winRate"), pick(row.trainBuyWin, "closedBuys"),
     pick(row.trainBuyWin, "payoffRatio"), pick(row.trainBuyWin, "expectancy"),
     pick(row.testYear1BuyWin, "winRate"), pick(row.testYear1BuyWin, "closedBuys"),
+    pick(row.testYear1BuyWin, "payoffRatio"), pick(row.testYear1BuyWin, "expectancy"),
     pick(row.testYear2BuyWin, "winRate"), pick(row.testYear2BuyWin, "closedBuys"),
+    pick(row.testYear2BuyWin, "payoffRatio"), pick(row.testYear2BuyWin, "expectancy"),
   ]);
 }
 

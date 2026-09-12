@@ -1963,8 +1963,8 @@ function renderAdminScanList() {
         <td class="${trainClass}">${hasTrainTest ? formatPercent(record.trainAnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear1Class}">${hasTrainTest ? formatPercent(record.testYear1AnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear2Class}">${hasTrainTest ? formatPercent(record.testYear2AnnualizedReturn) : "待重新扫描"}</td>
-        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear1BuyWinRate, record.testYear1BuyClosedCount))}</td>
-        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear2BuyWinRate, record.testYear2BuyClosedCount))}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear1BuyWinRate, record.testYear1BuyClosedCount))}${formatBuyWinSubLine(record.testYear1BuyPayoffRatio, record.testYear1BuyExpectancy)}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear2BuyWinRate, record.testYear2BuyClosedCount))}${formatBuyWinSubLine(record.testYear2BuyPayoffRatio, record.testYear2BuyExpectancy)}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear1) : "--"}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear2) : "--"}</td>
         <td>${record.bestTrades || 0}</td>
@@ -3809,8 +3809,8 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear2) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear1Trades || 0) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear2Trades || 0) : "--"}</td>
-      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear1BuyWinRate, p.testYear1BuyClosedCount))}</td>
-      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear2BuyWinRate, p.testYear2BuyClosedCount))}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear1BuyWinRate, p.testYear1BuyClosedCount))}${formatBuyWinSubLine(p.testYear1BuyPayoffRatio, p.testYear1BuyExpectancy)}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear2BuyWinRate, p.testYear2BuyClosedCount))}${formatBuyWinSubLine(p.testYear2BuyPayoffRatio, p.testYear2BuyExpectancy)}</td>
       <td>${formatUpsideRatioCell(p, 1)}</td>
       <td>${formatUpsideRatioCell(p, 2)}</td>
       <td>${p.bestTrades || 0}</td>
@@ -4051,6 +4051,8 @@ function renderMyModelWatchableRow(model) {
       <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
       <td class="watchable-audit-cell">
         <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(model.trainBuyWinRate, model.trainBuyClosedCount))}</div>
+        <div class="field-hint">验证第1年 ${escapeHtml(formatStoredBuyWinFull(model.testYear1BuyWinRate, model.testYear1BuyClosedCount, model.testYear1BuyPayoffRatio, model.testYear1BuyExpectancy))}</div>
+        <div class="field-hint">验证第2年 ${escapeHtml(formatStoredBuyWinFull(model.testYear2BuyWinRate, model.testYear2BuyClosedCount, model.testYear2BuyPayoffRatio, model.testYear2BuyExpectancy))}</div>
         ${renderWatchableTrainAudit(model)}
       </td>
       <td class="watchable-audit-cell">
@@ -7545,6 +7547,8 @@ function renderWatchableAiModelRow(model) {
       <td>${escapeHtml(getStrategyTypeLabel(model.strategyType))}</td>
       <td class="watchable-audit-cell">
         <div class="field-hint">训练期 ${escapeHtml(model.trainStartDate || "")}~${escapeHtml(model.trainEndDate || "")} · 总年化 ${formatPercent(model.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(model.trainBuyWinRate, model.trainBuyClosedCount))}</div>
+        <div class="field-hint">验证第1年 ${escapeHtml(formatStoredBuyWinFull(model.testYear1BuyWinRate, model.testYear1BuyClosedCount, model.testYear1BuyPayoffRatio, model.testYear1BuyExpectancy))}</div>
+        <div class="field-hint">验证第2年 ${escapeHtml(formatStoredBuyWinFull(model.testYear2BuyWinRate, model.testYear2BuyClosedCount, model.testYear2BuyPayoffRatio, model.testYear2BuyExpectancy))}</div>
         ${renderWatchableTrainAudit(model)}
       </td>
       <td class="watchable-audit-cell">
@@ -12285,6 +12289,25 @@ function formatStoredBuyWinRate(winRate, closedCount) {
   return `${Number(winRate).toFixed(0)}%${suffix}`;
 }
 
+// 三个指标一起显示的完整版（B 类：数据库里拍平的列）。胜率 + 盈亏比 + 每买单期望缺一不可：
+// 胜率 80%/盈亏比 0.54 的模型，每买单期望不如胜率 45%/盈亏比 2.63 的——只看胜率会挑反。
+// 表格单元格里的第二行小字——表本来就很宽，再为盈亏比/期望各加两列会挤爆，放在胜率下面。
+function formatBuyWinSubLine(payoffRatio, expectancy) {
+  const parts = [];
+  if (payoffRatio !== null && payoffRatio !== undefined) parts.push(`盈亏比 ${Number(payoffRatio).toFixed(2)}`);
+  if (expectancy !== null && expectancy !== undefined) parts.push(`期望 ${formatMoney(expectancy)}`);
+  if (parts.length === 0) return "";
+  return `<br><span class="field-hint">${escapeHtml(parts.join(" · "))}</span>`;
+}
+
+function formatStoredBuyWinFull(winRate, closedCount, payoffRatio, expectancy) {
+  if (winRate === null || winRate === undefined) return "--";
+  const parts = [`胜率 ${formatStoredBuyWinRate(winRate, closedCount)}`];
+  if (payoffRatio !== null && payoffRatio !== undefined) parts.push(`盈亏比 ${Number(payoffRatio).toFixed(2)}`);
+  if (expectancy !== null && expectancy !== undefined) parts.push(`每买单期望 ${formatMoney(expectancy)}`);
+  return parts.join(" · ");
+}
+
 function buildBacktestStates(rows, config) {
   if (config.strategyType === "block-rules") {
     return buildGenericBacktestStates(rows, config);
@@ -13095,7 +13118,7 @@ function renderModelListValidationAudit(validation) {
     `;
   }
   const trainAuditHtml = trainYears.length > 0
-    ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(validation.trainBuyWinRate, validation.trainBuyClosedCount))}</div>${renderWatchableTrainAudit(validation)}</div>`
+    ? `<div class="watchable-audit-cell"><div class="field-hint">训练期 ${escapeHtml(validation.trainStartDate || "")}~${escapeHtml(validation.trainEndDate || "")} · 总年化 ${formatPercent(validation.trainAnnualizedReturn)} · 买单胜率 ${escapeHtml(formatStoredBuyWinRate(validation.trainBuyWinRate, validation.trainBuyClosedCount))}</div><div class="field-hint">验证第1年 ${escapeHtml(formatStoredBuyWinFull(validation.testYear1BuyWinRate, validation.testYear1BuyClosedCount, validation.testYear1BuyPayoffRatio, validation.testYear1BuyExpectancy))} ｜ 第2年 ${escapeHtml(formatStoredBuyWinFull(validation.testYear2BuyWinRate, validation.testYear2BuyClosedCount, validation.testYear2BuyPayoffRatio, validation.testYear2BuyExpectancy))}</div>${renderWatchableTrainAudit(validation)}</div>`
     : "";
   const validationAuditHtml = validationYears.length > 0
     ? `<div class="watchable-audit-cell"><div class="field-hint">目标 ${formatPercent(validation.targetPercent)} · 上行门槛 ${formatPercent(validation.upsideThresholdPercent)} · 回撤容差 ${formatPercent(validation.drawdownTolerancePercent)}</div>${validationYears.map((year, index) => renderWatchableAuditYear(`验证${index + 1}`, year, { upsideThresholdPercent: validation.upsideThresholdPercent, targetPercent: validation.targetPercent })).join("")}</div>`
@@ -15677,11 +15700,13 @@ function renderOptimizationReport(sourcePresetName, baseResult, bestResult, test
       <span>原参数收益 / 回撤</span>
       <strong>${formatPercent(baseResult.finalState.returnRate)} / ${formatPercent(baseResult.finalState.maxDrawdown)}</strong>
       <p>年化收益 ${formatPercent(baseAnnualized)}；交易 ${baseResult.finalState.trades.length} 次；评分 ${baseResult.score.toFixed(2)}</p>
+      <p>${escapeHtml(formatBuyWinDetail(buildBuyWinStats(baseResult.finalState.trades)))}</p>
     </article>
     <article>
       <span>最佳参数收益 / 回撤</span>
       <strong>${formatPercent(bestResult.finalState.returnRate)} / ${formatPercent(bestResult.finalState.maxDrawdown)}</strong>
       <p>年化收益 ${formatPercent(bestAnnualized)}；交易 ${bestResult.finalState.trades.length} 次；评分 ${bestResult.score.toFixed(2)}</p>
+      <p>${escapeHtml(formatBuyWinDetail(buildBuyWinStats(bestResult.finalState.trades)))}</p>
     </article>
     <article>
       <span>收益变化</span>
