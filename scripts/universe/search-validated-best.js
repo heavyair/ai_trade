@@ -77,11 +77,22 @@ const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
 const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
 // 训练阶段的早退门槛：跑赢买入持有之后、进入验证阶段之前，先用训练期自身的每笔统计筛一道。
 // 目的是别把验证算力（每个候选要跑两年重置账户回测再入库）花在肯定没用的候选上。
-// 阈值是拿 706 条真实结果反推的：训练期已平仓买单<10 砍掉 21.4% 只误杀 1 个有用模型，
-// 训练期盈亏比<1 砍掉 28.3% 同样只误杀 1 个，两者取或砍掉 33.4% 误杀 2/87。再往上加
-// "训练期期望<0" 只多砍 2.4% 却把误杀抬到 5 个，性价比明显变差，所以没有加。
+//
+// 训练期用的是跟验证期同一套达标标准（MIN_PAYOFF_RATIO / MIN_EXPECTANCY_PERCENT），但盈亏比
+// 和期望是"或"的关系，另外单独设一条防退化底线。理由是实测出来的：把验证期的盈亏比 1.2 硬搬
+// 到训练期，多砍 6.6% 的候选却要误杀 85 个达标模型里的 8 个，而这 8 个并不是垃圾——它们训练期
+// 有 38~183 笔平仓、期望普遍在 1.8% 以上，只是靠高胜率(54~76%)而不是靠大赢单赚钱，盈亏比自然
+// 贴着 1。最极端的 688003 训练期盈亏比只有 0.87，但胜率 76%、每买单期望 7.96%，到了验证期盈亏比
+// 反而涨到 2.13、年化 84%。
+//
+// 根本原因是盈亏比单独用会误判交易风格：它只回答"赢一次比输一次大多少"，不回答"总的是不是
+// 赚"。高胜率小赢单和低胜率大赢单是两种都成立的赚钱方式，期望值才是把两者合并的那个量。验证期
+// 之所以能用盈亏比 1.2 硬卡，是因为那里同时还卡了期望 ≥1.5%，两道一起才成立；训练期只搬盈亏比
+// 一条过来就是单腿站立。所以这里改成"盈亏比达标 或 期望达标"，再用 MIN_TRAIN_PAYOFF_FLOOR
+// 兜住真正畸形的"小赢大亏"结构。实测这个组合砍掉 31.9%（比单用盈亏比≥1 的 30.3% 更严），
+// 误杀 3/85。
 const MIN_TRAIN_CLOSED_BUYS = Math.max(0, Math.round(getArg("minTrainClosedBuys", 10)));
-const MIN_TRAIN_PAYOFF_RATIO = getArg("minTrainPayoffRatio", 1);
+const MIN_TRAIN_PAYOFF_FLOOR = getArg("minTrainPayoffFloor", 0.85);
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 60));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 400));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
@@ -236,7 +247,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffRatio=${MIN_TRAIN_PAYOFF_RATIO} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -460,12 +471,21 @@ async function main() {
           continue;
         }
         // payoffRatio 为 null 有两种含义：没有已平仓买单（上面那道门已经排除），或者一笔亏损都
-        // 没有（avgLoss===0，除法没有意义）。后者是全胜，应当放行而不是当成"没有盈亏比"淘汰。
-        const trainPayoffPasses = trainBuyWin.lossCount === 0
-          ? true
-          : Number.isFinite(trainPayoff) && trainPayoff >= MIN_TRAIN_PAYOFF_RATIO;
-        if (!trainPayoffPasses) {
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期盈亏比 ${Number.isFinite(trainPayoff) ? trainPayoff.toFixed(2) : "无"}(<${MIN_TRAIN_PAYOFF_RATIO}) — skipping`);
+        // 没有（avgLoss===0，除法没有意义）。后者是全胜，两道盈亏比检查都应当放行而不是当成
+        // "没有盈亏比"淘汰。
+        const trainAllWins = trainBuyWin.lossCount === 0;
+        const trainExpectancyPct = trainBuyWin.expectancyPct;
+        // 底线：畸形的"小赢大亏"结构，无论期望多好看都不放行（期望可能只是被一两笔大赢单撑起来的）。
+        const trainPayoffAboveFloor = trainAllWins || (Number.isFinite(trainPayoff) && trainPayoff >= MIN_TRAIN_PAYOFF_FLOOR);
+        // 达标：盈亏比够 或 期望够，二选一即可——见上面常量处对两种赚钱风格的说明。
+        const trainMeetsStandard = (trainAllWins || (Number.isFinite(trainPayoff) && trainPayoff >= MIN_PAYOFF_RATIO))
+          || (Number.isFinite(trainExpectancyPct) && trainExpectancyPct >= MIN_EXPECTANCY_PERCENT);
+        if (!trainPayoffAboveFloor || !trainMeetsStandard) {
+          const shown = `盈亏比${Number.isFinite(trainPayoff) ? trainPayoff.toFixed(2) : trainAllWins ? "∞(无亏损)" : "无"}·期望${Number.isFinite(trainExpectancyPct) ? `${trainExpectancyPct >= 0 ? "+" : ""}${trainExpectancyPct.toFixed(2)}%` : "无"}`;
+          const why = !trainPayoffAboveFloor
+            ? `低于盈亏比底线${MIN_TRAIN_PAYOFF_FLOOR}`
+            : `盈亏比未达${MIN_PAYOFF_RATIO}且期望未达${MIN_EXPECTANCY_PERCENT}%`;
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期${shown} — ${why}，skipping`);
           continue;
         }
 
