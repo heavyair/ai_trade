@@ -31,6 +31,7 @@ const { inferMarket } = require("../shared/universe-loader.js");
 const { annualizedReturnRate } = require("../shared/annualize.js");
 const { annualizedUpsideDeviation } = require("../shared/volatility.js");
 const { splitTrainTestWindows, shiftYears, toIsoDate } = require("../shared/train-test-window.js");
+const { evaluateBuySampleGate, describeBuySampleGate } = require("../shared/buy-sample-gate.js");
 const { ensureResultsTable, saveOptimizationResult, fetchPriorSuccessfulModels } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -72,7 +73,9 @@ const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent"
 // 也无法区分"每笔都有优势"和"碰巧几笔大的赚回来"。实测 706 条候选里，按老标准达标的 280 条
 // 中有 66% 经不起每笔边际检验，同时有 26 条有真实边际优势的因为年化没到 50% 被误杀。
 // 阈值是拿真实数据试出来的：(10单/1.5%/1.2) 全池出 90 条，比原来的 280 条严格但不枯竭。
-const MIN_CLOSED_BUYS = Math.max(0, Math.round(getArg("minClosedBuys", 10)));
+// 样本量按"整段历史合计 + 每年不断档"判，理由见 shared/buy-sample-gate.js。
+const MIN_TOTAL_CLOSED_BUYS = Math.max(0, Math.round(getArg("minTotalClosedBuys", 10)));
+const MIN_CLOSED_BUYS_PER_YEAR = Math.max(0, Math.round(getArg("minClosedBuysPerYear", 2)));
 const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
 const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
 // 训练阶段的早退门槛：跑赢买入持有之后、进入验证阶段之前，先用训练期自身的每笔统计筛一道。
@@ -247,7 +250,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -535,17 +538,27 @@ async function main() {
           buyWin1.payoffRatio === null ? Infinity : buyWin1.payoffRatio,
           buyWin2.payoffRatio === null ? Infinity : buyWin2.payoffRatio
         );
-        const worstClosedBuys = Math.min(buyWin1.closedBuys, buyWin2.closedBuys);
-        // 样本不足直接不算达标：2 单 100% 没有统计意义。盈亏比为 null 表示该年没有亏损单
-        // （除数为 0），那是好事不是缺陷，上面用 Infinity 让它不卡门槛。
-        const passesSample = worstClosedBuys >= MIN_CLOSED_BUYS;
+        // 样本量按【整段历史】判（训练起点~验证期末）：合计够 + 每年不断档，口径和判定理由
+        // 见 shared/buy-sample-gate.js。必须用一次连续回测的成交流水，分段拼接会因为每段
+        // 重置账户而把跨年的买单算错。
+        // 盈亏比为 null 表示该年没有亏损单（除数为 0），那是好事不是缺陷，上面用 Infinity
+        // 让它不卡门槛。
+        const fullSpanEnd = testWindows[testWindows.length - 1].endDate;
+        const fullSpan = engine.buildScoredBacktestStates(allRows, best.config, trainStartDate, fullSpanEnd);
+        const sampleGate = evaluateBuySampleGate(
+          engine.buildBuyWinStats(fullSpan.trades).closedLots,
+          trainStartDate, fullSpanEnd,
+          { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR }
+        );
+        const worstClosedBuys = sampleGate.total;
+        const passesSample = sampleGate.passes;
         const passesExpectancy = worstExpectancyPct >= MIN_EXPECTANCY_PERCENT;
         const passesPayoff = worstPayoffRatio >= MIN_PAYOFF_RATIO;
         const reachedTarget = passesTrainUpsideGate && passesTrainDrawdownGate
           && passesSample && passesExpectancy && passesPayoff
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${worstClosedBuys}单)`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return {
           model, best, trainAnnualized, trainYearBreakdown,

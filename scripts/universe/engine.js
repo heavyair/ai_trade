@@ -3105,6 +3105,9 @@ function buildBuyWinStats(trades) {
       lot.left -= matched;
       remaining -= matched;
       if (lot.left <= 0) {
+        // 平仓日期 = 把这个买单卖完的那一笔的日期。用来按年分桶统计"这一年做了几笔完整买卖"
+        // （见 shared/buy-sample-gate.js），不必为了按年计数再跑一遍回测。
+        lot.closeDate = trade.date;
         lot.pnl = lot.proceeds - lot.cost;
         // 单个买单的收益率：盈亏 ÷ 该买单自己的建仓成本。绝对金额会被仓位大小和复利放大
         // （账户滚大之后每笔的绝对盈亏自然变大），百分比把这两个干扰都消掉，衡量的才是
@@ -3124,6 +3127,8 @@ function buildBuyWinStats(trades) {
   return {
     closedBuys: closed.length,
     openBuys: open.length,
+    // 已平仓买单的明细（带 closeDate），给需要按时间分桶的调用方用；不需要的忽略即可。
+    closedLots: closed,
     winCount: wins.length,
     lossCount: losses.length,
     // null (not 0) when nothing has closed yet — "还没有已平仓买单" and "胜率 0%" are different
