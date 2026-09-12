@@ -1813,6 +1813,8 @@ const ADMIN_SCAN_COLUMNS = [
   { key: "trainAnnualizedReturn", label: "训练期年化收益率" },
   { key: "testYear1AnnualizedReturn", label: "验证期年化收益率(第1年)" },
   { key: "testYear2AnnualizedReturn", label: "验证期年化收益率(第2年)" },
+  { key: "testYear1BuyWinRate", label: "买单胜率(第1年)" },
+  { key: "testYear2BuyWinRate", label: "买单胜率(第2年)" },
   { key: "annualizedDiffYear1", label: "年化差异(第1年)" },
   { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
   { key: "bestTrades", label: "交易次数" },
@@ -1821,6 +1823,10 @@ const ADMIN_SCAN_COLUMNS = [
 ];
 
 function getAdminScanSortValue(record, key) {
+  // 胜率可能是 null（没有已平仓买单 / 老数据没算过）——返回 NaN 而不是 0，否则"没数据"会被
+  // 当成 0% 参与排序，排在真实的低胜率模型中间。
+  if (key === "testYear1BuyWinRate") return record.testYear1BuyWinRate === null ? NaN : Number(record.testYear1BuyWinRate);
+  if (key === "testYear2BuyWinRate") return record.testYear2BuyWinRate === null ? NaN : Number(record.testYear2BuyWinRate);
   if (key === "improvement") return record.bestReturnRate - record.baselineReturnRate;
   if (key === "vsBuyHold") return record.bestReturnRate - record.buyHoldReturnRate;
   if (key === "symbolName") return record.symbolName || record.symbol || "";
@@ -1957,6 +1963,8 @@ function renderAdminScanList() {
         <td class="${trainClass}">${hasTrainTest ? formatPercent(record.trainAnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear1Class}">${hasTrainTest ? formatPercent(record.testYear1AnnualizedReturn) : "待重新扫描"}</td>
         <td class="${testYear2Class}">${hasTrainTest ? formatPercent(record.testYear2AnnualizedReturn) : "待重新扫描"}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear1BuyWinRate, record.testYear1BuyClosedCount))}</td>
+        <td>${escapeHtml(formatStoredBuyWinRate(record.testYear2BuyWinRate, record.testYear2BuyClosedCount))}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear1) : "--"}</td>
         <td>${hasTrainTest ? formatPercent(record.annualizedDiffYear2) : "--"}</td>
         <td>${record.bestTrades || 0}</td>
@@ -3595,6 +3603,8 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
   { key: "annualizedDiffYear2", label: "年化差异(第2年)" },
   { key: "testYear1Trades", label: "验证期交易数(第1年)" },
   { key: "testYear2Trades", label: "验证期交易数(第2年)" },
+  { key: "testYear1BuyWinRate", label: "买单胜率(第1年)" },
+  { key: "testYear2BuyWinRate", label: "买单胜率(第2年)" },
   { key: "testYear1UpsideRatio", label: "回报/上行标准差(第1年)" },
   { key: "testYear2UpsideRatio", label: "回报/上行标准差(第2年)" },
   { key: "bestTrades", label: "交易次数" },
@@ -3604,6 +3614,9 @@ const ADMIN_AUTO_GENERATE_COLUMNS = [
 ];
 
 function getAdminAutoGenerateSortValue(record, key) {
+  // 同 getAdminScanSortValue：胜率为 null 时用 NaN，别把"没数据"当成 0% 排序。
+  if (key === "testYear1BuyWinRate") return record.testYear1BuyWinRate === null ? NaN : Number(record.testYear1BuyWinRate);
+  if (key === "testYear2BuyWinRate") return record.testYear2BuyWinRate === null ? NaN : Number(record.testYear2BuyWinRate);
   if (key === "targetSymbol") return record.targetSymbol || "";
   if (key === "label") return record.label || "";
   if (key === "strategyType") return getStrategyTypeLabel(record.strategyType);
@@ -3796,6 +3809,8 @@ function renderAiGeneratedPresetRow(p, options = {}) {
       <td>${hasTrainTest ? formatPercent(p.annualizedDiffYear2) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear1Trades || 0) : "--"}</td>
       <td>${hasTrainTest ? (p.testYear2Trades || 0) : "--"}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear1BuyWinRate, p.testYear1BuyClosedCount))}</td>
+      <td>${escapeHtml(formatStoredBuyWinRate(p.testYear2BuyWinRate, p.testYear2BuyClosedCount))}</td>
       <td>${formatUpsideRatioCell(p, 1)}</td>
       <td>${formatUpsideRatioCell(p, 2)}</td>
       <td>${p.bestTrades || 0}</td>

@@ -168,11 +168,65 @@ async function backfillValidationStates() {
   return { done, skipped };
 }
 
+async function backfillScanResults() {
+  const result = await pool.query(`
+    SELECT id, symbol, market, preset_label, best_config, strategy_type,
+           train_start_date, train_end_date,
+           test_year1_start_date, test_year1_end_date,
+           test_year2_start_date, test_year2_end_date
+    FROM optimization_scan_results
+    WHERE train_buy_win_rate IS NULL AND train_start_date IS NOT NULL
+    ORDER BY scanned_at DESC
+    ${LIMIT ? `LIMIT ${LIMIT}` : ""}
+  `);
+  console.log(`[scan-results] 待回填 ${result.rows.length} 条`);
+  let done = 0;
+  let skipped = 0;
+  for (const row of result.rows) {
+    const symbol = String(row.symbol || "").trim().toUpperCase();
+    try {
+      const market = inferDbMarket(symbol, row.market);
+      const rows = await cachedRows(symbol, market);
+      if (!rows.length) { skipped += 1; console.log(`[skip] ${symbol}: 没有历史数据`); continue; }
+      engine.setActiveLotSizeSymbol(symbol);
+      const baseConfig = buildConfig(row.best_config, row.strategy_type || "wave");
+      const train = winStatsForWindow(rows, baseConfig, toIso(row.train_start_date), toIso(row.train_end_date));
+      const year1 = winStatsForWindow(rows, baseConfig, toIso(row.test_year1_start_date), toIso(row.test_year1_end_date));
+      const year2 = winStatsForWindow(rows, baseConfig, toIso(row.test_year2_start_date), toIso(row.test_year2_end_date));
+      if (!train) { skipped += 1; continue; }
+      if (!DRY_RUN) {
+        await pool.query(`
+          UPDATE optimization_scan_results SET
+            train_buy_win_rate = $2, train_buy_closed_count = $3,
+            train_buy_payoff_ratio = $4, train_buy_expectancy = $5,
+            test_year1_buy_win_rate = $6, test_year1_buy_closed_count = $7,
+            test_year2_buy_win_rate = $8, test_year2_buy_closed_count = $9
+          WHERE id = $1
+        `, [
+          row.id,
+          train.winRate, train.closedBuys, train.payoffRatio, train.expectancy,
+          year1 ? year1.winRate : null, year1 ? year1.closedBuys : null,
+          year2 ? year2.winRate : null, year2 ? year2.closedBuys : null,
+        ]);
+      }
+      done += 1;
+      if (done % 25 === 0 || done <= 3) {
+        console.log(`[ok] ${symbol} ${String(row.preset_label).slice(0, 26)} 第1年胜率 ${year1 && year1.winRate !== null ? year1.winRate.toFixed(1) + "%" : "--"} / 第2年 ${year2 && year2.winRate !== null ? year2.winRate.toFixed(1) + "%" : "--"}`);
+      }
+    } catch (error) {
+      skipped += 1;
+      console.error(`[error] scan=${row.id} ${symbol}: ${error.message}`);
+    }
+  }
+  return { done, skipped };
+}
+
 async function main() {
   console.log(DRY_RUN ? "=== dryRun：只计算不写库 ===" : "=== 正式回填 ===");
   const a = await backfillSnapshots();
   const b = await backfillValidationStates();
-  console.log(`\n完成：验证快照 ${a.done} 条（跳过 ${a.skipped}）· 每日验证状态 ${b.done} 条（跳过 ${b.skipped}）`);
+  const c = await backfillScanResults();
+  console.log(`\n完成：验证快照 ${a.done} 条（跳过 ${a.skipped}）· 每日验证状态 ${b.done} 条（跳过 ${b.skipped}） · 扫描结果 ${c.done} 条（跳过 ${c.skipped}）`);
   await pool.end();
 }
 

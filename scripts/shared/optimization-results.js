@@ -80,6 +80,16 @@ async function ensureResultsTable(pool) {
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_trades INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_rows_tested INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_start_date DATE;
+    -- 买单胜率（engine.buildBuyWinStats）。这张表只存成交笔数、不存成交明细，事后无法反推，
+    -- 所以在扫描/搜索写结果的那一刻就算好存下来。NULL = 老数据还没算过，跟"胜率 0%"不同。
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_buy_win_rate DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_buy_closed_count INTEGER;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_buy_payoff_ratio DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS train_buy_expectancy DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_buy_win_rate DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year1_buy_closed_count INTEGER;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_win_rate DOUBLE PRECISION;
+    ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_buy_closed_count INTEGER;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS test_year2_end_date DATE;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year1 DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE optimization_scan_results ADD COLUMN IF NOT EXISTS annualized_diff_year2 DOUBLE PRECISION NOT NULL DEFAULT 0;
@@ -164,6 +174,13 @@ async function fetchPriorSuccessfulModels(pool, { excludeSymbol, excludeMarket, 
   }));
 }
 
+// 买单胜率统计里任何一项都可能是 null（例如没有已平仓买单时 winRate 为 null、没有亏损单时
+// payoffRatio 为 null），统一转成 null 写库，不要退化成 0——0% 是个有意义的值，不能跟"没数据"混。
+function pick(stats, key) {
+  if (!stats || stats[key] === undefined || stats[key] === null) return null;
+  return Number(stats[key]);
+}
+
 async function saveOptimizationResult(pool, row) {
   // id is only ever looked up by (symbol, market, preset_id) via the UNIQUE constraint below —
   // never used as the ON CONFLICT target itself — so a fresh opaque id per first-insert (never
@@ -184,7 +201,10 @@ async function saveOptimizationResult(pool, row) {
       annualized_diff_year1, annualized_diff_year2,
       test_year1_upside_deviation, test_year2_upside_deviation,
       train_year_breakdown, target_percent, upside_threshold_percent, drawdown_tolerance_percent,
-      reached_target, source, model_reason, used_prior_examples, scanned_at
+      reached_target, source, model_reason, used_prior_examples, scanned_at,
+      train_buy_win_rate, train_buy_closed_count, train_buy_payoff_ratio, train_buy_expectancy,
+      test_year1_buy_win_rate, test_year1_buy_closed_count,
+      test_year2_buy_win_rate, test_year2_buy_closed_count
     )
     VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
@@ -194,7 +214,10 @@ async function saveOptimizationResult(pool, row) {
       $36,$37,
       $38,$39,
       $40::jsonb,$41,$42,$43,
-      $44,$45,$46,$47,NOW()
+      $44,$45,$46,$47,NOW(),
+      $48,$49,$50,$51,
+      $52,$53,
+      $54,$55
     )
     ON CONFLICT (symbol, market, preset_id) DO UPDATE SET
       symbol_name = EXCLUDED.symbol_name,
@@ -240,7 +263,15 @@ async function saveOptimizationResult(pool, row) {
       source = EXCLUDED.source,
       model_reason = EXCLUDED.model_reason,
       used_prior_examples = EXCLUDED.used_prior_examples,
-      scanned_at = NOW()
+      scanned_at = NOW(),
+      train_buy_win_rate = EXCLUDED.train_buy_win_rate,
+      train_buy_closed_count = EXCLUDED.train_buy_closed_count,
+      train_buy_payoff_ratio = EXCLUDED.train_buy_payoff_ratio,
+      train_buy_expectancy = EXCLUDED.train_buy_expectancy,
+      test_year1_buy_win_rate = EXCLUDED.test_year1_buy_win_rate,
+      test_year1_buy_closed_count = EXCLUDED.test_year1_buy_closed_count,
+      test_year2_buy_win_rate = EXCLUDED.test_year2_buy_win_rate,
+      test_year2_buy_closed_count = EXCLUDED.test_year2_buy_closed_count
   `, [
     id, row.symbol, row.market, row.symbolName, row.presetId, row.presetLabel, row.strategyType, row.rowsTested,
     row.baselineReturnRate, row.baselineMaxDrawdown, row.bestReturnRate, row.bestMaxDrawdown,
@@ -259,6 +290,11 @@ async function saveOptimizationResult(pool, row) {
     row.upsideThresholdPercent === undefined || row.upsideThresholdPercent === null ? 30 : Number(row.upsideThresholdPercent),
     row.drawdownTolerancePercent === undefined || row.drawdownTolerancePercent === null ? 5 : Number(row.drawdownTolerancePercent),
     Boolean(row.reachedTarget), row.source || "", row.modelReason || "", Boolean(row.usedPriorExamples),
+    // 买单胜率：调用方把 engine.buildBuyWinStats 的结果传进来（没传就写 NULL，界面显示 "--"）
+    pick(row.trainBuyWin, "winRate"), pick(row.trainBuyWin, "closedBuys"),
+    pick(row.trainBuyWin, "payoffRatio"), pick(row.trainBuyWin, "expectancy"),
+    pick(row.testYear1BuyWin, "winRate"), pick(row.testYear1BuyWin, "closedBuys"),
+    pick(row.testYear2BuyWin, "winRate"), pick(row.testYear2BuyWin, "closedBuys"),
   ]);
 }
 
