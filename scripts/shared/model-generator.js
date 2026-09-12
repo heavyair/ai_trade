@@ -724,25 +724,40 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
 // its next candidate) and for deciding how often to pass this at all — search-validated-best.js
 // currently does it for a random ~50% of attempts, to compare against blind generation rather
 // than assume few-shot examples are strictly better.
-async function generateModelFromDataProfile(profile, symbol, previousAttempts = [], priorSuccessfulModels = []) {
+async function generateModelFromDataProfile(profile, symbol, previousAttempts = [], priorSuccessfulModels = [], options = {}) {
   if (!profile) {
     const error = new Error("历史数据不足，无法生成数据画像。");
     error.statusCode = 400;
     throw error;
   }
   const schema = buildModelSchema();
+  // 把前几次尝试的【量化失败原因】一起回传，而不只是"试过哪些思路"。
+  // 没有 outcome 的话，N 次尝试实际上是 N 次独立随机采样而不是迭代优化——而脚本手里明明有
+  // 非常具体的失败信息（跑输买入持有多少、只成交几笔、期望多少、盈亏比多少）。
+  // "只成交 3 笔"这类问题 AI 完全有能力自己修正（放宽阈值、减少条件叠加），前提是它知道。
   const diversityLine = previousAttempts.length > 0
-    ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，分别是：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 60)}）` : ""}`).join("；")}。这次请换一个明显不同的思路——尽量选不同的 strategyType，或者哪怕 strategyType 相同也要换一套不同的指标/公式组合，不要重复前面已经试过的想法。`
+    ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，以及它们各自的回测结果：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 50)}）` : ""}${a.outcome ? ` → ${a.outcome}` : ""}`).join("；")}。请针对上面这些具体的失败原因改进：如果是成交笔数太少，就放宽买入条件或减少同时要求满足的条件个数；如果是跑输买入持有，就换一个思路而不是微调阈值；如果是每买单期望为负，说明入场点选得不对，应该改变入场逻辑而不只是改出场。不要重复已经被证明失败的做法。`
     : null;
   const priorSuccessLine = priorSuccessfulModels.length > 0
     ? `参考信息：以下是在其他股票上经过两年独立验证期确认有效的模型思路——${priorSuccessfulModels.map((m, i) => `第${i + 1}个[${m.symbol}/${m.strategyType}]验证年化${m.year1Annualized.toFixed(1)}%/${m.year2Annualized.toFixed(1)}%${m.reason ? `，思路：${String(m.reason).slice(0, 80)}` : ""}`).join("；")}。这些只是思路参考，不是这只股票的答案——具体用哪个 strategyType、哪些指标、什么阈值，必须结合上面这只股票自己的统计特征重新设计，不要照搬其他股票的具体参数（不同股票的价格区间、波动率、趋势特征都不一样）。`
+    : null;
+  // 调用方按轮次指定的倾向类型（见 search-validated-best.js 的 STRATEGY_TYPE_ROTATION）。
+  // 措辞上留了出口：数据特征明显不适合时允许改选，所以不会把不合适的策略硬套到标的上。
+  const strategyHintLine = options.suggestedStrategyType && SUPPORTED_STRATEGY_TYPES.includes(options.suggestedStrategyType)
+    ? `本次请优先考虑 strategyType="${options.suggestedStrategyType}"，并围绕它来设计规则。只有当上面的数据特征明显不适合这种策略时（请在 reason 里说明理由），才改用其它类型。`
     : null;
   const prompt = [
     "下面是一只股票的历史行情特征摘要（是统计特征，不是原始逐日行情）。请分析这些特征，设计一个尽量跑赢“买入并一直持有”、且最大回撤比买入持有更小的择时模型，转换成 AI Trade 支持的安全模型 JSON。",
     ...buildPromptGuideLines(schema),
     `股票/标的：${symbol || "通用"}`,
-    "历史行情特征字段说明：totalReturnPercent=区间总收益率，annualizedVolatilityPercent=年化波动率，maxDrawdownPercent=买入持有的最大回撤，priceVsMa5Percent/priceVsMa20Percent/priceVsMa60Percent=当前价相对5/20/60日均线的偏离%，recentUpDayRatioPercent=最近20日上涨天数占比，rsi14=当前RSI(14)，atrPercentAverage14=最近14日平均ATR%，daysSince60DayHigh/daysSince60DayLow=距60日内最高/最低点的天数。",
+    "历史行情特征字段说明（全部描述整段窗口的统计分布，不是某一天的快照）：",
+    "· totalReturnPercent=区间总收益率；annualizedVolatilityPercent=年化波动率；maxDrawdownPercent=买入持有的最大回撤；upDayRatioPercent=上涨天数占比。",
+    "· yearly=分年度拆解，每年给出 returnPercent/volatilityPercent/maxDrawdownPercent/upDayRatioPercent。请重点看它：每年都涨说明是趋势票，适合趋势跟随并尽量少踏空；大起大落说明适合区间/均值回归；某一年巨亏说明必须有止损或回撤保护。",
+    "· rsi14/priceVsMa20Percent/priceVsMa60Percent/atrPercent 都是分布：p10/p50/p90 是该指标在整段窗口里的 10/50/90 分位数。定阈值时请参照这些分位数——例如想让买入信号大约在最低的 10% 的日子触发，就取接近 p10 的值；取一个远超 p90 的阈值会导致整段时间一次都不触发。",
+    "· rsi14.overboughtDayRatioPercent/oversoldDayRatioPercent=RSI≥70 和 ≤30 的天数占比；priceVsMa*.aboveMaDayRatioPercent=收盘价位于该均线上方的天数占比。",
+    "· drawdowns=回撤发作统计：count=跌幅超过5%并已恢复的次数，medianDepthPercent/maxDepthPercent=这些回撤的中位/最大深度，medianRecoveryDays/maxRecoveryDays=从前高跌下去再回到前高所用交易日的中位/最大值，unrecovered=窗口结束时仍未回到前高的那次。恢复快(中位数几十天)的票适合逢跌加仓；恢复慢或至今未恢复的票必须靠趋势跟随和止损，否则就是一路接飞刀。",
     `历史行情特征（JSON）：${JSON.stringify(profile)}`,
+    strategyHintLine,
     diversityLine,
     priorSuccessLine,
   ].filter(Boolean).join("\n");
@@ -768,6 +783,163 @@ function round2(value) {
 // Pure statistical digest of a symbol's price history — deliberately NOT the raw OHLCV rows
 // (years of daily data is too much for an LLM prompt and is mostly noise); these are the
 // summary characteristics an AI can actually reason from when proposing a timing model.
+//
+// 关键设计原则：每个字段都必须描述【整段窗口】，不能是最后一天的快照。
+//
+// 早先的版本 12 个字段里有 8 个只描述窗口最后几十天（当前 RSI、当前对均线的偏离、距 60 日
+// 高点的天数……）。AI 看到的等于是"这只股票四年涨了 80%，而且**今天** RSI 是 62"，然后要它
+// 设计一个在这四年里都有效的择时模型。末尾那半截信息不但没用，还会诱导 AI 针对训练窗口
+// 末尾那个特定状态去设计规则——相当于喂给模型一个没有代表性的先验。
+//
+// 现在换成两类信息：
+//   1. 分布（分位数 + 处于某状态的天数占比）——回答"这只票平时是什么样"而不是"今天什么样"；
+//   2. 分年度拆解和回撤发作统计——回答"它是一路涨还是大起大落、跌下去多久能回来"，
+//      这直接决定该用趋势跟随还是均值回归。
+
+function percentile(sortedValues, p) {
+  if (sortedValues.length === 0) return null;
+  const idx = Math.min(sortedValues.length - 1, Math.max(0, Math.round((p / 100) * (sortedValues.length - 1))));
+  return sortedValues[idx];
+}
+
+// 把一条时间序列压成 {p10,p50,p90}，外加可选的"处于某区间的天数占比"。
+function describeSeries(values, extra = {}) {
+  const clean = values.filter((v) => Number.isFinite(v));
+  if (clean.length === 0) return null;
+  const sorted = [...clean].sort((a, b) => a - b);
+  const result = { p10: round2(percentile(sorted, 10)), p50: round2(percentile(sorted, 50)), p90: round2(percentile(sorted, 90)) };
+  for (const [key, predicate] of Object.entries(extra)) {
+    result[key] = round2((clean.filter(predicate).length / clean.length) * 100);
+  }
+  return result;
+}
+
+// 逐日 RSI(14)，Wilder 平滑——跟常见看盘软件口径一致，也避免简单均值对单日暴涨暴跌过敏。
+function rsiSeries(rows, period = 14) {
+  const out = [];
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i < rows.length; i += 1) {
+    const change = rows[i].close - rows[i - 1].close;
+    const gain = Math.max(0, change);
+    const loss = Math.max(0, -change);
+    if (i <= period) {
+      avgGain += gain / period;
+      avgLoss += loss / period;
+      if (i < period) continue;
+    } else {
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+    }
+    out.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
+  }
+  return out;
+}
+
+// 逐日"收盘价相对 N 日均线的偏离%"。
+function maDeviationSeries(rows, days) {
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    sum += rows[i].close;
+    if (i >= days) sum -= rows[i - days].close;
+    if (i < days - 1) continue;
+    const ma = sum / days;
+    out.push(ma > 0 ? ((rows[i].close - ma) / ma) * 100 : null);
+  }
+  return out;
+}
+
+// 逐日 ATR%（真实波幅占收盘价的比例）。
+function atrPercentSeries(rows) {
+  const out = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const prevClose = rows[i - 1].close;
+    const trueRange = Math.max(
+      rows[i].high - rows[i].low,
+      Math.abs(rows[i].high - prevClose),
+      Math.abs(rows[i].low - prevClose)
+    );
+    out.push(rows[i].close > 0 ? (trueRange / rows[i].close) * 100 : null);
+  }
+  return out;
+}
+
+// 回撤"发作"的分布：每次从前高跌下去再回到前高算一次，记录深度和恢复用了多少个交易日。
+// 这是选策略类型的关键依据——回撤浅且恢复快的票适合逢跌加仓（均值回归），回撤深且长期
+// 回不去的票必须用趋势跟随或止损，否则就是一路接飞刀。
+function drawdownEpisodes(rows, minDepthPercent = 5) {
+  const episodes = [];
+  let peak = rows[0].close;
+  let peakIndex = 0;
+  let troughDepth = 0;
+  let inDrawdown = false;
+  for (let i = 1; i < rows.length; i += 1) {
+    const close = rows[i].close;
+    if (close >= peak) {
+      if (inDrawdown && troughDepth >= minDepthPercent) {
+        episodes.push({ depth: troughDepth, recoveryDays: i - peakIndex });
+      }
+      peak = close;
+      peakIndex = i;
+      troughDepth = 0;
+      inDrawdown = false;
+      continue;
+    }
+    inDrawdown = true;
+    troughDepth = Math.max(troughDepth, peak > 0 ? ((peak - close) / peak) * 100 : 0);
+  }
+  // 结尾仍未恢复的那次单独标出来——"至今没回到前高"本身就是重要信息。
+  const unrecovered = inDrawdown && troughDepth >= minDepthPercent
+    ? { depthPercent: round2(troughDepth), daysSoFar: rows.length - 1 - peakIndex }
+    : null;
+  const depths = episodes.map((e) => e.depth).sort((a, b) => a - b);
+  const recoveries = episodes.map((e) => e.recoveryDays).sort((a, b) => a - b);
+  return {
+    count: episodes.length,
+    medianDepthPercent: round2(percentile(depths, 50)),
+    maxDepthPercent: depths.length ? round2(depths[depths.length - 1]) : null,
+    medianRecoveryDays: percentile(recoveries, 50),
+    maxRecoveryDays: recoveries.length ? recoveries[recoveries.length - 1] : null,
+    unrecovered,
+  };
+}
+
+// 按自然年把窗口切段，逐段给出收益/波动/回撤/上涨天数占比。不足 30 个交易日的残缺年份跳过。
+function yearlyBreakdown(rows) {
+  const out = [];
+  const startYear = Number(rows[0].date.slice(0, 4));
+  const endYear = Number(rows[rows.length - 1].date.slice(0, 4));
+  for (let year = startYear; year <= endYear; year += 1) {
+    const slice = rows.filter((row) => row.date.slice(0, 4) === String(year));
+    if (slice.length < 30) continue;
+    const firstClose = slice[0].close;
+    const lastClose = slice[slice.length - 1].close;
+    const returns = [];
+    let up = 0;
+    let peak = firstClose;
+    let maxDd = 0;
+    for (let i = 1; i < slice.length; i += 1) {
+      const prev = slice[i - 1].close;
+      if (prev > 0) returns.push((slice[i].close - prev) / prev);
+      if (slice[i].close > prev) up += 1;
+      peak = Math.max(peak, slice[i].close);
+      maxDd = Math.max(maxDd, peak > 0 ? ((peak - slice[i].close) / peak) * 100 : 0);
+    }
+    const mean = returns.reduce((a, b) => a + b, 0) / (returns.length || 1);
+    const variance = returns.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (returns.length || 1);
+    out.push({
+      year,
+      tradingDays: slice.length,
+      returnPercent: round2(firstClose > 0 ? ((lastClose - firstClose) / firstClose) * 100 : 0),
+      volatilityPercent: round2(Math.sqrt(variance) * Math.sqrt(252) * 100),
+      maxDrawdownPercent: round2(maxDd),
+      upDayRatioPercent: round2((up / (slice.length - 1)) * 100),
+    });
+  }
+  return out;
+}
+
 function buildSymbolDataProfile(rows) {
   if (!Array.isArray(rows) || rows.length < 30) return null;
   const n = rows.length;
@@ -776,9 +948,11 @@ function buildSymbolDataProfile(rows) {
   const totalReturnPercent = first.close > 0 ? ((last.close - first.close) / first.close) * 100 : 0;
 
   const dailyReturns = [];
+  let upDays = 0;
   for (let i = 1; i < n; i += 1) {
     const prevClose = rows[i - 1].close;
     dailyReturns.push(prevClose > 0 ? (rows[i].close - prevClose) / prevClose : 0);
+    if (rows[i].close > prevClose) upDays += 1;
   }
   const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
   const variance = dailyReturns.reduce((a, b) => a + (b - meanReturn) * (b - meanReturn), 0) / dailyReturns.length;
@@ -792,56 +966,6 @@ function buildSymbolDataProfile(rows) {
     maxDrawdownPercent = Math.max(maxDrawdownPercent, drawdown);
   });
 
-  const smaAt = (days, index) => {
-    if (index + 1 < days) return null;
-    let sum = 0;
-    for (let i = index - days + 1; i <= index; i += 1) sum += rows[i].close;
-    return sum / days;
-  };
-  const maDeviation = (days) => {
-    const ma = smaAt(days, n - 1);
-    return ma ? ((last.close - ma) / ma) * 100 : null;
-  };
-
-  const recentWindow = Math.min(20, n - 1);
-  let recentUp = 0;
-  for (let i = n - recentWindow; i < n; i += 1) {
-    if (rows[i].close > rows[i - 1].close) recentUp += 1;
-  }
-  const recentUpDayRatioPercent = recentWindow > 0 ? (recentUp / recentWindow) * 100 : null;
-
-  const rsiDays = Math.min(14, n - 1);
-  let gains = 0;
-  let losses = 0;
-  for (let i = n - rsiDays; i < n; i += 1) {
-    const change = rows[i].close - rows[i - 1].close;
-    gains += Math.max(0, change);
-    losses += Math.max(0, -change);
-  }
-  const rsi14 = losses === 0 ? 100 : 100 - (100 / (1 + gains / losses));
-
-  const atrDays = Math.min(14, n - 1);
-  let atrSum = 0;
-  for (let i = n - atrDays; i < n; i += 1) {
-    const prevClose = rows[i - 1].close;
-    const trueRange = Math.max(
-      rows[i].high - rows[i].low,
-      Math.abs(rows[i].high - prevClose),
-      Math.abs(rows[i].low - prevClose)
-    );
-    atrSum += rows[i].close > 0 ? (trueRange / rows[i].close) * 100 : 0;
-  }
-  const atrPercentAverage14 = atrDays > 0 ? atrSum / atrDays : null;
-
-  const lookback = Math.min(60, n);
-  const recentSlice = rows.slice(n - lookback, n);
-  let highIndex = 0;
-  let lowIndex = 0;
-  recentSlice.forEach((row, i) => {
-    if (row.high > recentSlice[highIndex].high) highIndex = i;
-    if (row.low < recentSlice[lowIndex].low) lowIndex = i;
-  });
-
   return {
     tradingDays: n,
     startDate: first.date,
@@ -849,14 +973,16 @@ function buildSymbolDataProfile(rows) {
     totalReturnPercent: round2(totalReturnPercent),
     annualizedVolatilityPercent: round2(annualizedVolatilityPercent),
     maxDrawdownPercent: round2(maxDrawdownPercent),
-    priceVsMa5Percent: round2(maDeviation(5)),
-    priceVsMa20Percent: round2(maDeviation(20)),
-    priceVsMa60Percent: round2(maDeviation(60)),
-    recentUpDayRatioPercent: round2(recentUpDayRatioPercent),
-    rsi14: round2(rsi14),
-    atrPercentAverage14: round2(atrPercentAverage14),
-    daysSince60DayHigh: (lookback - 1) - highIndex,
-    daysSince60DayLow: (lookback - 1) - lowIndex,
+    upDayRatioPercent: round2((upDays / (n - 1)) * 100),
+    yearly: yearlyBreakdown(rows),
+    rsi14: describeSeries(rsiSeries(rows), {
+      overboughtDayRatioPercent: (v) => v >= 70,
+      oversoldDayRatioPercent: (v) => v <= 30,
+    }),
+    priceVsMa20Percent: describeSeries(maDeviationSeries(rows, 20), { aboveMaDayRatioPercent: (v) => v > 0 }),
+    priceVsMa60Percent: describeSeries(maDeviationSeries(rows, 60), { aboveMaDayRatioPercent: (v) => v > 0 }),
+    atrPercent: describeSeries(atrPercentSeries(rows)),
+    drawdowns: drawdownEpisodes(rows),
   };
 }
 

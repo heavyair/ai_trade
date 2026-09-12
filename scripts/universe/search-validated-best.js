@@ -106,6 +106,16 @@ const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 const SHOULD_SAVE = args.includes("--save");
+// 策略类型轮转表。按实测的"平均较差年每买单期望"给高质量类型更多的采样机会，同时保证每种
+// 类型都拿得到名额——期望高但样本极少的类型（order-grid 只生成过 2 次）需要更多机会才能判断
+// 它到底是真的好还是碰巧。block-rules 产出最多且质量不错(8.17%)，保留最多份额；score-rules
+// 实测最差(1.59%)，份额压到最低。
+const STRATEGY_TYPE_ROTATION = [
+  "block-rules", "wave", "order-grid", "block-rules", "stagnation-reversal",
+  "wave", "ma-rsi-band", "block-rules", "order-grid", "local-high-ladder",
+  "wave", "score-rules",
+];
+
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
 
@@ -346,32 +356,43 @@ async function main() {
           break;
         }
 
-        // A/B test: does showing the AI a few other symbols' already-validated models (as
-        // idea-level few-shot context, never raw thresholds — see model-generator.js's doc
-        // comment) actually lift the train-phase qualify rate over blind generation from just
-        // this symbol's own data profile? Each attempt independently coin-flips which arm it's
-        // in, and usedPriorExamples travels with the attempt all the way to the saved row
-        // (used_prior_examples column) so the two arms' reached_target rates can be compared
-        // later instead of guessing. excludeSymbol/excludeMarket keeps this symbol's own
-        // history out of its own few-shot examples (that would leak its own test-period result).
-        const usedPriorExamples = Math.random() < 0.5;
-        const priorSuccessfulModels = usedPriorExamples
-          ? await fetchPriorSuccessfulModels(pool, { excludeSymbol: symbolEntry.code, excludeMarket: dbMarket, limit: 8 })
-          : [];
+        // A/B 实验已收口：给 AI 看其他股票的达标模型（few-shot）对产出【没有帮助】。
+        // 671 条实测——盲生成组 328 条里 64 条达标(19.5%)、平均较差年每买单期望 7.51%；
+        // 参考示例组 343 条里 64 条达标(18.7%)、期望只有 5.36%。达标率没有差别，而期望明显更差，
+        // 说明示例在诱导 AI 往"看起来像成功案例"的方向靠，而不是针对当前这只票的特征设计。
+        // 保留 used_prior_examples 字段写 false，只是为了不破坏历史数据的可比性。
+        const usedPriorExamples = false;
+        const priorSuccessfulModels = [];
+
+        // 策略类型轮转：实测 AI 自由选择时会把 82% 的尝试压在 block-rules 和 score-rules 上，
+        // 而 score-rules 的平均较差年期望只有 1.59%（全部类型里最差，低于 1.5% 的达标线），
+        // 反倒是 wave(19.64%) 和 order-grid(38.60%) 期望极高却几乎不被选中（order-grid 只生成过
+        // 2 次）。这更像是提示词里类型描述的长度/顺序造成的偏好，不是这些策略真的更合适。
+        // 这里按尝试序号轮转给出一个倾向类型，让采样次数和产出质量对得上；AI 仍可在数据特征
+        // 明显不适合时改选别的，所以不会强行套用。
+        const suggestedStrategyType = STRATEGY_TYPE_ROTATION[attempt % STRATEGY_TYPE_ROTATION.length];
 
         writeProgress({ attempt: attempt + 1, currentReason: `AI 正在分析数据、设计模型…${usedPriorExamples ? "（参考了其他股票的历史达标模型）" : ""}` });
         aiCalls += 1;
         let model;
         try {
-          model = await ModelGenerator.generateModelFromDataProfile(profile, symbolEntry.code, previousAttempts, priorSuccessfulModels);
+          model = await ModelGenerator.generateModelFromDataProfile(
+            profile, symbolEntry.code, previousAttempts, priorSuccessfulModels,
+            { suggestedStrategyType }
+          );
         } catch (aiError) {
           console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
           errored += 1;
           writeProgress({ aiCalls, errored });
           continue;
         }
-        previousAttempts.push({ strategyType: model.strategyType, reason: model.reason });
+        // outcome 在本轮后面的各个淘汰点上回填，供下一次生成时作为改进依据（见
+        // model-generator.js 的 diversityLine）。对象先入列再改字段，是为了不必在每个
+        // continue 之前都重复一次 push。
+        const attemptRecord = { strategyType: model.strategyType, reason: model.reason, outcome: null };
+        previousAttempts.push(attemptRecord);
         if (!modelHasRules(model)) {
+          attemptRecord.outcome = "生成的模型没有任何可用规则";
           console.log(`[empty-model] ${symbolEntry.code} attempt ${attempt + 1}: no usable rules, skipping`);
           continue;
         }
@@ -453,14 +474,17 @@ async function main() {
         const passesTrainDrawdownGate = failingTrainDrawdownYears.length === 0;
 
         if (!beatsReturn || !beatsDrawdown) {
+          attemptRecord.outcome = `训练期${best.last.returnRate.toFixed(1)}%/回撤${best.last.maxDrawdown.toFixed(1)}%，买入持有${buyHold.returnRate.toFixed(1)}%/回撤${buyHold.maxDrawdown.toFixed(1)}%，${!beatsReturn ? "收益跑输" : "回撤更大"}`;
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
           continue;
         }
         if (!passesTrainUpsideGate) {
+          attemptRecord.outcome = `跑赢买入持有，但有训练年的收益没达到该年自身上行波动的${UPSIDE_THRESHOLD_PERCENT}%（${failingTrainYears.length}个年份不达标）`;
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the upside-deviation gate in: ${failingTrainYears.join("; ")} — skipping`);
           continue;
         }
         if (!passesTrainDrawdownGate) {
+          attemptRecord.outcome = `跑赢买入持有，但有${failingTrainDrawdownYears.length}个训练年的回撤大于买入持有同期回撤`;
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the per-year drawdown gate in: ${failingTrainDrawdownYears.join("; ")} — skipping`);
           continue;
         }
@@ -470,6 +494,7 @@ async function main() {
         const trainBuyWin = engine.buildBuyWinStats(best.last.trades);
         const trainPayoff = trainBuyWin.payoffRatio;
         if (trainBuyWin.closedBuys < MIN_TRAIN_CLOSED_BUYS) {
+          attemptRecord.outcome = `跑赢买入持有，但训练期只做成${trainBuyWin.closedBuys}笔完整买卖（需要至少${MIN_TRAIN_CLOSED_BUYS}笔），买入条件太苛刻`;
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期只有 ${trainBuyWin.closedBuys} 个完整平仓买单(<${MIN_TRAIN_CLOSED_BUYS}) — skipping`);
           continue;
         }
@@ -488,11 +513,13 @@ async function main() {
           const why = !trainPayoffAboveFloor
             ? `低于盈亏比底线${MIN_TRAIN_PAYOFF_FLOOR}`
             : `盈亏比未达${MIN_PAYOFF_RATIO}且期望未达${MIN_EXPECTANCY_PERCENT}%`;
+          attemptRecord.outcome = `跑赢买入持有，但训练期${shown}——${why}`;
           console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期${shown} — ${why}，skipping`);
           continue;
         }
 
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
+        attemptRecord.outcome = `训练期${trainAnnualized.toFixed(1)}%年化、${trainBuyWin.closedBuys}笔完整买卖，已通过训练阶段进入验证`;
         qualifyingAttempts.push({
           model, best, trainAnnualized, trainYearBreakdown,
           passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples,
