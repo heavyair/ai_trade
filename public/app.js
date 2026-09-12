@@ -3197,16 +3197,24 @@ function ensureOptimizablePresetFromContext(context) {
   return key;
 }
 
-function getModelContextOptimizationRange(context) {
+// The date this model originally started training on — the fixed origin that both 优化参数 and
+// 历史模拟 anchor to. Never moves forward, so a model's evaluated window only ever grows.
+function getModelContextTrainStartDate(context) {
   const validation = context && context.validation && typeof context.validation === "object" ? context.validation : {};
   const dailyValidation = context && context.dailyValidation && typeof context.dailyValidation === "object" ? context.dailyValidation : {};
-  const start = context && (
+  return context && (
     context.trainStartDate
     || validation.trainStartDate
     || context.testStartDate
     || context.validationStartDate
     || dailyValidation.validationStartDate
   );
+}
+
+function getModelContextOptimizationRange(context) {
+  const validation = context && context.validation && typeof context.validation === "object" ? context.validation : {};
+  const dailyValidation = context && context.dailyValidation && typeof context.dailyValidation === "object" ? context.dailyValidation : {};
+  const start = getModelContextTrainStartDate(context);
   const end = context && (
     context.testYear2EndDate
     || validation.testYear2EndDate
@@ -3223,6 +3231,21 @@ function getModelContextOptimizationRange(context) {
   const fallbackStart = formatDate(shiftYears(new Date(), -5));
   const fallbackEnd = todayText();
   return { start: fallbackStart, end: fallbackEnd, label: `${fallbackStart} ~ ${fallbackEnd}` };
+}
+
+// 历史模拟 always runs the model over its WHOLE life: from the date it originally started
+// training through the latest trading day — never stopping at the frozen end date stored in the
+// validation snapshot, and never a trailing "last N years" window. Distinct from
+// getModelContextOptimizationRange above, which deliberately reproduces the original
+// train+validation span because 优化参数 must re-optimize against the data that produced the model.
+function getModelContextSimulationRange(context) {
+  const end = todayText();
+  // Resolved independently of getModelContextOptimizationRange, which discards a perfectly good
+  // training start whenever the snapshot has no usable END date (it needs both). Here the end is
+  // always today, so only the start matters — the 5-year fallback is a genuine last resort for a
+  // model that has never recorded a training start at all.
+  const start = getModelContextTrainStartDate(context) || formatDate(shiftYears(new Date(), -5));
+  return { start, end, label: `${start} ~ ${end}` };
 }
 
 async function openModelActionOptimization(context) {
@@ -3278,7 +3301,7 @@ if (modelActionReloadSimButton) {
     }
     setWizardPage("simulation");
     if (codeInput) codeInput.value = context.symbol;
-    const range = getModelContextOptimizationRange(context);
+    const range = getModelContextSimulationRange(context);
     if (startInput) startInput.value = range.start;
     if (endInput) endInput.value = range.end;
     renderModelCompareOptions();
@@ -3388,6 +3411,17 @@ function openRevalidateDialog() {
   if (!context || !context.symbol) return;
   if (revalidateTitle) {
     revalidateTitle.textContent = `重新验证：${context.numericId ? `#${context.numericId} · ` : ""}${context.label || "模型"}（${context.symbol}）`;
+  }
+  // Prefill the window shape this model was actually validated with, instead of leaving the
+  // generic 4+2 defaults sitting there: re-validating always keeps the model's original training
+  // start date and extends the end to the latest trading day, so the years here only describe
+  // how that span is split — showing a shape the model never used would be misleading.
+  const validation = context.validation && typeof context.validation === "object" ? context.validation : {};
+  if (revalidateTrainYearsInput && Number(validation.trainYears) > 0) {
+    revalidateTrainYearsInput.value = String(Number(validation.trainYears));
+  }
+  if (revalidateTestYearsInput && Number(validation.testYears) > 0) {
+    revalidateTestYearsInput.value = String(Number(validation.testYears));
   }
   if (revalidateStatus) revalidateStatus.textContent = "";
   if (revalidateResult) revalidateResult.innerHTML = "";
@@ -13255,7 +13289,7 @@ async function runModelListSimulation(model, role) {
   }
   setWizardPage("simulation");
   if (codeInput) codeInput.value = symbol;
-  const range = getModelContextOptimizationRange(model);
+  const range = getModelContextSimulationRange(model);
   if (startInput) startInput.value = range.start;
   if (endInput) endInput.value = range.end;
   renderModelCompareOptions();

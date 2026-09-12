@@ -6529,9 +6529,17 @@ async function handlePresetRevalidateApi(req, res) {
     const allRows = await loadRowsForSymbol(dbPool, symbol, market);
     // Re-validating an already-saved preset uses a FIXED origin (the preset's own first-ever
     // trainStartDate) instead of re-anchoring the whole train/test span to "today" — only the
-    // final test window's end date grows. The very first validation (no prior snapshot row, or a
-    // request with a different trainYears/testYears shape than what was last saved) still falls
-    // through to the rolling splitTrainTestWindows, which is what establishes that origin.
+    // final test window's end date grows, so the evaluated window is cumulative: the model's
+    // entire life, from the day it started training through the latest trading day. Only the
+    // very first validation (no prior snapshot row) falls through to the rolling
+    // splitTrainTestWindows, which is what establishes that origin in the first place.
+    //
+    // This deliberately ignores whether the requested trainYears/testYears match what the
+    // snapshot was saved with. It used to require a match, which meant re-running with a
+    // different window shape (and the dialog defaults to 4+2 regardless of what the model was
+    // actually validated with) silently slid the whole span back onto "today" — a rolling
+    // window, which is exactly what this must never be. The requested years still decide the
+    // window SHAPE; they just can't move the origin.
     let existingSnapshot = null;
     if (presetId) {
       const snapshotCheck = await dbPool.query(
@@ -6541,7 +6549,6 @@ async function handlePresetRevalidateApi(req, res) {
       existingSnapshot = snapshotCheck.rows[0] || null;
     }
     const { trainRows, trainStartDate, trainEndDate, testWindows } = existingSnapshot
-      && existingSnapshot.train_years === trainYears && existingSnapshot.test_years === testYears
       ? splitFixedStartWindows(
           allRows, trainYears, testYears,
           new Date(existingSnapshot.train_start_date).toISOString().slice(0, 10),
@@ -6821,6 +6828,10 @@ function mapPresetValidationRow(row) {
     reason: meta.reason || "",
     createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
     updatedAt: row.snapshot_updated_at ? new Date(row.snapshot_updated_at).toISOString() : "",
+    // Window SHAPE this snapshot was actually validated with — the 重新验证 dialog prefills its
+    // inputs from these so re-running doesn't silently switch the model to a different shape.
+    trainYears: row.train_years !== null && row.train_years !== undefined ? Number(row.train_years) : null,
+    testYears: row.test_years !== null && row.test_years !== undefined ? Number(row.test_years) : null,
     trainAnnualizedReturn: Number(row.train_annualized_return) || 0,
     trainStartDate: row.train_start_date ? new Date(row.train_start_date).toISOString().slice(0, 10) : "",
     trainEndDate: row.train_end_date ? new Date(row.train_end_date).toISOString().slice(0, 10) : "",
