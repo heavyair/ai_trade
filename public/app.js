@@ -3960,48 +3960,28 @@ async function loadMyModels() {
   }
 }
 
+// 评分/分级公式本身在 /model-recommendation.js（Node 侧的优化脚本 require 的是同一个文件），
+// 这里只负责把接口返回的模型对象映射成它要的字段。
 function getWatchableRecommendation(model) {
   const totalTestTrades = Number(model.totalTestTrades);
-  const totalTrades = Number.isFinite(totalTestTrades)
-    ? totalTestTrades
-    : ((Number(model.testYear1Trades) || 0) + (Number(model.testYear2Trades) || 0));
-  const year1Return = Number(model.testYear1AnnualizedReturn) || 0;
-  const year2Return = Number(model.testYear2AnnualizedReturn) || 0;
-  const worstYearReturn = Math.min(year1Return, year2Return);
-  const avgYearReturn = (year1Return + year2Return) / 2;
-  const maxAnnualizedDiff = Math.max(Number(model.annualizedDiffYear1) || 0, Number(model.annualizedDiffYear2) || 0);
-  const tradeDiff = Math.abs((Number(model.testYear1Trades) || 0) - (Number(model.testYear2Trades) || 0));
-  const validationStatus = model.validationStatus || (model.dailyValidation && model.dailyValidation.status) || (model.reachedTarget ? "valid" : "invalid");
-  const statusScore = validationStatus === "valid" ? 1000 : validationStatus === "watching" ? 780 : 0;
-  const tradeScore = totalTrades >= 11 && totalTrades <= 60 ? 220
-    : totalTrades >= 61 && totalTrades <= 120 ? 180
-      : totalTrades >= 6 && totalTrades <= 10 ? 130
-        : totalTrades > 120 ? 90
-          : totalTrades >= 3 && totalTrades <= 5 ? 60
-            : 0;
-  const worstExpectancyPct = Math.min(
-    Number(model.testYear1BuyExpectancyPct) || 0,
-    Number(model.testYear2BuyExpectancyPct) || 0
-  );
-  const worstPayoff = Math.min(Number(model.testYear1BuyPayoffRatio) || 0, Number(model.testYear2BuyPayoffRatio) || 0);
-  const worstClosed = Math.min(Number(model.testYear1BuyClosedCount) || 0, Number(model.testYear2BuyClosedCount) || 0);
-  // 样本不足(<10单)的证据打 0.4 折——2 单 100% 是噪音，不该冲到榜首。
-  const sampleFactor = worstClosed >= 10 ? 1 : worstClosed > 0 ? 0.4 : 0;
-  const expectancyScore = Math.min(Math.max(worstExpectancyPct, -5), 10) * 40 * sampleFactor;
-  const payoffScore = Math.min(Math.max(worstPayoff - 1, 0) * 60, 180) * sampleFactor;
-  // 年化降为辅助项、策略类型先验移除——理由见 server.js 里同一套公式的 SQL 版注释。
-  const recommendationScore = statusScore
-    + tradeScore
-    + expectancyScore
-    + payoffScore
-    + Math.min(Math.max(worstYearReturn, 0), 300) * 0.3
-    - Math.min(maxAnnualizedDiff, 300) * 0.15
-    - Math.min(tradeDiff, 200) * 0.25;
-  const recommendationTier = validationStatus === "watching" ? "观察中"
-    : (worstClosed >= 10 && worstExpectancyPct >= 2 && worstPayoff >= 1.2 && totalTrades >= 6) ? "优先"
-      : (worstClosed >= 10 && worstExpectancyPct > 0 && totalTrades >= 6) ? "可用"
-        : "谨慎";
-  return { totalTrades, worstYearReturn, avgYearReturn, maxAnnualizedDiff, tradeDiff, validationStatus, recommendationScore, recommendationTier };
+  return ModelRecommendation.buildModelRecommendation({
+    totalTrades: Number.isFinite(totalTestTrades) ? totalTestTrades : undefined,
+    year1AnnualizedReturn: model.testYear1AnnualizedReturn,
+    year2AnnualizedReturn: model.testYear2AnnualizedReturn,
+    year1Trades: model.testYear1Trades,
+    year2Trades: model.testYear2Trades,
+    annualizedDiffYear1: model.annualizedDiffYear1,
+    annualizedDiffYear2: model.annualizedDiffYear2,
+    validationStatus: model.validationStatus
+      || (model.dailyValidation && model.dailyValidation.status)
+      || (model.reachedTarget ? "valid" : "invalid"),
+    year1BuyExpectancyPct: model.testYear1BuyExpectancyPct,
+    year2BuyExpectancyPct: model.testYear2BuyExpectancyPct,
+    year1BuyPayoffRatio: model.testYear1BuyPayoffRatio,
+    year2BuyPayoffRatio: model.testYear2BuyPayoffRatio,
+    year1BuyClosedCount: model.testYear1BuyClosedCount,
+    year2BuyClosedCount: model.testYear2BuyClosedCount,
+  });
 }
 
 function renderMyModelDailyValidationCell(model) {

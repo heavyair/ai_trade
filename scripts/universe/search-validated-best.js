@@ -45,7 +45,10 @@ const getArgString = (name) => {
   const found = args.find((a) => a.startsWith(`--${name}=`));
   return found ? found.split("=").slice(1).join("=") : "";
 };
-const TARGET_PERCENT = getArg("targetPercent", 50);
+// 收益兜底线（原来是主门槛，现已降级——见 MIN_EXPECTANCY_PERCENT 的注释）。实测有每笔边际
+// 优势的模型年化自然就上去了：新标准下 90 条的较差年年化中位数 74%，加 20% 底线只砍掉 3 条，
+// 所以这里只是挡掉"边际优势真实但绝对收益太低、不值得占用资金"的极端情况。
+const TARGET_PERCENT = getArg("targetPercent", 20);
 // New gate (on top of TARGET_PERCENT): a model's annualized return for a given year must ALSO
 // clear this fraction of that SAME STOCK's own annualized upside deviation for that year — see
 // scripts/shared/volatility.js's header comment for why this is a volatility-scaled bar rather
@@ -65,6 +68,13 @@ const MIN_UPSIDE_GATE_ROWS = 30;
 // percentage-point margin, so a stock with a small buy-hold drawdown (little room to begin with)
 // isn't given the same absolute slack as one with a large buy-hold drawdown.
 const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent", 5));
+// 达标的首要门槛：每笔的边际优势，而不是年化。年化是账户层面的复利结果，会被仓位大小放大，
+// 也无法区分"每笔都有优势"和"碰巧几笔大的赚回来"。实测 706 条候选里，按老标准达标的 280 条
+// 中有 66% 经不起每笔边际检验，同时有 26 条有真实边际优势的因为年化没到 50% 被误杀。
+// 阈值是拿真实数据试出来的：(10单/1.5%/1.2) 全池出 90 条，比原来的 280 条严格但不枯竭。
+const MIN_CLOSED_BUYS = Math.max(0, Math.round(getArg("minClosedBuys", 10)));
+const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
+const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
 const ATTEMPTS_PER_SYMBOL = Math.max(1, getArg("attemptsPerSymbol", 60));
 const MAX_ATTEMPTS = Math.max(1, getArg("maxAttempts", 400));
 const CANDIDATES_PER_SYMBOL = Math.max(1, getArg("candidates", 400));
@@ -219,7 +229,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minClosedBuys=${MIN_CLOSED_BUYS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -469,16 +479,35 @@ async function main() {
         // is treated as passing.
         const passesDrawdownYear1 = testBuyHoldDD[0] !== null && scoredYear1.maxDrawdown < testBuyHoldDD[0] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
         const passesDrawdownYear2 = testBuyHoldDD[1] !== null && scoredYear2.maxDrawdown < testBuyHoldDD[1] * (1 + DRAWDOWN_TOLERANCE_PERCENT / 100);
+        // 每笔边际优势：两个验证年各自独立判定，不取平均——跟整套代码"看最差情况"的原则一致。
+        const buyWin1 = engine.buildBuyWinStats(scoredYear1.trades);
+        const buyWin2 = engine.buildBuyWinStats(scoredYear2.trades);
+        const worstExpectancyPct = Math.min(
+          buyWin1.expectancyPct === null ? -Infinity : buyWin1.expectancyPct,
+          buyWin2.expectancyPct === null ? -Infinity : buyWin2.expectancyPct
+        );
+        const worstPayoffRatio = Math.min(
+          buyWin1.payoffRatio === null ? Infinity : buyWin1.payoffRatio,
+          buyWin2.payoffRatio === null ? Infinity : buyWin2.payoffRatio
+        );
+        const worstClosedBuys = Math.min(buyWin1.closedBuys, buyWin2.closedBuys);
+        // 样本不足直接不算达标：2 单 100% 没有统计意义。盈亏比为 null 表示该年没有亏损单
+        // （除数为 0），那是好事不是缺陷，上面用 Infinity 让它不卡门槛。
+        const passesSample = worstClosedBuys >= MIN_CLOSED_BUYS;
+        const passesExpectancy = worstExpectancyPct >= MIN_EXPECTANCY_PERCENT;
+        const passesPayoff = worstPayoffRatio >= MIN_PAYOFF_RATIO;
         const reachedTarget = passesTrainUpsideGate && passesTrainDrawdownGate
+          && passesSample && passesExpectancy && passesPayoff
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${worstClosedBuys}单)`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return {
           model, best, trainAnnualized, trainYearBreakdown,
           passesTrainUpsideGate, passesTrainDrawdownGate,
           year1Annualized, year2Annualized, worstTestAnnualized,
           scoredYear1, scoredYear2, reachedTarget, usedPriorExamples,
+          buyWin1, buyWin2, worstExpectancyPct, worstPayoffRatio, worstClosedBuys,
         };
       });
 
@@ -494,10 +523,12 @@ async function main() {
       // Every candidate that reached target gets saved (not just one "best" pick). If NONE
       // reached target, fall back to saving just the single best-by-worst-year attempt (as
       // before) so "继续寻找" progress tracking still shows how close this symbol got.
+      // 回退选择也改用"最差年每买单期望"而不是最差年年化——否则达标标准换了口径、回退路径
+      // 却还在按旧口径挑模型，"继续寻找"的进度会指向错误的方向。
       const toSave = passing.length > 0
         ? passing
         : (validated.length > 0
-          ? [validated.reduce((a, b) => (b.worstTestAnnualized > a.worstTestAnnualized ? b : a), validated[0])]
+          ? [validated.reduce((a, b) => (b.worstExpectancyPct > a.worstExpectancyPct ? b : a), validated[0])]
           : []);
       toSave.forEach((entry) => results.push({ symbol: symbolEntry.code, ...entry }));
 
