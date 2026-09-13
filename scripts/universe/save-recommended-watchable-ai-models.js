@@ -195,27 +195,38 @@ function buildValidationBreakdown(allRows, config, row) {
   }));
 }
 
+// 训练年允许几年不达标，跟 search-validated-best.js 的 MAX_FAILING_TRAIN_YEARS 保持一致。
+// 实测依据见那个文件的注释：要求四个训练年全部通过，会把最终能达标的模型挡在门外。
+// 这里若不同步放宽，按新标准搜出来的模型会存进库却在这个脚本里被过滤掉，永远不会被自动
+// 存成"推荐盯盘"模型。验证年不用这个容忍度，仍要求全部通过——达标标准没有变。
+const TRAIN_YEAR_FAILURE_TOLERANCE = 1;
+
+function yearPasses(year, { requireTarget, targetPercent }) {
+  const annualized = Number(year && year.annualizedReturn);
+  if (!Number.isFinite(annualized)) return false;
+  if (requireTarget && annualized < targetPercent) return false;
+  if ((Number(year.rows) || 0) < MIN_UPSIDE_GATE_ROWS) return false;
+  if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
+  const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
+  if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
+  const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
+  const maxDrawdown = Number(year.maxDrawdown);
+  if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
+  if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
+  if (year.passesTargetGate === false) return false;
+  return true;
+}
+
 function yearBreakdownPasses(years, options = {}) {
   const visible = Array.isArray(years) ? years : [];
   const minYears = Number(options.minYears) || 1;
   const targetPercent = Number(options.targetPercent) || 50;
   const requireTarget = Boolean(options.requireTarget);
+  const maxFailingYears = Number(options.maxFailingYears) || 0;
   if (visible.length < minYears) return false;
-  return visible.slice(0, minYears).every((year) => {
-    const annualized = Number(year.annualizedReturn);
-    if (!Number.isFinite(annualized)) return false;
-    if (requireTarget && annualized < targetPercent) return false;
-    if ((Number(year.rows) || 0) < MIN_UPSIDE_GATE_ROWS) return false;
-    if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
-    const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
-    if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
-    const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
-    const maxDrawdown = Number(year.maxDrawdown);
-    if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
-    if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
-    if (year.passesTargetGate === false) return false;
-    return true;
-  });
+  const failing = visible.slice(0, minYears)
+    .filter((year) => !yearPasses(year, { requireTarget, targetPercent }));
+  return failing.length <= maxFailingYears;
 }
 
 // 这个脚本决定哪些扫描结果被自动存成"推荐盯盘"模型，所以它用的评分必须跟界面上显示的是同一个
@@ -344,7 +355,7 @@ async function main() {
         const train = buildTrainBreakdown(allRows, config, row);
         const validation = buildValidationBreakdown(allRows, config, row);
         const targetPercent = Number(row.target_percent) || 50;
-        if (!yearBreakdownPasses(train, { minYears: 4 }) || !yearBreakdownPasses(validation, { requireTarget: true, targetPercent, minYears: 2 })) {
+        if (!yearBreakdownPasses(train, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE }) || !yearBreakdownPasses(validation, { requireTarget: true, targetPercent, minYears: 2 })) {
           rejected += 1;
           continue;
         }

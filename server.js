@@ -2449,24 +2449,41 @@ async function resolveScanTrainYearBreakdown(row, rowsForSymbol = null) {
   }
 }
 
-function scanYearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1 } = {}) {
+// maxFailingYears：允许多少个年份不达标（默认 0 = 全部必须通过）。
+// 训练年的调用点传 1，跟 search-validated-best.js 的 MAX_FAILING_TRAIN_YEARS 保持一致——
+// 那边实测确认四年全过的要求会把最终能达标的模型挡在门外（110 次尝试里 3 个达标模型全部
+// 来自"有一个训练年没过"的区域，而"四年全过"那组 2 个候选 0 个达标）。这里若不同步放宽，
+// 新标准搜出来的模型会存进库却在"推荐盯盘"列表里看不见。
+// 验证年的调用点【不放宽】，仍然要求全部通过——达标标准没有变。
+// 训练年允许几年不达标。跟 search-validated-best.js 的 MAX_FAILING_TRAIN_YEARS 默认值一致：
+// 那边实测确认"四个训练年必须全过"会把最终能达标的模型挡在门外（110 次尝试里 3 个达标模型
+// 全部来自"有一个训练年没过"的区域，而"四年全过"那组 2 个候选 0 个达标）。这里若不同步，
+// 按新标准搜出来的模型会存进库却在"推荐盯盘"等列表里被过滤掉、看不见。
+// 验证年的调用点不用这个容忍度，仍要求全部通过——达标标准没有变。
+const TRAIN_YEAR_FAILURE_TOLERANCE = 1;
+
+function scanYearPasses(year, { requireTarget, targetPercent }) {
+  if (!year || year.annualizedReturn === null || year.annualizedReturn === undefined) return false;
+  if ((Number(year.rows) || 0) < REVALIDATE_MIN_UPSIDE_GATE_ROWS) return false;
+  const annualized = Number(year.annualizedReturn);
+  if (!Number.isFinite(annualized)) return false;
+  if (requireTarget && annualized < targetPercent) return false;
+  if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
+  const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
+  if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
+  const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
+  const maxDrawdown = Number(year.maxDrawdown);
+  if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
+  if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
+  if (year.passesTargetGate === false) return false;
+  return true;
+}
+
+function scanYearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1, maxFailingYears = 0 } = {}) {
   if (!Array.isArray(years) || years.length < minYears) return false;
-  return years.slice(0, minYears).every((year) => {
-    if (!year || year.annualizedReturn === null || year.annualizedReturn === undefined) return false;
-    if ((Number(year.rows) || 0) < REVALIDATE_MIN_UPSIDE_GATE_ROWS) return false;
-    const annualized = Number(year.annualizedReturn);
-    if (!Number.isFinite(annualized)) return false;
-    if (requireTarget && annualized < targetPercent) return false;
-    if (year.requiredAnnualizedReturn === null || year.requiredAnnualizedReturn === undefined) return false;
-    const requiredAnnualizedReturn = Number(year.requiredAnnualizedReturn);
-    if (!Number.isFinite(requiredAnnualizedReturn) || annualized < requiredAnnualizedReturn) return false;
-    const allowedMaxDrawdown = Number(year.allowedMaxDrawdown);
-    const maxDrawdown = Number(year.maxDrawdown);
-    if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
-    if (year.passesUpsideGate === false || year.passesDrawdownGate === false) return false;
-    if (year.passesTargetGate === false) return false;
-    return true;
-  });
+  const failing = years.slice(0, minYears)
+    .filter((year) => !scanYearPasses(year, { requireTarget, targetPercent }));
+  return failing.length <= maxFailingYears;
 }
 
 async function resolveScanValidationYearBreakdown(row, rowsForSymbol = null) {
@@ -3472,7 +3489,7 @@ async function handleAdminWatchableAiModelsApi(req, res, requestUrl) {
       const trainYearBreakdown = await resolveScanTrainYearBreakdown(row, rowsForSymbol);
       const validationYearBreakdown = await resolveScanValidationYearBreakdown(row, rowsForSymbol);
       const targetPercent = Number(row.target_percent) || 50;
-      if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4 })) continue;
+      if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })) continue;
       if (!scanYearBreakdownPasses(validationYearBreakdown, { requireTarget: true, targetPercent, minYears: 2 })) continue;
       models.push({
         id: row.id,
@@ -3645,7 +3662,7 @@ async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
           const trainYearBreakdown = await resolveScanTrainYearBreakdown(row, rowsForSymbol);
           const validationYearBreakdown = await resolveScanValidationYearBreakdown(row, rowsForSymbol);
           const targetPercent = Number(row.target_percent) || 50;
-          if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4 })) {
+          if (!scanYearBreakdownPasses(trainYearBreakdown, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })) {
             failed.push({ id: row.id, label: row.preset_label, reason: "训练逐年标准不达标" });
             continue;
           }
@@ -7248,7 +7265,7 @@ async function handleModelListApi(req, res) {
     )).filter((model) => {
       const validation = model.validation;
       if (!validation || !validation.reachedTarget) return false;
-      if (!scanYearBreakdownPasses(validation.trainYearBreakdown, { minYears: 4 })) return false;
+      if (!scanYearBreakdownPasses(validation.trainYearBreakdown, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })) return false;
       return scanYearBreakdownPasses(validation.validationYearBreakdown, {
         requireTarget: true,
         targetPercent: validation.targetPercent,
@@ -7411,7 +7428,7 @@ async function handleMyModelsApi(req, res) {
       watchTargets: row.watch_targets || "",
     })).filter((preset) => {
       if (!preset.reachedTarget) return false;
-      if (!scanYearBreakdownPasses(preset.trainYearBreakdown, { minYears: 4 })) return false;
+      if (!scanYearBreakdownPasses(preset.trainYearBreakdown, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })) return false;
       return scanYearBreakdownPasses(preset.validationYearBreakdown, {
         requireTarget: true,
         targetPercent: preset.targetPercent,

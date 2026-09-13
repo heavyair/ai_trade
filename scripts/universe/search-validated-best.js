@@ -64,17 +64,26 @@ const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30
 // is skipped for that specific year (treated as unevaluable, not as a pass or a fail) rather than
 // let a handful of days decide whether an otherwise-solid model gets thrown out.
 const MIN_UPSIDE_GATE_ROWS = 30;
-// 允许多少个训练年没过上行波动门槛（0 = 全部年份都必须过，历史行为）。
+// 允许多少个训练年没过上行波动门槛。
 //
-// 加这个开关是因为实测发现这道门槛是整个搜索的主瓶颈，而且没有预测力：
-//   · 失败归因：一次 4 标的×12 轮的搜索里，31 次尝试有 28 次(90%)死在这道门槛上，
-//     跑输买入持有 0 次、回撤门槛 0 次、买单指标门槛 0 次——预算几乎全耗在这一道上。
-//   · 预测力检验：把 272 条已保存结果按"最勉强的那个训练年超过门槛的倍数"分箱，
-//     刚好过线(1~1.5倍)的验证达标率 52.0%，而远超门槛(4~8倍)的只有 40.0%，
-//     1.5~2.5 倍 36.8%、2.5~4 倍 38.6%。倍数越高达标率并不越高，甚至略微反向——
-//     跟"训练期期望过高反而预示过拟合"是同一个规律。
-// 也就是说这道门槛杀掉九成尝试却没换来质量。具体放宽到什么程度由对照实验定，见下方提交记录。
-const MAX_FAILING_TRAIN_YEARS = Math.max(0, Math.round(getArg("maxFailingTrainYears", 0)));
+// 【实测结论：默认 1】原先是 0（四个训练年必须全部通过），这道门槛因此成为整个搜索的主瓶颈，
+// 而且它拒绝掉的恰恰是最终能达标的那批模型。五条证据互相印证：
+//
+// 1. 归因：4 标的 × 12 轮的搜索里，31 次尝试有 28 次(90%)死在这道门槛上；跑输买入持有 0 次、
+//    回撤门槛 0 次、买单指标门槛 0 次——预算几乎全耗在这一道上。
+// 2. 预测力：把 272 条已保存结果按"最勉强的那个训练年超过门槛的倍数"分箱，刚好过线(1~1.5倍)
+//    的验证达标率 52.0%，远超门槛(4~8倍)的只有 40.0%。倍数越高达标率并不越高，甚至略微反向
+//    ——与"训练期期望过高反而预示过拟合"是同一个规律。
+// 3. 吞吐：同一批标的、同样的 AI 调用数，容忍 0 年时只有 2 个候选进入验证，容忍 1 年有 19 个。
+// 4. 归属（最关键，同一次运行内部分组，不受标的难易干扰）：10 标的 × 12 轮共 110 次尝试，
+//    23 个候选进入验证——其中"本来就能通过严格门槛"的只有 2 个且 0 个达标，"只因放宽才进来"
+//    的有 21 个、达标 3 个(14.3%)。三个达标模型全部来自现行门槛会拒绝的区域。
+// 5. 边界：容忍 2 年不再增益（28 个进入验证、0 个达标），所以不是越松越好，1 是拐点。
+//
+// 放宽的代价只是更多候选进入验证阶段（两次回测 + 一次入库），而验证期的达标标准完全没动
+// ——期望≥1.5%、盈亏比≥1.2、样本量、年化门槛全部照旧，所以"达标"的含义没有被稀释。
+// 实测验证阶段的主要淘汰原因是"每买单期望不足"(47 条记录里 42 条)，质量关口仍然有效。
+const MAX_FAILING_TRAIN_YEARS = Math.max(0, Math.round(getArg("maxFailingTrainYears", 1)));
 // Per-year drawdown gate tolerance: a model's max drawdown in a given year must be smaller than
 // buy-hold's OWN drawdown in that same year, scaled up by this percentage — e.g. 5 means the
 // model may draw down up to buy-hold's drawdown × 1.05. Proportional rather than a flat
@@ -645,6 +654,10 @@ async function main() {
           // 之前直接在那里引用 isRefineAttempt 导致 ReferenceError，而且只在"有候选进入
           // 验证"时才触发——恰恰是最稀有的路径，冒烟测试全都没碰到，却让整轮实验的结果作废。
           isRefineAttempt,
+          // 该候选在训练期有几年没过上行波动门槛：0 = 本来就能通过严格门槛，
+          // >0 = 只因放宽才进来的。用于在同一次运行内部比较两组的验证达标率，
+          // 从而判断这道门槛是否在拒绝本该通过的模型（组内对比不额外花 AI 调用）。
+          failingTrainYearCount: failingTrainYears.length,
         });
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
@@ -657,7 +670,7 @@ async function main() {
       // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
       // gets checked, not just whichever happened to be found first or scored best on train.
       console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
-      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples, isRefineAttempt }, i) => {
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples, isRefineAttempt, failingTrainYearCount }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
@@ -707,7 +720,7 @@ async function main() {
           && passesSample && passesExpectancy && passesPayoff
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [${isRefineAttempt ? "refine" : "explore"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [${isRefineAttempt ? "refine" : "explore"}][训练年未过门槛数=${failingTrainYearCount}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return {
           model, best, trainAnnualized, trainYearBreakdown,

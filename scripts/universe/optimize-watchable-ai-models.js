@@ -177,9 +177,19 @@ function buildBreakdowns(allRows, config, row) {
   return { train, validation, trainRows, validationRows };
 }
 
-function yearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1 } = {}) {
+// 训练年允许几年不达标，跟 search-validated-best.js 的 MAX_FAILING_TRAIN_YEARS 保持一致。
+// 实测依据见那个文件的注释：四年全过的要求会把最终能达标的模型挡在门外。
+// 验证年不用这个容忍度，仍要求全部通过——达标标准没有变。
+const TRAIN_YEAR_FAILURE_TOLERANCE = 1;
+
+function yearBreakdownPasses(years, { requireTarget = false, targetPercent = 50, minYears = 1, maxFailingYears = 0 } = {}) {
   if (!Array.isArray(years) || years.length < minYears) return false;
-  return years.slice(0, minYears).every((year) => {
+  const failing = years.slice(0, minYears).filter((year) => !yearPasses(year, { requireTarget, targetPercent }));
+  return failing.length <= maxFailingYears;
+}
+
+function yearPasses(year, { requireTarget, targetPercent }) {
+  {
     const annualized = Number(year.annualizedReturn);
     if (!Number.isFinite(annualized)) return false;
     if (requireTarget && annualized < targetPercent) return false;
@@ -191,7 +201,7 @@ function yearBreakdownPasses(years, { requireTarget = false, targetPercent = 50,
     const maxDrawdown = Number(year.maxDrawdown);
     if (!Number.isFinite(allowedMaxDrawdown) || !Number.isFinite(maxDrawdown) || !(maxDrawdown < allowedMaxDrawdown)) return false;
     return year.passesUpsideGate !== false && year.passesDrawdownGate !== false && year.passesTargetGate !== false;
-  });
+  }
 }
 
 function recommendationScore(row) {
@@ -501,7 +511,7 @@ async function main() {
         const allRows = await loadRowsForSymbol(pool, row.symbol, row.market);
         const originalBreakdowns = buildBreakdowns(allRows, originalConfig, row);
         const targetPercent = Number(row.target_percent) || 50;
-        const originalIsEligible = yearBreakdownPasses(originalBreakdowns.train, { minYears: 4 })
+        const originalIsEligible = yearBreakdownPasses(originalBreakdowns.train, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })
           && yearBreakdownPasses(originalBreakdowns.validation, { requireTarget: true, targetPercent, minYears: 2 });
         if (!originalIsEligible) {
           report.rejected.push({ id: row.id, numericId: row.numeric_id, symbol: row.symbol, strategyType, reason: "current row no longer passes strict watchable filters" });
@@ -525,7 +535,7 @@ async function main() {
 
         for (const config of candidateConfigs) {
           const breakdowns = buildBreakdowns(allRows, config, row);
-          if (!yearBreakdownPasses(breakdowns.train, { minYears: 4 })) continue;
+          if (!yearBreakdownPasses(breakdowns.train, { minYears: 4, maxFailingYears: TRAIN_YEAR_FAILURE_TOLERANCE })) continue;
           if (!yearBreakdownPasses(breakdowns.validation, { requireTarget: true, targetPercent, minYears: 2 })) continue;
           passedVariants += 1;
           const metrics = buildMetricsFromBreakdowns(row, config, breakdowns, candidateConfigs.length);
