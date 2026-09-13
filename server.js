@@ -3593,7 +3593,10 @@ function scanMarketToWatchMarket(market, symbol) {
   const normalized = String(market || "").trim().toUpperCase();
   if (normalized === "US") return "US";
   if (normalized === "CN" || normalized === "0" || normalized === "1") return "CN";
-  return isChinaCode(String(symbol || "").trim()) ? "CN" : "US";
+  const code = String(symbol || "").trim();
+  if (isChinaCode(code)) return "CN";
+  if (isHkCode(code)) return "HK";
+  return "US";
 }
 
 async function handleAdminWatchableAiModelsSaveSelectedApi(req, res) {
@@ -5575,20 +5578,40 @@ function normalizeHkCode(code) {
   return digits.replace(/^0+/, "").padStart(4, "0");
 }
 
+// 4~5 位纯数字在这套系统里只可能是港股：A 股代码恒为 6 位，美股 ticker 必须字母开头
+// （见下面 normalizeCode 的 ticker 正则）。所以不需要调用方显式传 market 也能判定。
+function isHkCode(code) {
+  return /^\d{4,5}$/.test(String(code || "").trim());
+}
+
 function normalizeCode(code) {
   const value = String(code || "").trim();
   if (/^\d{6}$/.test(value)) {
     return value;
   }
+  // 港股统一补零成 4 位。以前这里直接抛错，于是港股模型的「查看历史交易记录」「重新验证」
+  // 「建立盯盘」全都报「股票代码必须是 6 位 A 股代码」——港股行情 2026-09 已入库，
+  // 卡住的只是这道代码校验。
+  if (isHkCode(value)) {
+    return normalizeHkCode(value);
+  }
   const ticker = value.toUpperCase();
   if (/^[A-Z][A-Z0-9.-]{0,15}$/.test(ticker)) {
     return ticker;
   }
-  throw new Error("股票代码必须是 6 位 A 股代码，或美股 ticker，例如 NET、QQQ、AMD。");
+  throw new Error("股票代码必须是 6 位 A 股代码、4~5 位港股代码，或美股 ticker，例如 NET、QQQ、0700。");
 }
 
 function isChinaCode(code) {
   return /^\d{6}$/.test(code);
+}
+
+// 代码 -> 库里的 market 值（'0'深市 / '1'沪市 / 'HK' / 'US'）。原本各处都是
+// `isChinaCode(code) ? inferMarket(code) : "US"` 这个二分写法，港股会被错判成美股。
+function marketForCode(code) {
+  if (isChinaCode(code)) return inferMarket(code);
+  if (isHkCode(code)) return "HK";
+  return "US";
 }
 
 function normalizeDate(value, fieldName) {
@@ -6071,7 +6094,7 @@ async function handleFundamentalsApi(req, res, requestUrl) {
       sendJson(res, 400, { error: "缺少股票代码。" });
       return;
     }
-    const market = isChinaCode(symbol) ? inferMarket(symbol) : "US";
+    const market = marketForCode(symbol);
     await ensureDbReady();
     const result = await ensureFreshFundamentals(symbol, market);
     const stored = await dbPool.query(
@@ -6536,7 +6559,7 @@ async function tryLoadCachedKlines({ code, market, start, end }) {
 
 async function fetchKlines({ code, start, end, market: explicitMarket = "" }) {
   // 显式 market 优先：港股代码是 4 位数字，按代码推断会被误判成深市（0 开头）。
-  const market = explicitMarket === "HK" ? "HK" : (isChinaCode(code) ? inferMarket(code) : "US");
+  const market = explicitMarket === "HK" ? "HK" : marketForCode(code);
 
   const cached = await tryLoadCachedKlines({ code, market, start, end }).catch((error) => {
     console.warn(`Klines cache check skipped for ${code}: ${error.message}`);
@@ -6682,7 +6705,7 @@ async function handlePresetRevalidateApi(req, res) {
       : 5;
 
     await ensureDbReady();
-    const market = isChinaCode(symbol) ? inferMarket(symbol) : "US";
+    const market = marketForCode(symbol);
 
     // Same staleness check as scripts/universe/ensure-fresh-data.js, just in-process — server.js
     // IS the /api/klines endpoint, so there's no need to hop out over HTTP the way a standalone
@@ -7883,7 +7906,7 @@ async function handlePublicModelsApi(req, res) {
     const filtered = result.rows.filter((row) => {
       const meta = row.meta && typeof row.meta === "object" ? row.meta : {};
       const symbol = String(meta.targetSymbol || "");
-      const rowMarket = isChinaCode(symbol) ? "CN" : "US";
+      const rowMarket = isChinaCode(symbol) ? "CN" : (isHkCode(symbol) ? "HK" : "US");
       return rowMarket === market;
     });
     const viewerUserId = currentUser ? userIdForEmail(currentUser.email) : null;
@@ -8827,9 +8850,12 @@ async function handleBrokerAgentExecutionApi(req, res) {
 async function handleApi(req, res, requestUrl) {
   try {
     const requestedMarket = String(requestUrl.searchParams.get("market") || "").trim().toUpperCase();
-    const code = requestedMarket === "HK"
-      ? normalizeHkCode(requestUrl.searchParams.get("code"))
-      : normalizeCode(requestUrl.searchParams.get("code") || "513100");
+    const rawCode = requestUrl.searchParams.get("code") || "513100";
+    // 不传 market 时按代码形态判定港股——前端有 4 个地方调这个接口（回放、盯盘小图、
+    // 波浪可视化、历史模拟），原来都没传 market，港股模型一律取不到数据。代码形态是
+    // 无歧义的（见 isHkCode），所以在服务端统一判定，比逐个调用点补参数可靠。
+    const isHk = requestedMarket === "HK" || (!requestedMarket && isHkCode(rawCode));
+    const code = isHk ? normalizeHkCode(rawCode) : normalizeCode(rawCode);
     const start = normalizeDate(requestUrl.searchParams.get("start"), "开始日期");
     const end = normalizeDate(requestUrl.searchParams.get("end"), "结束日期");
 
@@ -8837,7 +8863,7 @@ async function handleApi(req, res, requestUrl) {
       throw new Error("开始日期不能晚于结束日期。");
     }
 
-    const result = await fetchKlines({ code, start, end, market: requestedMarket });
+    const result = await fetchKlines({ code, start, end, market: isHk ? "HK" : requestedMarket });
     // Resolve (and, for a first-time anonymous visitor, cookie-set) the owner BEFORE sending
     // the response — Set-Cookie has to go out with these response headers, not after.
     const ownerKey = await resolveSymbolHistoryOwnerKey(req, res);

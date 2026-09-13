@@ -3353,9 +3353,14 @@ if (modelActionReloadSimButton) {
 }
 
 // Same code=>market convention used server-side for /api/klines and inferMarket()
-// (scripts/shared/universe-loader.js) — 6 digits = A股, anything else = 美股.
+// (scripts/shared/universe-loader.js) — 6 digits = A股, 4~5 位纯数字 = 港股（0700、9988），
+// anything else = 美股。港股这一支不能省：不特判的话 2388 会被当成美股，建盯盘/扫描市场
+// 都会落到错误的市场上。
 function inferMarketFromSymbol(symbol) {
-  return /^\d{6}$/.test(String(symbol || "").trim()) ? "CN" : "US";
+  const value = String(symbol || "").trim();
+  if (/^\d{6}$/.test(value)) return "CN";
+  if (/^\d{4,5}$/.test(value)) return "HK";
+  return "US";
 }
 
 // 建立盯盘/扫描市场都要求 presetId 是 strategy_presets 里的真实一行——AI候选模型（只存在于
