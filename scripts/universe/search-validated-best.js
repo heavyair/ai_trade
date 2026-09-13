@@ -312,7 +312,19 @@ async function main() {
   await ensureResultsTable(pool);
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
-  const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
+  // 名称从 symbols 表取，取不到才退回用代码顶替。以前这里无条件写 name: code，结果所有
+  // 美股/港股模型在列表里都显示成「NVDA NVDA」「0005 0005」——A股看不出来只是因为那批
+  // 模型的名称是别的路径补上的。这个字段只影响显示，但每个列表、每份报告都会看到。
+  const nameRows = await pool.query(
+    `SELECT upper(symbol) AS code, name FROM symbols WHERE upper(symbol) = ANY($1) AND name <> ''`,
+    [SYMBOLS_FILTER.map((code) => String(code).toUpperCase())]
+  );
+  const nameByCode = new Map(nameRows.rows.map((row) => [row.code, row.name]));
+  const symbols = SYMBOLS_FILTER.map((code) => ({
+    code,
+    market: inferMarket(code),
+    name: nameByCode.get(String(code).toUpperCase()) || code,
+  }));
   console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} profileDims=${getArgString("profileDims") || "full"} rotation=${ROTATION_MODE} maxFailingTrainYears=${MAX_FAILING_TRAIN_YEARS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
