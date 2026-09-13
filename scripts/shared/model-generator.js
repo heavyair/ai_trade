@@ -101,13 +101,29 @@ function extractDeepSeekText(payload) {
   return message && typeof message.content === "string" ? message.content : "";
 }
 
-// temperature (optional): left unset (provider default, fairly high) for
-// generateModelFromDataProfile, where attempt-to-attempt variety is the whole point of a
-// multi-attempt search. generateModelFromDescription passes a low value instead — that call is
-// translating an explicit user description as faithfully as possible, not exploring design
-// space, so high-temperature run-to-run variance there just means the same sentence sometimes
-// gets one clause silently dropped and sometimes doesn't, which is exactly the failure mode a
-// literal-translation task should minimize rather than embrace.
+// temperature (optional): left unset (provider default) for generateModelFromDataProfile, where
+// attempt-to-attempt variety is the whole point of a multi-attempt search.
+// generateModelFromDescription passes a low value instead — that call is translating an explicit
+// user description as faithfully as possible, not exploring design space, so high-temperature
+// run-to-run variance there just means the same sentence sometimes gets one clause silently
+// dropped and sometimes doesn't, which is exactly the failure mode a literal-translation task
+// should minimize rather than embrace.
+//
+// 【已实测，不要再调高】"升温能换来更多样的模型"这个直觉是错的。用
+// scripts/universe/experiment-temperature.js 在 3 个标的上各跑 18 次（同一批画像、同一个策略
+// 类型轮转序列，只改温度）：
+//
+//   温度      可用率   有条件被丢弃   不同配置   跑赢买入持有   训练期期望中位数
+//   default   88.9%    0             18/18      93.8%          13.65%
+//   0.7       100%     0             18/18      94.4%           9.81%
+//   1.0       100%     1             18/18      88.9%           6.57%
+//   1.3       88.9%    5             16/16      93.8%           4.82%
+//
+// 关键在第三列：【所有温度下多样性都是 100%】——每一次生成的配置都互不相同，默认温度也一样。
+// 多样性本来就已经饱和，升温没有可争取的空间，代价却是真实的：期望中位数四档单调下滑
+// (13.65→4.82)，结构崩坏（字段名/取值不合法被丢弃）同步从 0 升到 5。
+// 样本量不大（每档 18 次），但两个指标都是四档单调，且"温度越高越容易写出不合法 JSON"有清楚
+// 的机制解释。要推翻这个结论，请重新跑那个实验脚本拿数据，不要凭直觉改。
 // DeepSeek 的 /chat/completions 只支持 response_format:{type:"json_object"}（自由 JSON），
 // 没有 OpenAI 的 json_schema 那种 API 级结构约束。而生产环境只配了 DEEPSEEK_API_KEY，也就是说
 // 那份 schema 在生产链路上仅仅作为提示词文本存在，结构正确性零强制。
@@ -971,6 +987,9 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     userPrompt: prompt,
     schema,
     schemaName: "ai_trade_model",
+    // 不传则沿用服务商默认值（历史行为）。调用方可以传值做多样性调节，见 requestAiJsonModel
+    // 上方关于 temperature 的说明。
+    temperature: Number.isFinite(options.temperature) ? options.temperature : undefined,
   });
   if (!text) {
     const error = new Error("AI 没有返回模型内容。");
