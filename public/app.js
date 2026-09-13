@@ -3877,11 +3877,88 @@ function renderAiGeneratedPresetRow(p, options = {}) {
   `;
 }
 
+
+// ===== 模型列表的板块/市场标签筛选 =====
+//
+// 所有模型列表共用这一套：标签定义来自 /stock-tags.js（Node 侧的板块搜索用的是同一份，
+// 见 scripts/shared/sector-universe.js），标签从标的代码现算，模型本身不存板块字段——
+// 这样调整板块归类只改一个文件，不需要回填任何历史数据。
+//
+// 每个列表用自己的 listId 维护一套选中状态，互不干扰；重渲染回调在列表首次渲染时登记，
+// 点标签时直接调它，避免每个列表各写一份点击处理。
+const tagFilterState = new Map();
+const tagFilterRenderers = new Map();
+
+function getTagFilter(listId) {
+  if (!tagFilterState.has(listId)) tagFilterState.set(listId, new Set());
+  return tagFilterState.get(listId);
+}
+
+function registerTagFilterRenderer(listId, renderer) {
+  tagFilterRenderers.set(listId, renderer);
+}
+
+// 按当前选中的标签过滤。getCode 从列表项里取出标的代码——各个列表的字段名不一样
+// （targetSymbol / symbol），由调用方指定。
+function applyTagFilter(items, listId, getCode) {
+  const selected = [...getTagFilter(listId)];
+  if (selected.length === 0) return items;
+  return items.filter((item) => StockTags.matchesTags(getCode(item), selected));
+}
+
+// 筛选条。每个标签后面带上【当前数据里实际匹配的条数】——没有数据的标签一眼可见，
+// 免得用户点了一个空标签还以为是列表坏了。
+function renderTagFilterBar(items, listId, getCode) {
+  const selected = getTagFilter(listId);
+  const countFor = (tagId) => items.filter((item) => StockTags.matchesTags(getCode(item), [tagId])).length;
+  const chip = (tagId, label) => {
+    const count = countFor(tagId);
+    const active = selected.has(tagId);
+    const disabled = count === 0 && !active;
+    return `<button type="button" class="ghost-button model-tag-chip${active ? " active" : ""}"
+      data-tag-filter="${escapeHtml(tagId)}" data-tag-list="${escapeHtml(listId)}"
+      ${disabled ? "disabled" : ""}>${escapeHtml(label)} ${count}</button>`;
+  };
+  const markets = StockTags.MARKETS.map((m) => chip(m.id, m.label)).join("");
+  const sectors = StockTags.SECTORS.map((x) => chip(x.id, x.label)).join("");
+  const clear = selected.size > 0
+    ? `<button type="button" class="ghost-button" data-tag-filter="__clear__" data-tag-list="${escapeHtml(listId)}">清除筛选</button>`
+    : "";
+  return `<div class="model-tag-filter">
+      <span class="field-hint">市场</span>${markets}
+      <span class="field-hint">板块</span>${sectors}
+      ${clear}
+    </div>`;
+}
+
+if (document.body) {
+  document.body.addEventListener("click", (event) => {
+    const chip = event.target && event.target.closest ? event.target.closest("[data-tag-filter]") : null;
+    if (!chip) return;
+    const listId = chip.dataset.tagList;
+    const tag = chip.dataset.tagFilter;
+    const selected = getTagFilter(listId);
+    if (tag === "__clear__") selected.clear();
+    else if (selected.has(tag)) selected.delete(tag);
+    else selected.add(tag);
+    const renderer = tagFilterRenderers.get(listId);
+    if (renderer) renderer();
+  });
+}
+
 function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAttr, showStatus, showRecommendDiff, showShareSettings, showPublicActions, isOwner, isAiCandidate }) {
+  // sortAttr 各列表唯一（admin-validated-search-sort-key 等），直接拿来当标签筛选的 listId。
+  const listId = sortAttr || "ai-preset-table";
+  const getCode = (item) => item.targetSymbol;
+  const filterBar = renderTagFilterBar(presets, listId, getCode);
+  const filtered = applyTagFilter(presets, listId, getCode);
   if (presets.length === 0) {
     return '<div class="ranking-empty">还没有相关记录。</div>';
   }
-  const sorted = sortAiGeneratedRecords(presets, sortKey, sortDirection, showStatus);
+  if (filtered.length === 0) {
+    return `${filterBar}<div class="ranking-empty">当前筛选条件下没有模型。</div>`;
+  }
+  const sorted = sortAiGeneratedRecords(filtered, sortKey, sortDirection, showStatus);
   const rows = sorted.map((p) => renderAiGeneratedPresetRow(p, { showStatus, showRecommendDiff, showShareSettings, showPublicActions, isOwner, isAiCandidate })).join("");
   let columns = showStatus
     ? [{ key: "reachedTarget", label: "状态" }, ...ADMIN_AUTO_GENERATE_COLUMNS, { key: "lastRecheckedAt", label: "达标复查" }]
@@ -3896,6 +3973,7 @@ function renderAiGeneratedPresetTable(presets, { sortKey, sortDirection, sortAtt
   // 这样各面板既有的、按 class+属性选择器命中的排序点击处理器不会误把它当排序表头。
   const actionHeader = (showShareSettings || showPublicActions) ? "<th>操作</th>" : "";
   return `
+    ${filterBar}
     <table class="admin-ranking-table">
       <thead>
         <tr>${headerCells}${actionHeader}</tr>
@@ -4145,10 +4223,19 @@ function renderMyModelsToolbar(models) {
 }
 
 function renderMyModelsWatchableTable(models) {
-  const visible = Array.isArray(models) ? [...models] : [];
+  const all = Array.isArray(models) ? [...models] : [];
   const toolbar = renderMyModelsToolbar(Array.isArray(myModelsCache) ? myModelsCache : []);
-  if (visible.length === 0) {
+  // 已有的"市场"按钮是另一套（按 getMyModelMarket 分 CN/US），标签筛选在它之上再叠一层，
+  // 提供板块维度和 H股——两者是与的关系，都满足才显示。
+  registerTagFilterRenderer("my-models", () => renderMyModelsDialogList());
+  const getCode = (item) => item.targetSymbol;
+  const filterBar = renderTagFilterBar(all, "my-models", getCode);
+  const visible = applyTagFilter(all, "my-models", getCode);
+  if (all.length === 0) {
     return `${toolbar}<div class="ranking-empty">还没有相关记录。</div>`;
+  }
+  if (visible.length === 0) {
+    return `${toolbar}${filterBar}<div class="ranking-empty">当前筛选条件下没有模型。</div>`;
   }
   visible.sort((a, b) => {
     const ma = getWatchableRecommendation(a);
@@ -4161,6 +4248,7 @@ function renderMyModelsWatchableTable(models) {
   });
   return `
     ${toolbar}
+    ${filterBar}
     <div class="ranking-table-wrap">
       <table class="admin-ranking-table admin-watchable-ai-table">
         <thead>
@@ -4349,6 +4437,7 @@ function renderPublicModelsList() {
     publicModelsList.innerHTML = '<div class="ranking-empty">港股市场暂无数据源，这个分类先占位。</div>';
     return;
   }
+  registerTagFilterRenderer("public-models-sort-key", () => renderPublicModelsList());
   publicModelsList.innerHTML = renderAiGeneratedPresetTable(publicModelsCache, {
     sortKey: "testYear2AnnualizedReturn",
     sortDirection: "desc",
@@ -4490,6 +4579,7 @@ function renderAdminAutoGenerateList(payload) {
     if (presets.length === 0) {
       adminAutoGenerateList.innerHTML = '<div class="ranking-empty">还没有自动生成并保存的模型。</div>';
     } else {
+      registerTagFilterRenderer("admin-auto-generate-sort-key", () => renderAdminAutoGenerateList(adminAutoGenerateLastPayload));
       adminAutoGenerateList.innerHTML = renderAiGeneratedPresetTable(presets, {
         sortKey: adminAutoGenerateSortKey,
         sortDirection: adminAutoGenerateSortDirection,
@@ -4904,6 +4994,7 @@ function renderAdminValidatedSearchList(payload) {
         ? '<div class="ranking-empty">没有满足"两年都有真实交易+复查仍达标"的记录。</div>'
         : '<div class="ranking-empty">还没有搜索并保存的模型。</div>';
     } else {
+      registerTagFilterRenderer("admin-validated-search-sort-key", () => renderAdminValidatedSearchList(adminValidatedSearchLastPayload));
       adminValidatedSearchList.innerHTML = renderAiGeneratedPresetTable(presets, {
         sortKey: adminValidatedSearchSortKey,
         sortDirection: adminValidatedSearchSortDirection,
@@ -7614,7 +7705,16 @@ function renderAdminWatchableAiModels(payload) {
     adminWatchableAiList.innerHTML = '<div class="ranking-empty">没有满足条件的可建盯盘 AI 搜索模型。</div>';
     return;
   }
+  registerTagFilterRenderer("admin-watchable-ai", () => renderAdminWatchableAiModels(payload));
+  const watchableGetCode = (item) => item.targetSymbol;
+  const watchableFilterBar = renderTagFilterBar(models, "admin-watchable-ai", watchableGetCode);
+  const visibleModels = applyTagFilter(models, "admin-watchable-ai", watchableGetCode);
+  if (visibleModels.length === 0) {
+    adminWatchableAiList.innerHTML = `${watchableFilterBar}<div class="ranking-empty">当前筛选条件下没有模型。</div>`;
+    return;
+  }
   adminWatchableAiList.innerHTML = `
+    ${watchableFilterBar}
     <table class="admin-ranking-table admin-watchable-ai-table">
       <thead>
         <tr>
@@ -7632,7 +7732,7 @@ function renderAdminWatchableAiModels(payload) {
           <th>更新时间</th>
         </tr>
       </thead>
-      <tbody>${models.map(renderWatchableAiModelRow).join("")}</tbody>
+      <tbody>${visibleModels.map(renderWatchableAiModelRow).join("")}</tbody>
     </table>
   `;
 }

@@ -3965,3 +3965,35 @@ tbody tr:last-child td {
   background: rgba(194, 65, 59, 0.12);
   color: #c2413b;
 }
+
+/* 模型列表的板块/市场标签筛选条。各列表共用（见 app.js 的 renderTagFilterBar）。 */
+.model-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.model-tag-filter .field-hint {
+  margin-right: 2px;
+  white-space: nowrap;
+}
+/* 分组之间留白，让"市场"和"板块"两组一眼分得开 */
+.model-tag-filter .field-hint:not(:first-child) {
+  margin-left: 10px;
+}
+.model-tag-chip {
+  padding: 3px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.model-tag-chip.active {
+  background: var(--accent, #2f6feb);
+  border-color: var(--accent, #2f6feb);
+  color: #fff;
+}
+/* 该标签在当前数据里一条都没有——置灰但保留可见，用户能看出"这里确实没有"而不是列表坏了 */
+.model-tag-chip[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
