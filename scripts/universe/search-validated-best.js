@@ -75,7 +75,7 @@ const DRAWDOWN_TOLERANCE_PERCENT = Math.max(0, getArg("drawdownTolerancePercent"
 // 阈值是拿真实数据试出来的：(10单/1.5%/1.2) 全池出 90 条，比原来的 280 条严格但不枯竭。
 // 样本量按"整段历史合计 + 每年不断档"判，理由见 shared/buy-sample-gate.js。
 const MIN_TOTAL_CLOSED_BUYS = Math.max(0, Math.round(getArg("minTotalClosedBuys", 10)));
-const MIN_CLOSED_BUYS_PER_YEAR = Math.max(0, Math.round(getArg("minClosedBuysPerYear", 2)));
+const MIN_CLOSED_BUYS_PER_YEAR = Math.max(0, Math.round(getArg("minClosedBuysPerYear", 1)));
 const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
 const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
 // 训练阶段的早退门槛：跑赢买入持有之后、进入验证阶段之前，先用训练期自身的每笔统计筛一道。

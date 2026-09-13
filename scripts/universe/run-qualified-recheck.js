@@ -57,7 +57,7 @@ const TARGET_PERCENT = getArg("targetPercent", 50);
 // 跟 search-validated-best.js 的同名常量保持一致：复查和首次达标必须用同一把尺子。
 // 样本量按"整段历史合计 + 每年不断档"判，理由见 shared/buy-sample-gate.js 的注释。
 const MIN_TOTAL_CLOSED_BUYS = Math.max(0, Math.round(getArg("minTotalClosedBuys", 10)));
-const MIN_CLOSED_BUYS_PER_YEAR = Math.max(0, Math.round(getArg("minClosedBuysPerYear", 2)));
+const MIN_CLOSED_BUYS_PER_YEAR = Math.max(0, Math.round(getArg("minClosedBuysPerYear", 1)));
 const MIN_EXPECTANCY_PERCENT = getArg("minExpectancyPct", 1.5);
 const MIN_PAYOFF_RATIO = getArg("minPayoffRatio", 1.2);
 // Same gate and default as search-validated-best.js's UPSIDE_THRESHOLD_PERCENT — kept in sync so
