@@ -108,6 +108,32 @@ function extractDeepSeekText(payload) {
 // space, so high-temperature run-to-run variance there just means the same sentence sometimes
 // gets one clause silently dropped and sometimes doesn't, which is exactly the failure mode a
 // literal-translation task should minimize rather than embrace.
+// DeepSeek 的 /chat/completions 只支持 response_format:{type:"json_object"}（自由 JSON），
+// 没有 OpenAI 的 json_schema 那种 API 级结构约束。而生产环境只配了 DEEPSEEK_API_KEY，也就是说
+// 那份 schema 在生产链路上仅仅作为提示词文本存在，结构正确性零强制。
+//
+// 补救办法不是换参数（服务商不支持），而是解析后自己按 schema 校验一遍：顶层必填字段在不在、
+// 类型对不对、枚举值合不合法。不合格就抛错让调用方重试，而不是交给 normalizeGeneratedModel
+// 静默凑合——"凑合出一个能跑的模型"恰恰是最糟的结果，因为它会带着错误一路跑完回测并入库。
+function validateAgainstSchema(parsed, schema) {
+  const problems = [];
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return ["返回的不是 JSON 对象"];
+  }
+  for (const key of schema.required || []) {
+    if (parsed[key] === undefined || parsed[key] === null) problems.push(`缺少必填字段 ${key}`);
+  }
+  for (const [key, spec] of Object.entries(schema.properties || {})) {
+    const v = parsed[key];
+    if (v === undefined || v === null) continue;
+    const types = Array.isArray(spec.type) ? spec.type : [spec.type];
+    const actual = Array.isArray(v) ? "array" : typeof v;
+    if (!types.includes(actual)) problems.push(`字段 ${key} 应为 ${types.join("|")}，实际是 ${actual}`);
+    if (spec.enum && !spec.enum.includes(v)) problems.push(`字段 ${key} 的值 "${String(v).slice(0, 30)}" 不在允许列表中`);
+  }
+  return problems;
+}
+
 async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName, temperature }) {
   if (DEEPSEEK_API_KEY) {
     const response = await postJsonOverHttps("api.deepseek.com", "/chat/completions", {
@@ -121,7 +147,25 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
       response_format: { type: "json_object" },
       ...(Number.isFinite(temperature) ? { temperature } : {}),
     });
-    return extractDeepSeekText(response);
+    const text = extractDeepSeekText(response);
+    // DeepSeek 没有 API 级 schema 约束，这里自己补一道（见上面 validateAgainstSchema 的说明）。
+    if (text && schema) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseError) {
+        const error = new Error("AI 返回的不是合法 JSON。");
+        error.statusCode = 502;
+        throw error;
+      }
+      const problems = validateAgainstSchema(parsed, schema);
+      if (problems.length > 0) {
+        const error = new Error(`AI 返回的 JSON 不符合结构要求：${problems.slice(0, 4).join("；")}`);
+        error.statusCode = 502;
+        throw error;
+      }
+    }
+    return text;
   }
   if (OPENAI_API_KEY) {
     const response = await postJsonOverHttps("api.openai.com", "/v1/responses", {
@@ -150,9 +194,18 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
 
 function normalizeGeneratedModel(value) {
   const model = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const strategyType = SUPPORTED_STRATEGY_TYPES.includes(model.strategyType)
-    ? model.strategyType
-    : "wave";
+  // 清洗过程中被丢弃的东西全部记账，最后挂在返回对象的 droppedSummary 上。
+  // 以前这些丢弃是完全静默的：AI 设计了 5 个条件、3 个因为指标名拼错被丢掉，剩下 2 个照常
+  // 回测、照常入库、照常参与达标判定——我们以为在评估 AI 设计的模型，实际评估的是它的残缺版。
+  // 全丢光还能靠 [empty-model] 看出来，丢一半则完全不可见。
+  const drops = [];
+  const strategyTypeValid = SUPPORTED_STRATEGY_TYPES.includes(model.strategyType);
+  if (!strategyTypeValid && model.strategyType !== undefined) {
+    // 这一条尤其要记：策略类型被静默改写会让轮转机制失效——日志显示轮转要求的类型，
+    // 实际跑的却是 wave。
+    drops.push(`strategyType "${String(model.strategyType).slice(0, 30)}" 不在支持列表中，已改用 wave`);
+  }
+  const strategyType = strategyTypeValid ? model.strategyType : "wave";
   const asNumber = (input, fallback = null) => {
     const number = Number(input);
     return Number.isFinite(number) ? number : fallback;
@@ -161,10 +214,14 @@ function normalizeGeneratedModel(value) {
     const number = asNumber(input, fallback);
     return Math.min(max, Math.max(min, number));
   };
+  const dropCondition = (reason) => {
+    drops.push(`条件被丢弃：${reason}`);
+    return null;
+  };
   const cleanCondition = (condition) => {
-    if (!condition || typeof condition !== "object" || Array.isArray(condition)) return null;
-    if (!BLOCK_RULE_INDICATORS.includes(condition.indicator)) return null;
-    if (!BLOCK_RULE_COMPARATORS.includes(condition.comparator)) return null;
+    if (!condition || typeof condition !== "object" || Array.isArray(condition)) return dropCondition("不是对象");
+    if (!BLOCK_RULE_INDICATORS.includes(condition.indicator)) return dropCondition(`indicator "${String(condition && condition.indicator).slice(0, 30)}" 不存在`);
+    if (!BLOCK_RULE_COMPARATORS.includes(condition.comparator)) return dropCondition(`comparator "${String(condition.comparator).slice(0, 20)}" 不支持`);
     // formula conditions carry their own window sizes inside the formula string (e.g.
     // sma(close, 10)) — lookbackDays/slopeWindowDays are meaningless here and forced to
     // null below even if the AI mistakenly filled them in.
@@ -172,7 +229,7 @@ function normalizeGeneratedModel(value) {
       if (typeof condition.formula !== "string" || condition.formula.length === 0
         || condition.formula.length > FormulaEngine.MAX_FORMULA_LENGTH
         || !FormulaEngine.validateFormula(condition.formula)) {
-        return null;
+        return dropCondition(`formula "${String(condition.formula).slice(0, 40)}" 无法解析或超长`);
       }
     }
     const isWaveHighIndicator = condition.indicator === "drawdownFromWaveHigh";
@@ -192,7 +249,9 @@ function normalizeGeneratedModel(value) {
     const hasWaveDaySubField = rawDaysSinceHigh !== null || rawDaysWithoutNewLow !== null
       || rawDaysSinceLow !== null || rawDaysWithoutNewHigh !== null;
     const rawValue = asNumber(condition.value, null);
-    if (rawValue === null && !((isWaveHighIndicator || isWaveLowIndicator) && hasWaveDaySubField)) return null;
+    if (rawValue === null && !((isWaveHighIndicator || isWaveLowIndicator) && hasWaveDaySubField)) {
+      return dropCondition(`indicator "${condition.indicator}" 缺少必填的 value`);
+    }
     // For a streak comparator, value is a day count — must be a positive whole number.
     const value = rawValue === null ? null : (BLOCK_RULE_STREAK_COMPARATORS.has(condition.comparator)
       ? Math.max(1, Math.round(rawValue))
@@ -302,7 +361,7 @@ function normalizeGeneratedModel(value) {
     };
   };
 
-  return {
+  const normalized = {
     label: String(model.label || "").slice(0, 80),
     strategyType,
     confidence: clamp(model.confidence, 0, 1, 0.5),
@@ -335,9 +394,54 @@ function normalizeGeneratedModel(value) {
       stalledDays: clamp(model.noNewHighExitRule.stalledDays, 1, 60, 5),
       reduce: clamp(model.noNewHighExitRule.reduce, 0, 100, 100),
     } : null,
-    localLadderRule: model.localLadderRule && typeof model.localLadderRule === "object" ? model.localLadderRule : null,
-    maRsiBandRule: model.maRsiBandRule && typeof model.maRsiBandRule === "object" ? model.maRsiBandRule : null,
-    orderGridRule: model.orderGridRule && typeof model.orderGridRule === "object" ? model.orderGridRule : null,
+    // 这三个以前是原样透传（`? model.xxx : null`），AI 写什么就进回测配置什么——没有任何
+    // 范围约束，一个 fastMa=500 或 takeProfit=0 就能让整个回测变成无意义的结果。其余规则
+    // （noNewHighExitRule/peVolumeRule/stagnationReversalRule）一直都有 clamp，这三个是漏网的。
+    localLadderRule: model.localLadderRule && typeof model.localLadderRule === "object" ? {
+      lookbackDays: clamp(model.localLadderRule.lookbackDays, 2, 120, 5),
+      entryDrop: clamp(model.localLadderRule.entryDrop, 0.1, 50, 2),
+      ladderDrop: clamp(model.localLadderRule.ladderDrop, 0.1, 50, 4),
+      buyAdd: clamp(model.localLadderRule.buyAdd, 1, 100, 30),
+      maxTarget: clamp(model.localLadderRule.maxTarget, 1, 100, 100),
+      sellRise: clamp(model.localLadderRule.sellRise, 0.1, 50, 4),
+      sellReduce: clamp(model.localLadderRule.sellReduce, 1, 100, 25),
+      stopLoss: clamp(model.localLadderRule.stopLoss, 1, 90, 25),
+      stopReduce: clamp(model.localLadderRule.stopReduce, 1, 100, 100),
+      maxSellsPerDay: Math.round(clamp(model.localLadderRule.maxSellsPerDay, 1, 10, 2)),
+      resetPositionBelow: clamp(model.localLadderRule.resetPositionBelow, 0, 100, 10),
+    } : null,
+    maRsiBandRule: model.maRsiBandRule && typeof model.maRsiBandRule === "object" ? {
+      fastMa: Math.round(clamp(model.maRsiBandRule.fastMa, 2, 250, 60)),
+      slowMa: Math.round(clamp(model.maRsiBandRule.slowMa, 3, 500, 120)),
+      slowBuffer: clamp(model.maRsiBandRule.slowBuffer, 0, 50, 0),
+      useSlowTrend: model.maRsiBandRule.useSlowTrend !== false,
+      bearTarget: clamp(model.maRsiBandRule.bearTarget, 0, 100, 30),
+      bullTarget: clamp(model.maRsiBandRule.bullTarget, 0, 100, 100),
+      useFastBull: model.maRsiBandRule.useFastBull !== false,
+      fastBullTarget: clamp(model.maRsiBandRule.fastBullTarget, 0, 100, 100),
+      useFastCut: model.maRsiBandRule.useFastCut !== false,
+      fastBearTarget: clamp(model.maRsiBandRule.fastBearTarget, 0, 100, 0),
+      fastCut: clamp(model.maRsiBandRule.fastCut, 0, 50, 3),
+      rsiDays: Math.round(clamp(model.maRsiBandRule.rsiDays, 2, 120, 14)),
+      useRsiBuy: model.maRsiBandRule.useRsiBuy !== false,
+      rsiBuy: clamp(model.maRsiBandRule.rsiBuy, 1, 99, 35),
+      rsiTarget: clamp(model.maRsiBandRule.rsiTarget, 0, 100, 100),
+      useRsiSell: model.maRsiBandRule.useRsiSell !== false,
+      rsiSell: clamp(model.maRsiBandRule.rsiSell, 1, 99, 70),
+      hotTarget: clamp(model.maRsiBandRule.hotTarget, 0, 100, 40),
+      atrDays: Math.round(clamp(model.maRsiBandRule.atrDays, 2, 120, 14)),
+      useAtr: model.maRsiBandRule.useAtr !== false,
+      highAtr: clamp(model.maRsiBandRule.highAtr, 0.1, 50, 7),
+      volTarget: clamp(model.maRsiBandRule.volTarget, 0, 100, 40),
+    } : null,
+    orderGridRule: model.orderGridRule && typeof model.orderGridRule === "object" ? {
+      lookbackDays: Math.round(clamp(model.orderGridRule.lookbackDays, 2, 120, 3)),
+      entryDrop: clamp(model.orderGridRule.entryDrop, 0.1, 50, 2),
+      orderCapitalPercent: clamp(model.orderGridRule.orderCapitalPercent, 1, 100, 20),
+      addDrop: clamp(model.orderGridRule.addDrop, 0.1, 50, 2),
+      takeProfit: clamp(model.orderGridRule.takeProfit, 0.1, 50, 2),
+      maxLots: Math.round(clamp(model.orderGridRule.maxLots, 1, 100, 5)),
+    } : null,
     peVolumeRule: model.peVolumeRule && typeof model.peVolumeRule === "object" ? {
       peLookbackDays: clamp(model.peVolumeRule.peLookbackDays, 20, 1300, 252),
       lowPePercentile: clamp(model.peVolumeRule.lowPePercentile, 0, 100, 30),
@@ -370,6 +474,15 @@ function normalizeGeneratedModel(value) {
       ? model.positionBands.map(cleanPositionBand).filter(Boolean).slice(0, 10)
       : [],
   };
+  // 清洗诊断挂成【不可枚举】属性：它是过程信息而不是模型字段，如果挂成普通属性，会被
+  // JSON.stringify 一路带进 best_config 存库，污染回测配置。不可枚举则 stringify 看不见，
+  // 但调用方仍能直接读 model.droppedSummary。
+  Object.defineProperty(normalized, "droppedSummary", {
+    value: drops,
+    enumerable: false,
+    writable: false,
+  });
+  return normalized;
 }
 
 const blockRuleConditionSchema = {
@@ -473,10 +586,77 @@ function buildModelSchema() {
           },
         },
       },
-      noNewHighExitRule: { type: ["object", "null"] },
-      localLadderRule: { type: ["object", "null"] },
-      maRsiBandRule: { type: ["object", "null"] },
-      orderGridRule: { type: ["object", "null"] },
+      // 这四个以前是光秃秃的 {type:["object","null"]}，字段一个都没写——AI 既从提示词（当时
+      // 每种类型只有一句话）也从 schema 里看不到该填什么，只能猜。这正是 order-grid /
+      // ma-rsi-band / local-high-ladder 几乎不被生成的原因：不是这些策略不好，是模型不知道
+      // 怎么写。字段名和默认值取自 engine.js 的 defaultXxxRule。
+      noNewHighExitRule: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          lookbackDays: { type: "number" },
+          stalledDays: { type: "number" },
+          reduce: { type: "number" },
+        },
+      },
+      localLadderRule: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          lookbackDays: { type: "number" },
+          entryDrop: { type: "number" },
+          ladderDrop: { type: "number" },
+          buyAdd: { type: "number" },
+          maxTarget: { type: "number" },
+          sellRise: { type: "number" },
+          sellReduce: { type: "number" },
+          stopLoss: { type: "number" },
+          stopReduce: { type: "number" },
+          maxSellsPerDay: { type: "number" },
+          resetPositionBelow: { type: "number" },
+        },
+      },
+      maRsiBandRule: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          fastMa: { type: "number" },
+          slowMa: { type: "number" },
+          slowBuffer: { type: "number" },
+          useSlowTrend: { type: "boolean" },
+          bearTarget: { type: "number" },
+          bullTarget: { type: "number" },
+          useFastBull: { type: "boolean" },
+          fastBullTarget: { type: "number" },
+          useFastCut: { type: "boolean" },
+          fastBearTarget: { type: "number" },
+          fastCut: { type: "number" },
+          rsiDays: { type: "number" },
+          useRsiBuy: { type: "boolean" },
+          rsiBuy: { type: "number" },
+          rsiTarget: { type: "number" },
+          useRsiSell: { type: "boolean" },
+          rsiSell: { type: "number" },
+          hotTarget: { type: "number" },
+          atrDays: { type: "number" },
+          useAtr: { type: "boolean" },
+          highAtr: { type: "number" },
+          volTarget: { type: "number" },
+        },
+      },
+      orderGridRule: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          lookbackDays: { type: "number" },
+          entryDrop: { type: "number" },
+          orderCapitalPercent: { type: "number" },
+          addDrop: { type: "number" },
+          takeProfit: { type: "number" },
+          maxLots: { type: "number" },
+        },
+      },
       peVolumeRule: {
         type: ["object", "null"],
         additionalProperties: false,
@@ -517,15 +697,37 @@ function buildModelSchema() {
 // generateModelFromDataProfile (autonomous, data-driven) — the strategyType/indicator/formula
 // explanation and worked examples don't depend on where the "what to build" part of the
 // prompt came from.
+// block-rules 和 score-rules 共用同一套 condition（指标、比较符、formula、sustainedDays…）。
+// 提示词里讲解这套 condition 的段落大多只写了 "block-rules" 三个字，但 score-rules 同样需要
+// 它们——按类型裁剪时必须把这两种当成一个整体，否则生成 score-rules 时会丢掉 formula 指标的
+// 全部说明（实测那一段有 922 字）。
+const CONDITION_BASED_TYPES = new Set(["block-rules", "score-rules"]);
+
+// 只保留"与类型无关"的行 + 目标类型自己的行，丢掉专属于其它类型的行。
+// 一行如果提到了不止一种类型（例如同时讲 wave 和 block-rules 怎么共用 waveThreshold），
+// 视为公共内容保留——宁可多发一点，也不能把该类型真正需要的说明裁掉。
+function filterGuideLinesForType(lines, targetType) {
+  if (!targetType || !SUPPORTED_STRATEGY_TYPES.includes(targetType)) return lines;
+  const targetIsConditionBased = CONDITION_BASED_TYPES.has(targetType);
+  return lines.filter((line) => {
+    const mentioned = SUPPORTED_STRATEGY_TYPES.filter((t) => line.includes(t));
+    if (mentioned.length !== 1) return true;
+    const only = mentioned[0];
+    if (only === targetType) return true;
+    if (targetIsConditionBased && CONDITION_BASED_TYPES.has(only)) return true;
+    return false;
+  });
+}
+
 function buildPromptGuideLines(schema) {
   return [
     "只选择最匹配的 strategyType：",
     "- wave：从阶段高点回撤百分比建仓，从买入价上涨百分比卖出。",
-    "- local-high-ladder：最近 N 天高点回落后阶梯加仓。",
-    "- order-grid：每笔订单独立建仓/加仓/止盈。",
-    "- ma-rsi-band：均线、RSI、ATR 目标仓位。",
+    "- local-high-ladder：以最近 N 天的高点为基准，跌够一档就加一层仓，涨够一档就减一层——适合在一个区间里反复震荡、回撤不深且能较快收复的标的。对应 localLadderRule 对象，字段：lookbackDays（取最近多少天的高点作基准，典型 3~20）、entryDrop（从该高点回撤百分之几开始首次建仓，典型 1~8）、ladderDrop（此后每再跌百分之几加一级，典型 2~10）、buyAdd（每级加仓占总资金的百分比，典型 15~40）、maxTarget（最大总仓位%，一般 100）、sellRise（持仓成本上涨百分之几减一级，典型 2~10）、sellReduce（每级减仓百分比，通常和 buyAdd 取同值）、stopLoss（亏损百分之几止损，典型 15~30）、stopReduce（止损时减仓百分比，一般 100）、maxSellsPerDay（每天最多减仓几次，典型 1~3）、resetPositionBelow（仓位低于百分之几时重置阶梯状态，典型 5~15）。",
+    "- order-grid：把资金拆成若干等额“订单”，每笔订单各自独立地建仓、加仓、止盈，互不干扰——适合波动频繁、单次波段幅度不大的标的，靠高频小幅的低买高卖累积收益。对应 orderGridRule 对象，字段：lookbackDays（取最近多少天的高点作基准，典型 2~10）、entryDrop（从高点回撤百分之几下第一笔单，典型 1~5）、addDrop（此后每再跌百分之几追加一笔，典型 1~5）、takeProfit（每笔单各自涨够百分之几就止盈平掉这一笔，典型 1~6）、orderCapitalPercent（每笔单占总资金的百分比，典型 10~25）、maxLots（最多同时持有几笔，取 100/orderCapitalPercent 向上取整）。注意 takeProfit 要明显大于交易成本，否则频繁小额止盈会被手续费吃掉。",
+    "- ma-rsi-band：用快慢均线判断趋势方向、RSI 判断超买超卖、ATR 判断波动是否过大，三者共同决定目标仓位——适合趋势明确、上涨和下跌阶段分明的标的。对应 maRsiBandRule 对象，字段：fastMa/slowMa（快慢均线天数，典型 20/60 或 60/120，fastMa 必须小于 slowMa）、slowBuffer（价格要超过慢均线百分之几才算站上，典型 0~3）、useSlowTrend（是否启用慢均线趋势判断）、bearTarget/bullTarget（慢均线判定为空头/多头时的目标仓位%，典型 0~30 / 80~100）、useFastBull/fastBullTarget（价格站上快均线时是否额外提仓、提到多少%）、useFastCut/fastBearTarget/fastCut（跌破快均线百分之几时是否砍仓、砍到多少%）、rsiDays（RSI 天数，典型 14）、useRsiBuy/rsiBuy/rsiTarget（RSI 低于阈值时是否加仓、阈值和目标仓位%，典型 30~40）、useRsiSell/rsiSell/hotTarget（RSI 高于阈值时是否减仓、阈值和目标仓位%，典型 65~80）、atrDays/useAtr/highAtr/volTarget（ATR 天数、是否启用、ATR% 高于多少算过热、过热时的目标仓位%）。",
     "- pe-volume：PE 分位数结合成交量倍率决定仓位，用户描述明确是“低估值+放量买入、高估值或缩量卖出”这类逻辑时选这个类型，对应 peVolumeRule 对象，字段含义：peLookbackDays（计算 PE 分位数的回看天数，默认252）、lowPePercentile/highPePercentile（低/高 PE 分位阈值，0~100，默认30/80——PE 低于低分位线视为低估，高于高分位线视为高估）、volumeMaDays（成交量均线天数，默认20）、volumeBuyMultiplier（成交量达到均量的倍数才算放量，默认1.2）、volumeSellMultiplier（成交量跌破均量的倍数就算缩量，默认0.7）、lowPeTarget/neutralTarget/highPeTarget（低估值放量、中性、高估值或缩量三种情形各自对应的目标仓位百分比，默认80/40/0）。",
-    "- stagnation-reversal：连续 N 天没有创新低买入；连续 N 天没有创新高卖出。",
+    "- stagnation-reversal：跌势“跌不动了”就买、涨势“涨不动了”就卖——用“连续 N 天没有创新低”确认下跌动能衰竭，用“连续 N 天没有创新高”确认上涨动能衰竭。适合有明显阶段性顶底、但转折前会先横盘一段时间的标的。对应 stagnationReversalRule 对象，字段：buyLookbackDays（判断“新低”时回看多少天，典型 3~20）、buyStalledDays（连续多少天没创新低就买入，典型 3~15）、buyTarget（买入后的目标仓位%，典型 60~100）、sellLookbackDays（判断“新高”时回看多少天，典型 3~20）、sellStalledDays（连续多少天没创新高就卖出，典型 3~15）、sellReduce（卖出时减仓百分比，典型 50~100）。buyStalledDays 取得太小会在下跌途中反复抄底，太大则会错过反转起点。",
     "顶层字段 model.waveThreshold 取值范围是1~30，没有特别要求时用默认值20——绝对不要生成0.1、0.5这种接近0的数值，那会让“阶段高点/低点”被任何一天的正常波动刷新，起不到过滤噪音的作用。strategyType 为 wave 时，这个字段是该策略自己买卖逻辑算“阶段高点/低点”用的核心参数；strategyType 是 block-rules/score-rules 时，只要用到了 drawdownFromWaveHigh/riseFromWaveLow/daysSinceNewWaveLow/daysSinceNewWaveHigh 这几个指标，这个字段就是它们共用的波浪确认阈值（详见下方专门说明），不是摆设；其它 strategyType 才是真的填个数字不会被用到。",
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
     "- score-rules：用户的描述是“打分制”——多条独立条件各自命中就加若干分（不要求互斥，同一天可以同时命中多条、分数累加），再按当天总分落在哪个区间决定目标仓位百分比（例如“A得10分，B得10分…总分满20分半仓，满30分全仓”）。出现“得X分”“加X分”“总分”“打分”这类字眼、或者列举一串各自独立打分的条件时，必须选这个类型，不要硬套 block-rules 的且/或结构（block-rules 的 action 是触发一次性动作，没法表达“多个条件独立累加分数”）。",
@@ -736,7 +938,7 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
   // 非常具体的失败信息（跑输买入持有多少、只成交几笔、期望多少、盈亏比多少）。
   // "只成交 3 笔"这类问题 AI 完全有能力自己修正（放宽阈值、减少条件叠加），前提是它知道。
   const diversityLine = previousAttempts.length > 0
-    ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，以及它们各自的回测结果：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 50)}）` : ""}${a.outcome ? ` → ${a.outcome}` : ""}`).join("；")}。请针对上面这些具体的失败原因改进：如果是成交笔数太少，就放宽买入条件或减少同时要求满足的条件个数；如果是跑输买入持有，就换一个思路而不是微调阈值；如果是每买单期望为负，说明入场点选得不对，应该改变入场逻辑而不只是改出场。不要重复已经被证明失败的做法。`
+    ? `这只股票这次已经尝试过 ${previousAttempts.length} 种模型思路，以及它们各自的回测结果：${previousAttempts.map((a, i) => `第${i + 1}种[${a.strategyType}]${a.reason ? `（${String(a.reason).slice(0, 50)}）` : ""}${a.dropped && a.dropped.length ? ` [其中 ${a.dropped.length} 处不合法被丢弃：${a.dropped.slice(0, 3).join("；")}]` : ""}${a.outcome ? ` → ${a.outcome}` : ""}`).join("；")}。请针对上面这些具体的失败原因改进：如果是成交笔数太少，就放宽买入条件或减少同时要求满足的条件个数；如果是跑输买入持有，就换一个思路而不是微调阈值；如果是每买单期望为负，说明入场点选得不对，应该改变入场逻辑而不只是改出场；如果上面标注了"不合法被丢弃"，说明那些字段名或取值不在允许范围内，请严格按 JSON schema 里列出的字段名和枚举值来写，不要自创名称。不要重复已经被证明失败的做法。`
     : null;
   const priorSuccessLine = priorSuccessfulModels.length > 0
     ? `参考信息：以下是在其他股票上经过两年独立验证期确认有效的模型思路——${priorSuccessfulModels.map((m, i) => `第${i + 1}个[${m.symbol}/${m.strategyType}]验证年化${m.year1Annualized.toFixed(1)}%/${m.year2Annualized.toFixed(1)}%${m.reason ? `，思路：${String(m.reason).slice(0, 80)}` : ""}`).join("；")}。这些只是思路参考，不是这只股票的答案——具体用哪个 strategyType、哪些指标、什么阈值，必须结合上面这只股票自己的统计特征重新设计，不要照搬其他股票的具体参数（不同股票的价格区间、波动率、趋势特征都不一样）。`
@@ -748,7 +950,9 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     : null;
   const prompt = [
     "下面是一只股票的历史行情特征摘要（是统计特征，不是原始逐日行情）。请分析这些特征，设计一个尽量跑赢“买入并一直持有”、且最大回撤比买入持有更小的择时模型，转换成 AI Trade 支持的安全模型 JSON。",
-    ...buildPromptGuideLines(schema),
+    // 指定了倾向类型时只发那一种的说明——整份指南约 25000 字符，其中 32% 是类型专属的，
+    // 一次调用里其余七种类型的详细说明纯属噪音（也是成本）。没指定类型时仍发完整版。
+    ...filterGuideLinesForType(buildPromptGuideLines(schema), options.suggestedStrategyType),
     `股票/标的：${symbol || "通用"}`,
     "历史行情特征字段说明（全部描述整段窗口的统计分布，不是某一天的快照）：",
     "· totalReturnPercent=区间总收益率；annualizedVolatilityPercent=年化波动率；maxDrawdownPercent=买入持有的最大回撤；upDayRatioPercent=上涨天数占比。",

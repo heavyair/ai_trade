@@ -391,6 +391,13 @@ async function main() {
         // continue 之前都重复一次 push。
         const attemptRecord = { strategyType: model.strategyType, reason: model.reason, outcome: null };
         previousAttempts.push(attemptRecord);
+        // 清洗阶段丢掉的东西以前完全不可见（见 model-generator.js 的 droppedSummary 注释）。
+        // 既写进日志，也回传给下一轮——"indicator xxx 不存在"这类错误 AI 看到就能自己改对。
+        const dropped = model.droppedSummary || [];
+        if (dropped.length > 0) {
+          console.log(`[cleanup] ${symbolEntry.code} attempt ${attempt + 1}: 生成结果有 ${dropped.length} 处被丢弃/改写 — ${dropped.join("；")}`);
+          attemptRecord.dropped = dropped;
+        }
         if (!modelHasRules(model)) {
           attemptRecord.outcome = "生成的模型没有任何可用规则";
           console.log(`[empty-model] ${symbolEntry.code} attempt ${attempt + 1}: no usable rules, skipping`);
