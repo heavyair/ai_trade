@@ -54,6 +54,29 @@ function buildTrainingFeedback(engine, rows, config, last, { startDate, endDate,
   const stats = engine.buildBuyWinStats(last.trades);
   const trendSeries = FormulaEngine.compileFormulaSeries(rows, "close / sma(close, 60) - 1");
   const rowIndex = new Map(rows.map((row, i) => [row.date, i]));
+  // 入场时的估值分位与量能：原先每笔诊断只有"入场时在 MA60 上方还是下方"，看不出
+  // "亏损是不是集中在高估值区间"或"放量买入是不是更容易赚"这类模式——而这正是 AI 想到
+  // 去加一条估值/量能过滤条件的前提。估值用【在本训练窗口内的分位】而不是绝对 PE：
+  // 绝对值跨标的不可比，分位数可以直接对应成一条可写的规则（如"只在 PE 低于自身 40 分位时买"）。
+  const peValues = rows.map((row) => row.pe).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const pePercentileAt = (index) => {
+    const pe = rows[index] && rows[index].pe;
+    if (!Number.isFinite(pe) || pe <= 0 || peValues.length === 0) return null;
+    let lower = 0;
+    while (lower < peValues.length && peValues[lower] < pe) lower += 1;
+    return round(100 * lower / peValues.length);
+  };
+  const volumeRatioAt = (index) => {
+    if (index < 20) return null;
+    let sum = 0;
+    for (let i = index - 20; i < index; i += 1) {
+      const v = Number(rows[i].volume);
+      if (Number.isFinite(v)) sum += v;
+    }
+    const avg = sum / 20;
+    const v = Number(rows[index].volume);
+    return avg > 0 && Number.isFinite(v) ? round(v / avg) : null;
+  };
   const lots = stats.closedLots.map((lot) => {
     const from = rowIndex.get(lot.date);
     const to = rowIndex.get(lot.closeDate);
@@ -66,6 +89,8 @@ function buildTrainingFeedback(engine, rows, config, last, { startDate, endDate,
       maxFavorableClosePct: round(Math.max(0, ...closes)),
       maxAdverseClosePct: round(Math.min(0, ...closes)),
       entryTrend: trend === null || trend === undefined ? "unavailable" : trend >= 0 ? "aboveMa60" : "belowMa60",
+      entryPePercentile: pePercentileAt(from),
+      entryVolumeRatio: volumeRatioAt(from),
     };
   });
   const groups = Object.fromEntries(["aboveMa60", "belowMa60", "unavailable"].map((name) => {
@@ -73,6 +98,27 @@ function buildTrainingFeedback(engine, rows, config, last, { startDate, endDate,
     return [name, { closedBuys: group.length, winRate: group.length ? round(100 * group.filter((lot) => lot.pnl > 0).length / group.length) : null,
       expectancyPct: round(mean(group.map((lot) => lot.pnlPct))) }];
   }));
+  // 按入场时的估值分位和量能分组，直接把"在什么条件下入场更容易赚"摆出来。
+  // 组太细会让每组样本过少而失真，所以只分三档；某档少于 3 笔时不给结论（null）。
+  const bucketStats = (predicate) => {
+    const group = lots.filter(predicate);
+    if (group.length < 3) return { closedBuys: group.length, winRate: null, expectancyPct: null };
+    return {
+      closedBuys: group.length,
+      winRate: round(100 * group.filter((lot) => lot.pnl > 0).length / group.length),
+      expectancyPct: round(mean(group.map((lot) => lot.pnlPct))),
+    };
+  };
+  const entryPeGroups = peValues.length === 0 ? null : {
+    lowPe_below33: bucketStats((lot) => lot.entryPePercentile !== null && lot.entryPePercentile < 33),
+    midPe_33to66: bucketStats((lot) => lot.entryPePercentile !== null && lot.entryPePercentile >= 33 && lot.entryPePercentile < 66),
+    highPe_above66: bucketStats((lot) => lot.entryPePercentile !== null && lot.entryPePercentile >= 66),
+  };
+  const entryVolumeGroups = {
+    lowVolume_below0p8: bucketStats((lot) => lot.entryVolumeRatio !== null && lot.entryVolumeRatio < 0.8),
+    normalVolume_0p8to1p3: bucketStats((lot) => lot.entryVolumeRatio !== null && lot.entryVolumeRatio >= 0.8 && lot.entryVolumeRatio < 1.3),
+    highVolume_above1p3: bucketStats((lot) => lot.entryVolumeRatio !== null && lot.entryVolumeRatio >= 1.3),
+  };
   const losses = lots.filter((lot) => lot.pnl <= 0);
   const sorted = lots.slice().sort((a, b) => a.pnlPct - b.pnlPct);
   const examples = [...sorted.slice(0, 3), ...sorted.slice(-3)].filter((lot, i, list) => list.indexOf(lot) === i);
@@ -86,7 +132,8 @@ function buildTrainingFeedback(engine, rows, config, last, { startDate, endDate,
       finalPositionRatio: round(last.positionRatio) },
     diagnostics: { losingBuys: losses.length,
       lossesAfterPositiveClose: losses.filter((lot) => lot.maxFavorableClosePct > 0).length,
-      averageHoldingDays: round(mean(lots.map((lot) => lot.holdingDays))), entryTrendGroups: groups },
+      averageHoldingDays: round(mean(lots.map((lot) => lot.holdingDays))), entryTrendGroups: groups,
+      entryPeGroups, entryVolumeGroups },
     examples,
   };
 }
@@ -100,6 +147,7 @@ function buildRefinementPrompt(feedback) {
     "本轮任务是改进下面这个已经完成参数寻优的父模型。上面的策略类型建议及‘换一个思路’仅用于从零探索；本轮优先保留父模型的有效部分，不必为了不同而重新设计全部规则。",
     "下面的数据全部来自训练期。请针对一项具体失效现象提出一到两处修改：可删除无效条件、增加过滤条件、替换指标、修改公式结构，或固定入场改出场/固定出场改入场。保持其它部分尽量一致，输出完整模型 JSON，不要只输出差异。",
     "reason 中说明父模型的问题、具体修改及可检验的预期。如果证据不足以支持修改，可以保留原模型并在 reason 中说明。不要根据训练期以后的行情或记忆作判断。",
+    "entryPeGroups/entryVolumeGroups 是按【入场当天的估值分位和成交量比】分组的胜率与每买单期望：若某一档的胜率或期望明显低于其它档（且该档 closedBuys 不少于 3），说明在那种条件下入场是亏损来源，可以据此加一条过滤条件（估值用 formula 条件引用 pe/peTtm/pb，量能用 volumeRatio 指标）。closedBuys 太少的档不要下结论。估值分位是在训练窗口内计算的，与绝对 PE 无关。",
     "交易诊断口径：FIFO 完整平仓买单，包含买卖费用；未平仓买单不参与胜率，但包含在账户收益与回撤中。maxFavorableClosePct/maxAdverseClosePct 是入场到最终平仓期间收盘价格的路径，分批卖出时不等于账户实际浮盈浮亏；它们只能提出待检验的假设。少量样本或全部获胜都不能视为确定性规律。",
     `父模型与训练交易分析（JSON）：${JSON.stringify(payload)}`,
   ].join("\n");

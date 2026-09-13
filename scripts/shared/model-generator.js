@@ -976,10 +976,10 @@ function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuc
     `股票/标的：${symbol || "通用"}`,
     "历史行情特征字段说明（全部描述整段窗口的统计分布，不是某一天的快照）：",
     "· totalReturnPercent=区间总收益率；annualizedVolatilityPercent=年化波动率；maxDrawdownPercent=买入持有的最大回撤；upDayRatioPercent=上涨天数占比。",
-    "· yearly=分年度拆解，每年给出 returnPercent/volatilityPercent/maxDrawdownPercent/upDayRatioPercent。请重点看它：每年都涨说明是趋势票，适合趋势跟随并尽量少踏空；大起大落说明适合区间/均值回归；某一年巨亏说明必须有止损或回撤保护。",
+    "· yearly=分年度拆解，每年给出 returnPercent/volatilityPercent/maxDrawdownPercent/upDayRatioPercent，以及 medianPe(当年PE中位数)和 medianVolume(当年成交量中位数)——这两个体现的是估值与量能【随时间的变化】，只看整段分布看不出来。若某年 PE 中位数比上一年高出一大截而收益也高，说明那年的涨幅很大一部分来自估值扩张而非择时；量能逐年萎缩则说明流动性在变差，高频交易的规则会越来越难成交在理想价位。请重点看它：每年都涨说明是趋势票，适合趋势跟随并尽量少踏空；大起大落说明适合区间/均值回归；某一年巨亏说明必须有止损或回撤保护。",
     "· rsi14/priceVsMa20Percent/priceVsMa60Percent/atrPercent 都是分布：p10/p50/p90 是该指标在整段窗口里的 10/50/90 分位数。定阈值时请参照这些分位数——例如想让买入信号大约在最低的 10% 的日子触发，就取接近 p10 的值；取一个远超 p90 的阈值会导致整段时间一次都不触发。",
     "· rsi14.overboughtDayRatioPercent/oversoldDayRatioPercent=RSI≥70 和 ≤30 的天数占比；priceVsMa*.aboveMaDayRatioPercent=收盘价位于该均线上方的天数占比。",
-    "· valuation=估值分布：pe/peTtm/pb 各自给出 p10/p50/p90 分位数和 coveragePercent（该字段有数据的交易日占比）。整段为 null 表示这只票没有可用估值数据，此时不要设计任何依赖估值的规则。定阈值请用分位数——PE 的绝对水平跨行业没有可比性，但「跌到自身历史 p10 附近」是可直接用的信号。估值可以写进 formula 条件（可用字段 pe/peTtm/pb），也可以用 pe-volume 策略类型。",
+    "· valuation=估值分布：pe/peTtm/pb 各自给出 p10/p50/p90 分位数和 coveragePercent（该字段有数据的交易日占比）。整段为 null 表示没有估值数据；若带 note 字段说明公司持续亏损、PE 为负，同样不要设计依赖估值的规则。negativePeDayRatioPercent 是 PE 为负的交易日占比，这个比例高说明盈利不稳定，此时 PE 分位只反映盈利的那部分日子，用它做过滤会在亏损期失效，应改用 pb。定阈值请用分位数——PE 的绝对水平跨行业没有可比性，但「跌到自身历史 p10 附近」是可直接用的信号。估值可以写进 formula 条件（可用字段 pe/peTtm/pb），也可以用 pe-volume 策略类型。",
     "· volume.ratio20=成交量比（当日成交量÷过去20日均量）的分布，含 p10/p50/p90，以及 aboveOnePointFiveRatioPercent（≥1.5倍的天数占比）和 belowZeroPointSevenRatioPercent（≤0.7倍的天数占比）。用它来定放量/缩量阈值：同样是「放量1.5倍」，在不同标的上触发频率可能差好几倍，照着这只票自己的分位数取值才不会定出一个几乎不触发或天天触发的条件。对应的现成指标是 volumeRatio。",
     "· fundamentals=基本面分布：grossMargin(毛利率)/roe/revenueGrowth(营收增长) 各自的 p10/p50/p90 和覆盖率，整段或单项为 null 表示无数据。这类数据一个季度才更新一次，在四年窗口里只有十几个不同取值，【不要用它设计每日进出的信号】；它适合当粗粒度的过滤条件（例如只在 roe 高于自身历史中位时才允许建仓）。公式条件里可用字段名 grossMargin/roe/revenueGrowth。",
     "· microstructure.gapPercent=今开相对昨收的跳空幅度分布。跳空大而频繁的标的，用收盘价触发的规则实际成交会严重偏离，止损类规则尤其危险，这时应优先用仓位控制而不是精确止损位。",
@@ -1225,6 +1225,11 @@ function yearlyBreakdown(rows) {
     }
     const mean = returns.reduce((a, b) => a + b, 0) / (returns.length || 1);
     const variance = returns.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (returns.length || 1);
+    // 逐年的估值与量能中位数：只给整段分布看不出"变化"。估值是慢变量，它的年度台阶
+    // （例如 2021 年 PE 中位 120、2023 年 40）往往正是收益分化的原因，AI 需要看到这个才能
+    // 判断"当年的涨跌有多少来自估值扩张/收缩"，而不是把它全归因于自己的择时规则。
+    const yearPe = slice.map((r) => r.pe).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+    const yearVol = slice.map((r) => r.volume).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
     out.push({
       year,
       tradingDays: slice.length,
@@ -1232,6 +1237,8 @@ function yearlyBreakdown(rows) {
       volatilityPercent: round2(Math.sqrt(variance) * Math.sqrt(252) * 100),
       maxDrawdownPercent: round2(maxDd),
       upDayRatioPercent: round2((up / (slice.length - 1)) * 100),
+      medianPe: yearPe.length ? round2(percentile(yearPe, 50)) : null,
+      medianVolume: yearVol.length ? Math.round(percentile(yearVol, 50)) : null,
     });
   }
   return out;
@@ -1246,12 +1253,23 @@ function describeValuation(rows) {
   const pe = pick("pe");
   const peTtm = pick("peTtm");
   const pb = pick("pb");
-  if (pe.length === 0 && peTtm.length === 0 && pb.length === 0) return null;
+  // 只取正值：公司亏损时 PE 为负，分位数没有意义（实测 NET 全期 PE 在 −1213~−41.7，
+  // 574 个标的里有 23 个是这种情况）。但不能因此静默返回 null——那样 AI 无法区分
+  // "这只票没有估值数据"和"这只票在亏损"，这两件事对策略设计的含义完全不同。
+  const negativePe = rows.filter((row) => Number.isFinite(row.pe) && row.pe < 0).length;
   const coverage = (list) => round2((list.length / rows.length) * 100);
+  if (pe.length === 0 && peTtm.length === 0 && pb.length === 0) {
+    return negativePe > 0
+      ? { pe: null, peTtm: null, pb: null, note: "公司在本窗口内持续亏损（PE 为负），估值指标不可用，不要设计依赖估值的规则。" }
+      : null;
+  }
   return {
     pe: pe.length ? { ...describeSeries(pe), coveragePercent: coverage(pe) } : null,
     peTtm: peTtm.length ? { ...describeSeries(peTtm), coveragePercent: coverage(peTtm) } : null,
     pb: pb.length ? { ...describeSeries(pb), coveragePercent: coverage(pb) } : null,
+    // 有相当比例的交易日 PE 为负 = 盈利不稳定，这本身就是重要信息：此时 PE 分位数只反映
+    // 盈利的那部分日子，用它做过滤条件会在亏损期完全失效，PB 通常更稳健。
+    negativePeDayRatioPercent: negativePe > 0 ? round2((negativePe / rows.length) * 100) : 0,
   };
 }
 
