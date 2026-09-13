@@ -155,18 +155,28 @@ const MUTATIONS = Math.max(0, Math.round(getArg("mutations", 0)));
 // 策略类型轮转表。AI 自由选择时会把 82% 的尝试压在 block-rules 和 score-rules 上，多半是
 // 提示词里各类型说明长度悬殊造成的偏好，不是这些策略真的更合适，所以改由轮转表分配名额。
 //
-// 名额按【实测达标率】分配。达标率 = 已保存结果中"较差验证年每买单期望≥1.5% 且盈亏比≥1.2"
-// 的占比，样本是库里 635 条带完整指标的结果：
+// 【实测结论：用 legacy 表，按达标率重排的那版更差】
 //
-//   ma-rsi-band 62.5%(n=16) · stagnation-reversal 52.2%(n=23) · block-rules 25.4%(n=264)
-//   score-rules 20.5%(n=249) · local-high-ladder 16.7%(n=6) · pe-volume 7.7%(n=13)
-//   wave 3.2%(n=62)
+// 曾按"历史达标率"重排过名额（ma-rsi-band 62.5%(n=16)、stagnation-reversal 52.2%(n=23)、
+// block-rules 25.4%(n=264)、score-rules 20.5%(n=249)、wave 3.2%(n=62)），把 wave 从 3/12 降到
+// 1/12，名额让给前两者。对照实验（8 标的 × 12 轮 × 2 臂，上行门槛已修复因而两臂都能真正跑到
+// 验证阶段）结果相反：
 //
-// 上一版轮转表是按"平均较差年每买单期望"排的，那个指标会被少数极端值带偏——wave 的平均期望
-// 高达 19.64%，但达标率只有 3.2%（62 个里仅 2 个），说明它的高均值来自个别几笔运气单。
-// 达标率才是对的口径，所以这一版把 wave 从 3/12 降到 1/12，把名额让给 ma-rsi-band 和
-// stagnation-reversal。样本少的类型（ma-rsi-band n=16、stagnation-reversal n=23）仍然保留
-// 多于其达标率应得的份额，一是给它们积累样本的机会，二是避免一次测量就把某个类型判死。
+//   legacy 表：90 次尝试 → 24 个进入验证 → 达标 4（block-rules×3、ma-rsi-band×1）
+//   yield  表：88 次尝试 → 34 个进入验证 → 达标 2（stagnation-reversal×1、block-rules×1）
+//
+// 新表让 ma-rsi-band 的尝试从 7 次涨到 21 次、stagnation-reversal 从 7 次涨到 22 次，产出却没有
+// 按比例增加（ma-rsi-band 21 次尝试 0 达标，而 legacy 里 7 次尝试出了 1 个）。
+//
+// 【根因是那个达标率本身有选择偏差】：它是在【已保存的结果】上统计的，而保存本身是有条件的。
+// 极少被生成的类型（ma-rsi-band 只有 16 条、stagnation-reversal 23 条）只有在碰巧不错时才会被
+// 保存下来，于是它们的表观达标率被抬得很高；真正强迫搜索把大量尝试投进去，真实比率就现形了。
+// block-rules 样本 264 条、达标率 25.4% 才是可信的估计，而它也确实是实际产出的主力
+// （两臂 6 个达标模型里 4 个出自 block-rules）。
+//
+// 教训：在"被结果筛选过的样本"上统计各组的成功率，不能直接当成"给该组更多预算会得到的成功率"。
+// 要改名额分配，必须用强制分配的对照实验来定，不能用历史统计反推。
+// 两张表都保留，--rotation=yield 可切到被否决的那版以便复现实验。
 const STRATEGY_TYPE_ROTATION_BY_YIELD = [
   "ma-rsi-band", "block-rules", "stagnation-reversal", "score-rules",
   "ma-rsi-band", "block-rules", "stagnation-reversal", "local-high-ladder",
@@ -178,7 +188,7 @@ const STRATEGY_TYPE_ROTATION_LEGACY = [
   "wave", "ma-rsi-band", "block-rules", "order-grid", "local-high-ladder",
   "wave", "score-rules",
 ];
-const ROTATION_MODE = getArgString("rotation") || "yield";
+const ROTATION_MODE = getArgString("rotation") || "legacy";
 const STRATEGY_TYPE_ROTATION = ROTATION_MODE === "legacy"
   ? STRATEGY_TYPE_ROTATION_LEGACY
   : STRATEGY_TYPE_ROTATION_BY_YIELD;
