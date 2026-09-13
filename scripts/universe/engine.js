@@ -2750,6 +2750,35 @@ function discoverScoreRuleParameters(preset) {
 }
 
 
+// 参数寻优开放哪些字段。
+//
+// 这份配置原本是 public/app.js 里【给人用的】参数编辑表单的渲染配置（renderFlatRuleFormEditor
+// 靠它生成输入框，label 都是给人看的中文），2026-08-19 把引擎移植成 Node 模块时逐行原样搬了
+// 过来。对人来说 4~5 个滑块是合理的交互密度，选的也是最直观好懂的那几个参数；但机器搜索
+// 不怕参数多、只怕搜索空间太小——ma-rsi-band 有 22 个字段却只开放 4 个，组合总数只有 200，
+// 400 的预算一次就穷举完了，实测把预算提到 8000 结果一模一样。
+//
+// 所以 fields 保留原样（界面仍然只显示这几个，不打扰人类用户），另加 extraFields：按预计
+// 重要性排序的补充参数，只有批量搜索会按 optimizationExtraFieldCount 取用前 N 个。
+//
+// 【实测结论：默认 0，不要扩】用 scripts/universe/experiment-param-fields.js 在 3 个模型上
+// 跑（NET/ma-rsi-band、APP/pe-volume、ARM/ma-rsi-band，预算 2000）：
+//
+//   额外参数  参数个数  训练期年化   验证较差年年化   验证较差年期望
+//   0         4.7       60.4%        35.6%            1.50%
+//   4         8.3       76.4%        17.8%            0.56%
+//   8        11.0       75.9%         7.4%            1.37%
+//
+// 训练期年化随参数增多上升(60.4→76.4)、验证期却崩塌(35.6→7.4，掉到五分之一)——教科书级的
+// 过拟合：多出来的参数没学到规律，学到的是训练期的噪音。所以"参数只开放 4 个是遗漏"这个
+// 判断虽然动机合理（机器不怕参数多），但结论是错的：在这个数据量下，小参数集本身就是正则化。
+// extraFields 和开关保留下来，是为了让这个结论可复现、也免得以后有人（包括我自己）再凭
+// "参数这么少肯定不对"的直觉去扩。要改请先重跑那个实验。
+//
+// 注意：postProcess 会覆写某些字段（order-grid 的 maxLots 由 orderCapitalPercent 推出、
+// local-high-ladder 的 sellReduce=buyAdd 且 maxTarget=100、stagnation-reversal 的
+// buyLookbackDays/sellLookbackDays 由 StalledDays 推出），这些派生字段不能放进 extraFields，
+// 放了也会被 postProcess 冲掉。
 const OPTIMIZATION_TYPE_CONFIG = {
   "order-grid": {
     ruleKey: "orderGridRule",
@@ -2775,6 +2804,12 @@ const OPTIMIZATION_TYPE_CONFIG = {
       { key: "buyAdd", label: "每级加仓比例%", isInteger: false, isPercent: true },
       { key: "sellRise", label: "每级减仓涨幅%", isInteger: false, isPercent: true },
     ],
+    extraFields: [
+      { key: "stopLoss", label: "止损幅度%", isInteger: false, isPercent: true },
+      { key: "resetPositionBelow", label: "阶梯重置仓位阈值%", isInteger: false, isPercent: true },
+      { key: "stopReduce", label: "止损减仓%", isInteger: false, isPercent: true },
+      { key: "maxSellsPerDay", label: "每日最多减仓次数", isInteger: true },
+    ],
     postProcess: (rule) => {
       rule.sellReduce = rule.buyAdd;
       rule.maxTarget = 100;
@@ -2789,6 +2824,21 @@ const OPTIMIZATION_TYPE_CONFIG = {
       { key: "rsiBuy", label: "RSI买入阈值", isInteger: false },
       { key: "rsiSell", label: "RSI卖出阈值", isInteger: false },
     ],
+    // 按预计重要性排序：先是各档目标仓位（直接决定收益和回撤），再是触发阈值，最后是周期类。
+    extraFields: [
+      { key: "bullTarget", label: "多头目标仓位%", isInteger: false, isPercent: true },
+      { key: "bearTarget", label: "空头目标仓位%", isInteger: false, isPercent: true },
+      { key: "rsiTarget", label: "RSI超卖目标仓位%", isInteger: false, isPercent: true },
+      { key: "hotTarget", label: "RSI超买目标仓位%", isInteger: false, isPercent: true },
+      { key: "fastCut", label: "跌破快均线砍仓阈值%", isInteger: false, isPercent: true },
+      { key: "volTarget", label: "高波动目标仓位%", isInteger: false, isPercent: true },
+      { key: "highAtr", label: "高波动ATR阈值%", isInteger: false, isPercent: true },
+      { key: "fastBullTarget", label: "站上快均线目标仓位%", isInteger: false, isPercent: true },
+      { key: "fastBearTarget", label: "跌破快均线目标仓位%", isInteger: false, isPercent: true },
+      { key: "slowBuffer", label: "慢均线缓冲%", isInteger: false, isPercent: true },
+      { key: "rsiDays", label: "RSI天数", isInteger: true },
+      { key: "atrDays", label: "ATR天数", isInteger: true },
+    ],
   },
   "pe-volume": {
     ruleKey: "peVolumeRule",
@@ -2800,6 +2850,11 @@ const OPTIMIZATION_TYPE_CONFIG = {
       { key: "volumeMaDays", label: "成交量均线天数", isInteger: true },
       { key: "volumeBuyMultiplier", label: "放量买入倍数", isInteger: false },
       { key: "volumeSellMultiplier", label: "缩量卖出倍数", isInteger: false },
+    ],
+    extraFields: [
+      { key: "lowPeTarget", label: "低估值目标仓位%", isInteger: false, isPercent: true },
+      { key: "highPeTarget", label: "高估值目标仓位%", isInteger: false, isPercent: true },
+      { key: "neutralTarget", label: "中性目标仓位%", isInteger: false, isPercent: true },
     ],
     postProcess: (rule) => {
       if (Number(rule.lowPePercentile) > Number(rule.highPePercentile)) {
@@ -2878,6 +2933,17 @@ function discoverWaveParameters(preset) {
 }
 
 
+// 批量搜索额外开放多少个 extraFields（见 OPTIMIZATION_TYPE_CONFIG 上方的说明）。
+// 默认 0 = 完全保持历史行为；浏览器端的参数编辑表单永远只用 fields，不受这个开关影响。
+let optimizationExtraFieldCount = 0;
+function setOptimizationExtraFieldCount(count) {
+  const n = Number(count);
+  optimizationExtraFieldCount = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+function getOptimizationExtraFieldCount() {
+  return optimizationExtraFieldCount;
+}
+
 function discoverOptimizationParameters(preset) {
   if (!preset) return [];
   const strategyType = preset.strategyType || "wave";
@@ -2887,7 +2953,11 @@ function discoverOptimizationParameters(preset) {
   const typeConfig = OPTIMIZATION_TYPE_CONFIG[strategyType];
   if (!typeConfig) return discoverWaveParameters(preset);
   const rule = { ...typeConfig.defaultRule, ...(preset[typeConfig.ruleKey] || {}) };
-  return typeConfig.fields.map((field) => {
+  const fields = [
+    ...typeConfig.fields,
+    ...(typeConfig.extraFields || []).slice(0, optimizationExtraFieldCount),
+  ];
+  return fields.map((field) => {
     const current = Number(rule[field.key]);
     const value = Number.isFinite(current) ? current : 0;
     const range = computeDefaultParamRange(value, field.isInteger, field.isPercent);
@@ -3160,6 +3230,8 @@ module.exports = {
   defaultScoreRules,
   defaultPositionBands,
   OPTIMIZATION_TYPE_CONFIG,
+  setOptimizationExtraFieldCount,
+  getOptimizationExtraFieldCount,
   DEFAULT_OPTIMIZATION_POINT_COUNT,
   MAX_OPTIMIZATION_POINT_COUNT,
   MAX_OPTIMIZATION_COMBINATIONS,
