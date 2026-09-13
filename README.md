@@ -211,3 +211,28 @@ npm run optimize -- 588000
 结论：近端高点阶梯优化版在 1 年、3 年、5 年、上市以来窗口均跑赢全仓，并显著降低长期回撤；但按纯收益看，它仍低于当前保存的 `588000 多周期优化策略` 波浪模型。
 
 行情数据来自东方财富日 K 接口和 Yahoo Finance 日线接口，仅用于本地查询和展示。
+
+## 模型生成方法对照实验
+
+`scripts/universe/experiment-model-evolution.js` 比较三种模型发现方法：A 沿用当前数据画像提示及参数搜索；B 把训练阶段选出的父模型完整规则、FIFO 交易统计、入场趋势分组和典型盈亏路径交给 AI 改进；C 在 B 的基础上增加程序化结构变异。实验独立运行，读取数据库缓存行情并生成本地 JSON、Markdown 报告。
+
+```powershell
+# 只检查缓存数据和预算，不调用 AI
+node --env-file=.env.local scripts/universe/experiment-model-evolution.js --symbols=NVDA,300017 --attempts=3 --candidates=120 --endDate=2026-09-12 --dryRun
+
+# 运行三组对照：最多 18 次 AI 请求、2160 次训练策略回测
+node --env-file=.env.local scripts/universe/experiment-model-evolution.js --symbols=NVDA,300017 --attempts=3 --candidates=120 --endDate=2026-09-12
+
+# 无数据库、无 AI 的自动测试
+npm run test:evolution
+```
+
+`.env.local` 需要 `DATABASE_URL`（或 `POSTGRES_URL`）以及项目已有的 AI 供应商配置。上面的 `--env-file` 命令需要 Node.js 20.6 及以上；已由运行环境注入变量时可用 `npm run experiment:evolution -- --symbols=NVDA,300017 ...`。
+
+日期采用左闭右开区间：截止日前六年中，前四年训练，后两年逐年验证。所有生成及父模型选择完成后才计算验证结果。报告同时列出各轮候选和训练期间已选定的冠军，避免把验证之后挑出的最好结果混作训练选择结果。
+
+`--attempts` 是每个标的、每组的 AI 请求次数，`--candidates` 是每轮训练策略回测上限（含一次诊断回放）。C 的原始提案和结构变体共享这个上限；错误及参数网格穷尽可能留下未使用预算。失败请求占用调用名额。三组提示长度不同，报告单独记录供应商返回的 token 用量。买入持有基准与最终验证另外计数，不消耗训练候选预算。
+
+默认交替建议 `block-rules`、`score-rules`，AI 改进时可保留父模型类型。结构变异包括规则/条件删除、条件替换或增加、公式函数及内部窗口修改、波浪买卖档删除，以及 MA/RSI 信号开关；不支持结构变化的固定模板只做原有参数搜索。`--mutations=3` 限制每轮程序变体数，`--types=block-rules,score-rules`、`--arms=A,B,C` 可调整实验范围。
+
+每轮立即保存报告，内容包括数据及代码摘要、AI 输出、父子来源、具体结构操作、配置、训练反馈及实际预算。`--seed` 固定本地参数与结构采样，供应商的随机输出通过报告留存；相同 seed 不保证 AI 响应相同。可用 `--output=reports/my-experiment.json` 指定新文件，已存在文件不会覆盖。小规模试跑用于验证流程；方法优劣需要更多标的及独立重复实验支持。

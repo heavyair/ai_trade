@@ -32,6 +32,7 @@ const { annualizedReturnRate } = require("../shared/annualize.js");
 const { annualizedUpsideDeviation } = require("../shared/volatility.js");
 const { splitTrainTestWindows, shiftYears, toIsoDate } = require("../shared/train-test-window.js");
 const { evaluateBuySampleGate, describeBuySampleGate } = require("../shared/buy-sample-gate.js");
+const { buildTrainingFeedback, buildRefinementPrompt, generateStructuralVariants, createSeededRandom } = require("../shared/model-evolution.js");
 const { ensureResultsTable, saveOptimizationResult, fetchPriorSuccessfulModels } = require("../shared/optimization-results.js");
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || "postgres://postgres:postgres@localhost:5432/ai_trade";
@@ -106,6 +107,14 @@ const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 const SHOULD_SAVE = args.includes("--save");
+// 结构级改进的预算占比：0 = 全部是从零生成的新结构（历史行为）；0.5 = 一半的尝试用来
+// 改进"当前最好的结构"。原本 N 次尝试是 N 次独立随机重启，提示词还明确要求"换个不同思路"，
+// 于是某次跑出好结果之后系统会把它扔掉从头再来。详见 model-generator.js 的
+// generateImprovedModel 注释——缺的不是随机性（多样性已饱和）而是收敛。
+const REFINE_RATIO = Math.max(0, Math.min(1, getArg("refineRatio", 0.4)));
+// 每次尝试额外派生多少个结构变体（0 = 关闭，保持历史行为）。变体不花 AI 调用，但会把参数
+// 寻优的预算分摊掉，所以默认先关着，等实测确认收益为正再决定默认值。
+const MUTATIONS = Math.max(0, Math.round(getArg("mutations", 0)));
 // 策略类型轮转表。按实测的"平均较差年每买单期望"给高质量类型更多的采样机会，同时保证每种
 // 类型都拿得到名额——期望高但样本极少的类型（order-grid 只生成过 2 次）需要更多机会才能判断
 // 它到底是真的好还是碰巧。block-rules 产出最多且质量不错(8.17%)，保留最多份额；score-rules
@@ -193,36 +202,7 @@ async function loadRows(symbol, market) {
 // — the same semantics engine.js's buildScoredBacktestStates already uses for validation years.
 // Returns null when the window has no rows in this states array at all (can't evaluate, not "0%
 // return / 0% drawdown").
-function computeWindowStats(states, windowStart, windowEnd) {
-  let baselineIndex = -1;
-  let endIndex = -1;
-  for (let i = 0; i < states.length; i += 1) {
-    const date = states[i].row.date;
-    if (date < windowStart) baselineIndex = i;
-    if (date < windowEnd) endIndex = i;
-  }
-  if (endIndex < 0) return null;
-  const baselineEquity = baselineIndex >= 0 ? states[baselineIndex].equity : states[0].equity;
-  const rowsInWindow = endIndex - baselineIndex;
-  if (rowsInWindow <= 0 || !(baselineEquity > 0)) return null;
-  const returnPct = ((states[endIndex].equity - baselineEquity) / baselineEquity) * 100;
-  // Buy-hold states (engine.buildBuyHoldStates) carry no .trades array at all — this function is
-  // also called against those (for the per-year buy-hold drawdown reference), so treat a missing
-  // .trades as 0 rather than crashing, same as a real backtest state with no trades yet.
-  const baselineTrades = baselineIndex >= 0 && states[baselineIndex].trades ? states[baselineIndex].trades.length : 0;
-  const trades = (states[endIndex].trades ? states[endIndex].trades.length : 0) - baselineTrades;
-
-  let peak = baselineEquity;
-  let maxDrawdown = 0;
-  for (let i = baselineIndex + 1; i <= endIndex; i += 1) {
-    const equity = states[i].equity;
-    peak = Math.max(peak, equity);
-    const drawdown = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
-    maxDrawdown = Math.max(maxDrawdown, drawdown);
-  }
-
-  return { ann: annualizedReturnRate(returnPct, rowsInWindow), returnRate: returnPct, maxDrawdown, trades, rows: rowsInWindow };
-}
+const { computeWindowStats } = require("../shared/backtest-window.js");
 
 // Splits the training window into TRAIN_YEARS sequential 1-year [start, end) slices (anchored on
 // trainStartDate, same convention testWindows already uses relative to "today") and precomputes
@@ -260,7 +240,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -346,6 +326,9 @@ async function main() {
 
       const previousAttempts = [];
       const qualifyingAttempts = []; // { model, best, trainAnnualized } — every attempt that beat buy-hold on TRAIN
+      // 当前最好的结构，只用【训练期】指标挑选——验证期数据绝不能参与这个决定，否则后面
+      // 拿验证期评估就不再是样本外检验。改进提示词里喂给 AI 的也只有训练期指标。
+      let bestStructure = null;
 
       // Phase 1: run the FULL requested attempt budget against TRAIN data only, collecting
       // every attempt that beats buy-hold — no early exit once one candidate looks good, and
@@ -372,14 +355,27 @@ async function main() {
         // 明显不适合时改选别的，所以不会强行套用。
         const suggestedStrategyType = STRATEGY_TYPE_ROTATION[attempt % STRATEGY_TYPE_ROTATION.length];
 
-        writeProgress({ attempt: attempt + 1, currentReason: `AI 正在分析数据、设计模型…${usedPriorExamples ? "（参考了其他股票的历史达标模型）" : ""}` });
+        // 有可改进的结构时，按 REFINE_RATIO 的比例把这次尝试用于改进而不是探索。
+        // 用确定性的取模而不是随机数：同样的参数跑两次得到同样的探索/改进配比，做对照实验时
+        // 两个分支才可比。
+        const canRefine = bestStructure !== null && REFINE_RATIO > 0;
+        // 每 10 次尝试里后 round(ratio*10) 次用于改进，前面的用于探索——把探索排在前面，
+        // 是因为一开始还没有可改进的结构，让改进名额落在已经有东西可改的时候。
+        const refinePerTen = Math.round(REFINE_RATIO * 10);
+        const isRefineAttempt = canRefine && (attempt % 10) >= (10 - refinePerTen);
+        writeProgress({ attempt: attempt + 1, currentReason: isRefineAttempt ? "AI 正在改进当前最优模型…" : "AI 正在分析数据、设计模型…" });
         aiCalls += 1;
         let model;
         try {
-          model = await ModelGenerator.generateModelFromDataProfile(
-            profile, symbolEntry.code, previousAttempts, priorSuccessfulModels,
-            { suggestedStrategyType }
-          );
+          model = isRefineAttempt
+            ? await ModelGenerator.generateImprovedModel(
+              profile, symbolEntry.code, bestStructure.refinementPrompt,
+              { strategyType: bestStructure.model.strategyType }
+            )
+            : await ModelGenerator.generateModelFromDataProfile(
+              profile, symbolEntry.code, previousAttempts, priorSuccessfulModels,
+              { suggestedStrategyType }
+            );
         } catch (aiError) {
           console.error(`[ai-error] ${symbolEntry.code} attempt ${attempt + 1}: ${aiError.message}`);
           errored += 1;
@@ -404,9 +400,46 @@ async function main() {
           continue;
         }
 
+        // 结构变异：在 AI 提案的基础上机械地派生若干结构变体（删规则/删条件/替换成标准过滤
+        // 条件/公式 sma↔ema 或窗口缩放/加时间止损/切换 ma-rsi-band 的布尔开关）。这些都是
+        // 确定性操作，【不消耗 AI 调用】，只花回测。
+        //
+        // 关键纪律：参数寻优的预算在 AI 提案和各变体之间【均分】，总回测次数保持不变——
+        // 否则这个功能就是靠多花算力换结果，比较起来不公平，也会让单次搜索的耗时悄悄翻几倍。
         const baseConfig = { initialCash: INITIAL_CASH, tradeFee: TRADE_FEE, strategyType: model.strategyType };
-        const best = searchBestConfig(engine, model, trainRows, baseConfig, CANDIDATES_PER_SYMBOL);
+        const proposals = [{ model, operation: "ai-proposal" }];
+        if (MUTATIONS > 0) {
+          try {
+            proposals.push(...generateStructuralVariants(model, {
+              normalize: ModelGenerator.normalizeGeneratedModel,
+              random: createSeededRandom(`${symbolEntry.code}:${attempt}`),
+              limit: MUTATIONS,
+            }));
+          } catch (mutationError) {
+            console.log(`[mutate-skip] ${symbolEntry.code} attempt ${attempt + 1}: ${mutationError.message}`);
+          }
+        }
+        const budgetPer = Math.max(1, Math.floor(CANDIDATES_PER_SYMBOL / proposals.length));
+        let best = null;
+        let bestProposal = null;
+        for (const proposal of proposals) {
+          const candidate = searchBestConfig(
+            engine, proposal.model, trainRows,
+            { ...baseConfig, strategyType: proposal.model.strategyType }, budgetPer
+          );
+          if (!candidate) continue;
+          if (!best || candidate.score > best.score) {
+            best = candidate;
+            bestProposal = proposal;
+          }
+        }
         if (!best) continue;
+        // 变体胜出时，后续所有环节（门槛判定、入库、改进的父模型）都必须用变体的模型对象，
+        // 否则存下来的结构和实际被回测的配置就对不上了。
+        if (bestProposal && bestProposal.operation !== "ai-proposal") {
+          console.log(`[mutate] ${symbolEntry.code} attempt ${attempt + 1}: 结构变体胜出（${bestProposal.operation} @ ${bestProposal.path || "-"}）`);
+          model = bestProposal.model;
+        }
 
         const beatsReturn = best.last.returnRate > buyHold.returnRate;
         const beatsDrawdown = best.last.maxDrawdown < buyHold.maxDrawdown;
@@ -487,17 +520,17 @@ async function main() {
 
         if (!beatsReturn || !beatsDrawdown) {
           attemptRecord.outcome = `训练期${best.last.returnRate.toFixed(1)}%/回撤${best.last.maxDrawdown.toFixed(1)}%，买入持有${buyHold.returnRate.toFixed(1)}%/回撤${buyHold.maxDrawdown.toFixed(1)}%，${!beatsReturn ? "收益跑输" : "回撤更大"}`;
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] train=${best.last.returnRate.toFixed(1)}% — didn't beat buy-hold, skipping`);
           continue;
         }
         if (!passesTrainUpsideGate) {
           attemptRecord.outcome = `跑赢买入持有，但有训练年的收益没达到该年自身上行波动的${UPSIDE_THRESHOLD_PERCENT}%（${failingTrainYears.length}个年份不达标）`;
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the upside-deviation gate in: ${failingTrainYears.join("; ")} — skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] beat buy-hold overall but missed the upside-deviation gate in: ${failingTrainYears.join("; ")} — skipping`);
           continue;
         }
         if (!passesTrainDrawdownGate) {
           attemptRecord.outcome = `跑赢买入持有，但有${failingTrainDrawdownYears.length}个训练年的回撤大于买入持有同期回撤`;
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] beat buy-hold overall but missed the per-year drawdown gate in: ${failingTrainDrawdownYears.join("; ")} — skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] beat buy-hold overall but missed the per-year drawdown gate in: ${failingTrainDrawdownYears.join("; ")} — skipping`);
           continue;
         }
 
@@ -507,7 +540,7 @@ async function main() {
         const trainPayoff = trainBuyWin.payoffRatio;
         if (trainBuyWin.closedBuys < MIN_TRAIN_CLOSED_BUYS) {
           attemptRecord.outcome = `跑赢买入持有，但训练期只做成${trainBuyWin.closedBuys}笔完整买卖（需要至少${MIN_TRAIN_CLOSED_BUYS}笔），买入条件太苛刻`;
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期只有 ${trainBuyWin.closedBuys} 个完整平仓买单(<${MIN_TRAIN_CLOSED_BUYS}) — skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] 跑赢买入持有，但训练期只有 ${trainBuyWin.closedBuys} 个完整平仓买单(<${MIN_TRAIN_CLOSED_BUYS}) — skipping`);
           continue;
         }
         // payoffRatio 为 null 有两种含义：没有已平仓买单（上面那道门已经排除），或者一笔亏损都
@@ -526,17 +559,41 @@ async function main() {
             ? `低于盈亏比底线${MIN_TRAIN_PAYOFF_FLOOR}`
             : `盈亏比未达${MIN_PAYOFF_RATIO}且期望未达${MIN_EXPECTANCY_PERCENT}%`;
           attemptRecord.outcome = `跑赢买入持有，但训练期${shown}——${why}`;
-          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] 跑赢买入持有，但训练期${shown} — ${why}，skipping`);
+          console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] 跑赢买入持有，但训练期${shown} — ${why}，skipping`);
           continue;
         }
 
         const trainAnnualized = annualizedReturnRate(best.last.returnRate, trainRows.length) || 0;
         attemptRecord.outcome = `训练期${trainAnnualized.toFixed(1)}%年化、${trainBuyWin.closedBuys}笔完整买卖，已通过训练阶段进入验证`;
+        // 更新"当前最优结构"：以训练期每买单期望为主依据（跟寻优目标函数、跟达标标准同一个
+        // 口径——衡量每笔的边际优势，而不是会被仓位放大的账户收益）。
+        const structureScore = Number.isFinite(trainBuyWin.expectancyPct) ? trainBuyWin.expectancyPct : -Infinity;
+        if (!bestStructure || structureScore > bestStructure.score) {
+          // 逐笔诊断由 buildTrainingFeedback 生成：MFE/MAE、持仓天数、按入场趋势分组的胜率与
+          // 期望、"曾经浮盈最后却亏损"的笔数，外加最差/最好各三笔的具体样本。它会在行情行或
+          // 成交日期越出训练窗口时直接抛错——前视偏差由代码拦住，不靠调用方自觉。
+          // 这里传的 trainRows / 训练窗口边界都是训练期的，验证期数据不参与。
+          try {
+            const feedback = buildTrainingFeedback(engine, trainRows, best.config, best.last, {
+              startDate: trainStartDate,
+              endDate: trainEndDate,
+              parentId: `attempt-${attempt + 1}`,
+            });
+            bestStructure = {
+              model,
+              score: structureScore,
+              refinementPrompt: buildRefinementPrompt(feedback),
+            };
+          } catch (feedbackError) {
+            // 诊断构造失败不能把整轮搜索带下水：保留上一个 bestStructure，本次只是不更新。
+            console.log(`[feedback-skip] ${symbolEntry.code} attempt ${attempt + 1}: ${feedbackError.message}`);
+          }
+        }
         qualifyingAttempts.push({
           model, best, trainAnnualized, trainYearBreakdown,
           passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples,
         });
-        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [examples:${usedPriorExamples ? "on" : "off"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
+        console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
           aiCalls,
           currentReason: `训练阶段第${attempt + 1}/${ATTEMPTS_PER_SYMBOL}次：${model.strategyType} 跑赢买入持有，已收集${qualifyingAttempts.length}个候选（训练阶段跑完后统一验证）`,
@@ -597,7 +654,7 @@ async function main() {
           && passesSample && passesExpectancy && passesPayoff
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [examples:${usedPriorExamples ? "on" : "off"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [${isRefineAttempt ? "refine" : "explore"}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return {
           model, best, trainAnnualized, trainYearBreakdown,

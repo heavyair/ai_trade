@@ -150,7 +150,7 @@ function validateAgainstSchema(parsed, schema) {
   return problems;
 }
 
-async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName, temperature }) {
+async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName, temperature, onUsage }) {
   if (DEEPSEEK_API_KEY) {
     const response = await postJsonOverHttps("api.deepseek.com", "/chat/completions", {
       Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
@@ -163,6 +163,7 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
       response_format: { type: "json_object" },
       ...(Number.isFinite(temperature) ? { temperature } : {}),
     });
+    if (onUsage) onUsage({ provider: "deepseek", model: DEEPSEEK_MODEL, usage: response.usage || null });
     const text = extractDeepSeekText(response);
     // DeepSeek 没有 API 级 schema 约束，这里自己补一道（见上面 validateAgainstSchema 的说明）。
     if (text && schema) {
@@ -201,6 +202,7 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
       },
       ...(Number.isFinite(temperature) ? { temperature } : {}),
     });
+    if (onUsage) onUsage({ provider: "openai", model: OPENAI_MODEL, usage: response.usage || null });
     return extractOpenAiText(response);
   }
   const error = new Error("AI 服务还没有配置 API Key（OPENAI_API_KEY 或 DEEPSEEK_API_KEY）。");
@@ -942,7 +944,7 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
 // its next candidate) and for deciding how often to pass this at all — search-validated-best.js
 // currently does it for a random ~50% of attempts, to compare against blind generation rather
 // than assume few-shot examples are strictly better.
-async function generateModelFromDataProfile(profile, symbol, previousAttempts = [], priorSuccessfulModels = [], options = {}) {
+function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuccessfulModels = [], options = {}) {
   if (!profile) {
     const error = new Error("历史数据不足，无法生成数据画像。");
     error.statusCode = 400;
@@ -964,7 +966,7 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
   const strategyHintLine = options.suggestedStrategyType && SUPPORTED_STRATEGY_TYPES.includes(options.suggestedStrategyType)
     ? `本次请优先考虑 strategyType="${options.suggestedStrategyType}"，并围绕它来设计规则。只有当上面的数据特征明显不适合这种策略时（请在 reason 里说明理由），才改用其它类型。`
     : null;
-  const prompt = [
+  return [
     "下面是一只股票的历史行情特征摘要（是统计特征，不是原始逐日行情）。请分析这些特征，设计一个尽量跑赢“买入并一直持有”、且最大回撤比买入持有更小的择时模型，转换成 AI Trade 支持的安全模型 JSON。",
     // 指定了倾向类型时只发那一种的说明——整份指南约 25000 字符，其中 32% 是类型专属的，
     // 一次调用里其余七种类型的详细说明纯属噪音（也是成本）。没指定类型时仍发完整版。
@@ -984,8 +986,13 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     strategyHintLine,
     diversityLine,
     priorSuccessLine,
+    options.refinement ? require("./model-evolution.js").buildRefinementPrompt(options.refinement) : null,
   ].filter(Boolean).join("\n");
+}
 
+async function generateModelFromDataProfile(profile, symbol, previousAttempts = [], priorSuccessfulModels = [], options = {}) {
+  const prompt = buildDataProfilePrompt(profile, symbol, previousAttempts, priorSuccessfulModels, options);
+  const schema = buildModelSchema();
   const text = await requestAiJsonModel({
     systemPrompt: "你是量化交易回测 App 的策略设计器。你会看到一只股票的历史行情统计特征，据此设计一个可能有效的择时策略。你只输出结构化 JSON，不能输出代码或解释性 Markdown。",
     userPrompt: prompt,
@@ -993,6 +1000,53 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     schemaName: "ai_trade_model",
     // 不传则沿用服务商默认值（历史行为）。调用方可以传值做多样性调节，见 requestAiJsonModel
     // 上方关于 temperature 的说明。
+    temperature: Number.isFinite(options.temperature) ? options.temperature : undefined,
+    onUsage: options.onUsage,
+  });
+  if (!text) {
+    const error = new Error("AI 没有返回模型内容。");
+    error.statusCode = 502;
+    throw error;
+  }
+  return normalizeGeneratedModel(JSON.parse(text));
+}
+
+// 在一个【已经跑通的模型】基础上改进，而不是从零再生成一个。
+//
+// 为什么需要它：搜索的 N 次尝试原本是 N 次独立随机重启，提示词甚至明确要求"换一个明显不同的
+// 思路"。于是某次尝试跑出好结果之后，系统的反应是把它扔掉从头再来。三条实测证据都指向
+// 同一个判断——缺的不是随机性而是收敛：
+//   1. temperature 实验：默认温度下 18 次生成了 18 个互不相同的配置，多样性早已饱和；
+//   2. 参数预算实验：单个结构内部的参数空间 400 个候选就已穷举，没有局部精度可榨；
+//   3. 参数集实验：靠加参数扩大搜索空间只会过拟合（验证期年化掉到五分之一）。
+//
+// 喂给 AI 的证据由 shared/model-evolution.js 的 buildTrainingFeedback 生成——逐笔交易的
+// MFE/MAE、持仓天数、按入场时趋势状态分组的胜率与期望、"曾经浮盈最后却亏损"的笔数，外加
+// 最差/最好各三笔的具体样本。这比只给一行汇总（"期望偏低、笔数偏少"这类 AI 自己也能猜到的
+// 结论）强得多：有了具体的失效现象，改进才可能是有针对性的而不是碰运气。
+//
+// 前视偏差由 buildTrainingFeedback 用代码强制拦住（行情行或成交日期越出训练窗口直接抛错），
+// 不依赖调用方自觉——验证期数据一旦进入这个提示词，后面拿验证期评估就不再是样本外检验。
+async function generateImprovedModel(profile, symbol, refinementPrompt, options = {}) {
+  if (!profile || !refinementPrompt) {
+    const error = new Error("缺少可改进的父模型诊断或数据画像。");
+    error.statusCode = 400;
+    throw error;
+  }
+  const schema = buildModelSchema();
+  const prompt = [
+    "本轮任务是改进一个已经完成参数寻优的父模型，而不是重新设计一个无关的新模型。",
+    ...filterGuideLinesForType(buildPromptGuideLines(schema), options.strategyType),
+    `股票/标的：${symbol || "通用"}`,
+    `历史行情特征（JSON）：${JSON.stringify(profile)}`,
+    refinementPrompt,
+  ].filter(Boolean).join("\n");
+
+  const text = await requestAiJsonModel({
+    systemPrompt: "你是量化交易回测 App 的策略优化师。你会看到一个已经跑通的父模型和它在训练期的逐笔交易诊断，你的任务是针对具体失效现象做一到两处有依据的修改。你只输出结构化 JSON，不能输出代码或解释性 Markdown。",
+    userPrompt: prompt,
+    schema,
+    schemaName: "ai_trade_model",
     temperature: Number.isFinite(options.temperature) ? options.temperature : undefined,
   });
   if (!text) {
@@ -1223,5 +1277,7 @@ module.exports = {
   normalizeGeneratedModel,
   generateModelFromDescription,
   generateModelFromDataProfile,
+  generateImprovedModel,
+  buildDataProfilePrompt,
   buildSymbolDataProfile,
 };

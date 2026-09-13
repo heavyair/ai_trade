@@ -4,7 +4,7 @@
 // search for the best-scoring combination" doesn't depend on where the model structure came
 // from. Extracted out of run-optimization-scan.js instead of being copy-pasted a second time.
 
-function buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair) {
+function buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair, random = Math.random) {
   const candidates = [];
   if (descriptors.length === 0) {
     candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, []));
@@ -22,7 +22,7 @@ function buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerP
     combos.forEach((combo) => candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, combo)));
   } else {
     for (let i = 0; i < candidatesPerPair; i += 1) {
-      const combo = valueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
+      const combo = valueLists.map((values) => values[Math.floor(random() * values.length)]);
       candidates.push(engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, combo));
     }
   }
@@ -79,11 +79,14 @@ function narrowDescriptor(descriptor, centerValue, shrinkFactor) {
 // lightweight, no-dependency approximation of what a full Bayesian-optimization surrogate model
 // buys you — later trials concentrate near known-good regions instead of continuing to sample
 // uniformly at random everywhere — without needing a Gaussian process or acquisition function.
-function searchBestConfig(engine, preset, rows, baseConfig, candidatesPerPair) {
+function searchBestConfig(engine, preset, rows, baseConfig, candidatesPerPair, { random = Math.random } = {}) {
+  if (!Number.isSafeInteger(candidatesPerPair) || candidatesPerPair < 1) {
+    throw new Error("candidatesPerPair must be a positive integer");
+  }
   const descriptors = engine.discoverOptimizationParameters(preset);
 
   if (descriptors.length === 0) {
-    const candidates = buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair);
+    const candidates = buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair, random);
     const result = evaluateCandidateConfig(engine, rows, candidates[0]);
     return result ? { ...result, testedCandidates: candidates.length } : null;
   }
@@ -91,7 +94,7 @@ function searchBestConfig(engine, preset, rows, baseConfig, candidatesPerPair) {
   const valueLists = descriptors.map((d) => engine.buildRangeValues(d));
   const totalCombinations = valueLists.reduce((acc, list) => acc * Math.max(1, list.length), 1);
   if (totalCombinations <= candidatesPerPair) {
-    const candidates = buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair);
+    const candidates = buildCandidates(engine, preset, descriptors, baseConfig, candidatesPerPair, random);
     let best = null;
     let bestScore = -Infinity;
     let tested = 0;
@@ -115,7 +118,7 @@ function searchBestConfig(engine, preset, rows, baseConfig, candidatesPerPair) {
     const isLastRound = round === REFINEMENT_ROUND_FRACTIONS.length - 1;
     const roundBudget = isLastRound
       ? candidatesPerPair - tested
-      : Math.max(1, Math.round(candidatesPerPair * REFINEMENT_ROUND_FRACTIONS[round]));
+      : Math.min(candidatesPerPair - tested, Math.max(1, Math.round(candidatesPerPair * REFINEMENT_ROUND_FRACTIONS[round])));
     if (roundBudget <= 0) break;
 
     const roundValueLists = searchDescriptors.map((d) => engine.buildRangeValues(d));
@@ -123,7 +126,7 @@ function searchBestConfig(engine, preset, rows, baseConfig, candidatesPerPair) {
     let roundBestScore = -Infinity;
 
     for (let i = 0; i < roundBudget; i += 1) {
-      const combo = roundValueLists.map((values) => values[Math.floor(Math.random() * values.length)]);
+      const combo = roundValueLists.map((values) => values[Math.floor(random() * values.length)]);
       const config = engine.buildConfigFromDescriptorCombo(baseConfig, preset, preset.strategyType, descriptors, combo);
       const result = evaluateCandidateConfig(engine, rows, config);
       tested += 1;
