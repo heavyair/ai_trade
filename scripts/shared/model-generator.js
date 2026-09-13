@@ -150,6 +150,29 @@ function validateAgainstSchema(parsed, schema) {
   return problems;
 }
 
+// DeepSeek 偶尔会把整个模型对象再套一层信封返回（{"model":{…}}、{"strategy":{…}}、
+// {"models":[{…}]} 之类），内容本身是好的，只是外面多包了一层。实测这类返回占全部 AI 调用的
+// 约 8%：e/f 两组 A/B 日志共 230 次生成里有 10 次失败，全都是「label/strategyType/confidence/
+// reason 四个必填字段同时缺失」——正是套了信封的特征（真写坏了通常只缺一两个字段）。
+// 原来这些调用会被整个丢掉重试，等于白烧 8% 的额度。
+//
+// 拆信封只在「外层校验不过」时才尝试，而且要求拆出来的对象能【完整通过同一份 schema】才采用。
+// 这样真正结构写坏的返回不会被蒙混过去——一个缺字段的对象拆几层都还是缺字段。
+function unwrapSchemaEnvelope(parsed, schema) {
+  const candidates = [];
+  if (Array.isArray(parsed) && parsed.length === 1) candidates.push(parsed[0]);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const value of Object.values(parsed)) {
+      if (Array.isArray(value) && value.length === 1) candidates.push(value[0]);
+      else if (value && typeof value === "object") candidates.push(value);
+    }
+  }
+  for (const candidate of candidates) {
+    if (validateAgainstSchema(candidate, schema).length === 0) return candidate;
+  }
+  return null;
+}
+
 async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName, temperature, onUsage }) {
   if (DEEPSEEK_API_KEY) {
     const response = await postJsonOverHttps("api.deepseek.com", "/chat/completions", {
@@ -164,7 +187,7 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
       ...(Number.isFinite(temperature) ? { temperature } : {}),
     });
     if (onUsage) onUsage({ provider: "deepseek", model: DEEPSEEK_MODEL, usage: response.usage || null });
-    const text = extractDeepSeekText(response);
+    let text = extractDeepSeekText(response);
     // DeepSeek 没有 API 级 schema 约束，这里自己补一道（见上面 validateAgainstSchema 的说明）。
     if (text && schema) {
       let parsed = null;
@@ -175,9 +198,22 @@ async function requestAiJsonModel({ systemPrompt, userPrompt, schema, schemaName
         error.statusCode = 502;
         throw error;
       }
-      const problems = validateAgainstSchema(parsed, schema);
+      let problems = validateAgainstSchema(parsed, schema);
       if (problems.length > 0) {
-        const error = new Error(`AI 返回的 JSON 不符合结构要求：${problems.slice(0, 4).join("；")}`);
+        const unwrapped = unwrapSchemaEnvelope(parsed, schema);
+        if (unwrapped) {
+          parsed = unwrapped;
+          text = JSON.stringify(unwrapped);
+          problems = [];
+        }
+      }
+      if (problems.length > 0) {
+        // 把实际的顶层字段名一起带出来：四个必填字段同时缺失时，光说"缺少 label"根本判断不出
+        // AI 到底返回了什么形状，下次遇到还得从头猜。
+        const shape = Array.isArray(parsed)
+          ? `数组(${parsed.length}项)`
+          : Object.keys(parsed).slice(0, 8).join(",") || "(空对象)";
+        const error = new Error(`AI 返回的 JSON 不符合结构要求：${problems.slice(0, 4).join("；")}（实际顶层字段：${shape}）`);
         error.statusCode = 502;
         throw error;
       }
@@ -1431,6 +1467,10 @@ module.exports = {
   BLOCK_RULE_STREAK_COMPARATORS,
   BLOCK_RULE_ACTION_TYPES,
   requestAiJsonModel,
+  // 导出是为了能脱离 AI 调用直接测这两个纯函数——它们决定一次 AI 调用是被采用还是被丢掉，
+  // 改坏了只会表现为"达标模型变少"，很难从搜索日志里看出来。
+  validateAgainstSchema,
+  unwrapSchemaEnvelope,
   normalizeGeneratedModel,
   generateModelFromDescription,
   generateModelFromDataProfile,
