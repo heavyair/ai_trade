@@ -289,6 +289,9 @@ const adminQualifiedRecheckRunButton = document.querySelector("#adminQualifiedRe
 const adminQualifiedRecheckRunStatus = document.querySelector("#adminQualifiedRecheckRunStatus");
 const adminQualifiedRecheckProgressBanner = document.querySelector("#adminQualifiedRecheckProgressBanner");
 const adminScheduledJobsTabButton = document.querySelector("#adminScheduledJobsTabButton");
+// 标的数据自查不再是管理区的一个标签页，而是独立页面 /symbol-lookup.html（逻辑在
+// public/symbol-lookup.js）；这里只保留跳转入口。
+const adminSymbolLookupPageButton = document.querySelector("#adminSymbolLookupPageButton");
 const adminScheduledJobsPanel = document.querySelector("#adminScheduledJobsPanel");
 const adminScheduledJobsList = document.querySelector("#adminScheduledJobsList");
 const adminWaveVisualizerTabButton = document.querySelector("#adminWaveVisualizerTabButton");
@@ -3878,84 +3881,6 @@ function renderAiGeneratedPresetRow(p, options = {}) {
 }
 
 
-
-// ===== 标的数据自查 =====
-//
-// 只回答"库里有没有这只票"是不够的：真正会让人卡住的是"有数据但不够用"——最常见的是
-// 训练窗口第一年行数不足（实测 574 个标的里有 459 个是这种情况，多为次新股或数据源起点晚），
-// 这会让上行波动门槛整年无法评估。所以结论一栏直接给出可否用于 AI 搜索，并说明卡在哪。
-const adminSymbolLookupInput = document.querySelector("#adminSymbolLookupInput");
-const adminSymbolLookupButton = document.querySelector("#adminSymbolLookupButton");
-const adminSymbolLookupStatus = document.querySelector("#adminSymbolLookupStatus");
-const adminSymbolLookupResult = document.querySelector("#adminSymbolLookupResult");
-
-const MARKET_LABELS = { US: "美股", HK: "H股", "0": "深市", "1": "沪市" };
-
-function renderSymbolLookupRows(rows) {
-  return rows.map((row) => {
-    // 4 年训练 + 2 年验证约需 1400 个交易日；第一年不足 30 行则该年无法评估。
-    const enoughRows = row.priceRows >= 1400;
-    const enoughFirstYear = row.firstTrainYearRows >= 30;
-    const verdict = !enoughRows
-      ? `<span class="down">数据不足（仅 ${row.priceRows} 行，约需 1400）</span>`
-      : !enoughFirstYear
-        ? `<span class="down">训练首年数据不足（${row.firstTrainYearRows} 行）</span>`
-        : '<span class="up">可用于 AI 搜索</span>';
-    const pePct = row.priceRows > 0 ? Math.round((row.peRows / row.priceRows) * 100) : 0;
-    const tags = (typeof StockTags !== "undefined" ? StockTags.tagsOf(row.symbol) : [])
-      .map((t) => escapeHtml(StockTags.labelOf(t))).join("、") || "--";
-    return `<tr>
-      <td><strong>${escapeHtml(row.symbol)}</strong><br><span class="field-hint">${escapeHtml(row.name || "")}</span></td>
-      <td>${escapeHtml(MARKET_LABELS[row.market] || row.market)}</td>
-      <td>${row.priceRows}<br><span class="field-hint">${escapeHtml(row.firstDate)} ~ ${escapeHtml(row.lastDate)}</span></td>
-      <td>${row.firstTrainYearRows}</td>
-      <td>${row.peRows > 0 ? `${pePct}%` : '<span class="field-hint">无</span>'}</td>
-      <td>${row.fundamentalRows > 0 ? row.fundamentalRows : '<span class="field-hint">无</span>'}</td>
-      <td>${row.models}${row.qualifiedModels > 0 ? ` <span class="up">(达标 ${row.qualifiedModels})</span>` : ""}</td>
-      <td>${tags}</td>
-      <td>${verdict}</td>
-    </tr>`;
-  }).join("");
-}
-
-async function runSymbolLookup() {
-  if (!adminSymbolLookupInput || !adminSymbolLookupResult) return;
-  const query = adminSymbolLookupInput.value.trim();
-  if (!query) {
-    adminSymbolLookupStatus.textContent = "请输入代码或名称。";
-    return;
-  }
-  adminSymbolLookupStatus.textContent = "查询中…";
-  adminSymbolLookupResult.innerHTML = "";
-  try {
-    const response = await fetch(`/api/admin/symbol-lookup?q=${encodeURIComponent(query)}`, { cache: "no-store" });
-    const payload = await readJsonResponse(response, "查询失败。");
-    if (!payload.rows || payload.rows.length === 0) {
-      adminSymbolLookupStatus.textContent = "";
-      adminSymbolLookupResult.innerHTML = `<div class="ranking-empty">库里没有匹配「${escapeHtml(query)}」的标的。</div>`;
-      return;
-    }
-    adminSymbolLookupStatus.textContent = `匹配 ${payload.found} 个`;
-    adminSymbolLookupResult.innerHTML = `
-      <table class="admin-ranking-table">
-        <thead><tr>
-          <th>代码 / 名称</th><th>市场</th><th>行情行数 / 区间</th><th>训练首年行数</th>
-          <th>PE 覆盖</th><th>基本面</th><th>已有模型</th><th>标签</th><th>结论</th>
-        </tr></thead>
-        <tbody>${renderSymbolLookupRows(payload.rows)}</tbody>
-      </table>`;
-  } catch (error) {
-    adminSymbolLookupStatus.textContent = "";
-    adminSymbolLookupResult.innerHTML = `<div class="ranking-empty">${escapeHtml(error.message || "查询失败。")}</div>`;
-  }
-}
-
-if (adminSymbolLookupButton) adminSymbolLookupButton.addEventListener("click", runSymbolLookup);
-if (adminSymbolLookupInput) {
-  adminSymbolLookupInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); runSymbolLookup(); }
-  });
-}
 
 // ===== 模型列表的板块/市场标签筛选 =====
 //
@@ -8053,7 +7978,7 @@ function setAdminTab(tab) {
   const showValidatedSearch = tab === "validatedSearch";
   const showWaveVisualizer = tab === "waveVisualizer";
   const showScheduledJobs = tab === "scheduledJobs";
-  const showPresets = !showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showWatchableAi && !showValidatedSearch && !showWaveVisualizer && !showScheduledJobs;
+  const showPresets =!showRankings && !showScan && !showScanStatus && !showValidation && !showAutoGenerate && !showStockScreen && !showWatchAlerts && !showWatchableAi && !showValidatedSearch && !showWaveVisualizer && !showScheduledJobs;
   if (adminPresetsTabButton) adminPresetsTabButton.classList.toggle("active", showPresets);
   if (adminRankingsTabButton) adminRankingsTabButton.classList.toggle("active", showRankings);
   if (adminScanTabButton) adminScanTabButton.classList.toggle("active", showScan);
@@ -8126,6 +8051,9 @@ if (adminWaveVisualizerTabButton) {
 }
 if (adminScheduledJobsTabButton) {
   adminScheduledJobsTabButton.addEventListener("click", () => setAdminTab("scheduledJobs"));
+}
+if (adminSymbolLookupPageButton) {
+  adminSymbolLookupPageButton.addEventListener("click", () => window.open("/symbol-lookup.html", "_blank"));
 }
 if (adminQualifiedRecheckRunButton) {
   adminQualifiedRecheckRunButton.addEventListener("click", () => {

@@ -7650,6 +7650,91 @@ function mapPublicPresetRow(row, { viewerIsOwner = false } = {}) {
 // 或者"行情有、估值没有"。所以这里一次性把判断要用的东西都给出来：行情区间与行数、
 // 训练窗口起点那一年的行数（不足 30 行会让整个上行波动门槛无法评估，实测库里 574 个标的
 // 有 459 个是这种情况）、估值覆盖率、已有模型数、板块标签。
+// ETF 代码 -> index_catalog.mapping_id。系统里没有「某个 ETF 跟踪哪个指数」的数据源，所以
+// 这是一份人工维护的小清单，只收录跟踪目标能对上目录里已有指数、且对应关系公开明确的 ETF
+// ——沿用 public/stock-tags.js 的取舍：宁缺毋滥，对不上的直接不收，而不是猜一个近似的指数。
+// 同名不同指数是这里最容易踩的坑：512480「半导体芯片ETF」跟踪的是中华交易服务半导体芯片
+// 指数，跟目录里的国证半导体芯片(980017)不是一个指数，所以它不在表里。
+const ETF_INDEX_MAP = {
+  QQQ: "NASDAQ100",      // Invesco QQQ Trust
+  QQQM: "NASDAQ100",     // Invesco Nasdaq-100 ETF（同一指数的低费率版本）
+  TQQQ: "NASDAQ100",     // ProShares UltraPro QQQ，3 倍杠杆，跟踪的仍是纳指100
+  2800: "HSI",           // 盈富基金 Tracker Fund of Hong Kong
+  510300: "CSI300",      // 华泰柏瑞沪深300ETF
+  159919: "CSI300",      // 嘉实沪深300ETF
+  159995: "CNI_CHIP",    // 华夏国证半导体芯片ETF
+};
+
+// 把用户输入解析成「这是不是一个指数/ETF」。指数按 mapping_id、指数代码、官方名、简称匹配，
+// ETF 走上面的人工清单。返回 null 表示当作普通标的查询。
+async function matchIndexQuery(query) {
+  const etfMapping = ETF_INDEX_MAP[query.toUpperCase()];
+  if (etfMapping) return { mappingId: etfMapping, matchedVia: `ETF ${query.toUpperCase()}` };
+  const result = await dbQuery(`
+    SELECT mapping_id FROM index_catalog
+    WHERE available
+      AND (upper(mapping_id) = upper($1) OR upper(code) = upper($1)
+           OR official_name ILIKE $2 OR short_name ILIKE $2)
+    ORDER BY (upper(mapping_id) = upper($1)) DESC, mapping_id
+    LIMIT 1
+  `, [query, `%${query}%`]);
+  return result.rows.length > 0 ? { mappingId: result.rows[0].mapping_id, matchedVia: "指数" } : null;
+}
+
+// 给定一批代码，查它们在库里的数据情况。指数展开时一次要查几百个代码，所以这里是一条
+// 聚合查询 + 一条模型数查询，而不是按标的逐个查（沪深300 会打 300 次库）。
+async function fetchSymbolAvailability(matchedCte, params) {
+  const result = await dbQuery(`
+    WITH matched AS (${matchedCte})
+    SELECT m.symbol, m.market,
+      COALESCE(s.name, '') AS name,
+      count(dp.trade_date)::int AS price_rows,
+      min(dp.trade_date)::date AS first_date,
+      max(dp.trade_date)::date AS last_date,
+      count(*) FILTER (
+        WHERE dp.trade_date >= (current_date - interval '6 years')
+          AND dp.trade_date <  (current_date - interval '5 years')
+      )::int AS first_train_year_rows,
+      count(dv.pe)::int AS pe_rows,
+      count(sf.roe)::int AS fundamental_rows
+    FROM matched m
+    JOIN daily_prices dp ON dp.symbol = m.symbol AND dp.market = m.market
+    LEFT JOIN symbols s ON s.symbol = m.symbol AND s.market = m.market
+    LEFT JOIN daily_valuations dv ON dv.symbol = dp.symbol AND dv.market = dp.market AND dv.trade_date = dp.trade_date
+    LEFT JOIN stock_fundamentals sf ON sf.symbol = dp.symbol AND sf.market = dp.market AND sf.report_date = dp.trade_date
+    GROUP BY m.symbol, m.market, s.name
+    ORDER BY m.symbol
+  `, params);
+
+  const symbols = result.rows.map((row) => row.symbol.toUpperCase());
+  const modelCounts = new Map();
+  if (symbols.length > 0) {
+    const counted = await dbQuery(`
+      SELECT upper(symbol) AS symbol, count(*)::int AS n,
+        count(*) FILTER (WHERE reached_target)::int AS q
+      FROM optimization_scan_results WHERE upper(symbol) = ANY($1) GROUP BY 1
+    `, [symbols]);
+    for (const row of counted.rows) modelCounts.set(row.symbol, { models: row.n, qualified: row.q });
+  }
+
+  return result.rows.map((row) => {
+    const counts = modelCounts.get(row.symbol.toUpperCase()) || { models: 0, qualified: 0 };
+    return {
+      symbol: row.symbol,
+      market: row.market,
+      name: row.name,
+      priceRows: row.price_rows,
+      firstDate: row.first_date ? row.first_date.toISOString().slice(0, 10) : "",
+      lastDate: row.last_date ? row.last_date.toISOString().slice(0, 10) : "",
+      firstTrainYearRows: row.first_train_year_rows,
+      peRows: row.pe_rows,
+      fundamentalRows: row.fundamental_rows,
+      models: counts.models,
+      qualifiedModels: counts.qualified,
+    };
+  });
+}
+
 async function handleSymbolLookupApi(req, res, requestUrl) {
   try {
     await requireAdminUser(req);
@@ -7657,59 +7742,74 @@ async function handleSymbolLookupApi(req, res, requestUrl) {
     const query = String(requestUrl.searchParams.get("q") || "").trim();
     if (!query) { sendJson(res, 400, { error: "请输入股票代码或名称。" }); return; }
 
-    const like = `%${query}%`;
-    const result = await dbQuery(`
-      WITH matched AS (
-        SELECT DISTINCT dp.symbol, dp.market
-        FROM daily_prices dp
-        LEFT JOIN symbols s ON s.symbol = dp.symbol AND s.market = dp.market
-        WHERE upper(dp.symbol) = upper($1)
-           OR dp.symbol ILIKE $2
-           OR s.name ILIKE $2
-        LIMIT 50
-      )
-      SELECT m.symbol, m.market,
-        COALESCE(s.name, '') AS name,
-        count(dp.trade_date)::int AS price_rows,
-        min(dp.trade_date)::date AS first_date,
-        max(dp.trade_date)::date AS last_date,
-        count(*) FILTER (
-          WHERE dp.trade_date >= (current_date - interval '6 years')
-            AND dp.trade_date <  (current_date - interval '5 years')
-        )::int AS first_train_year_rows,
-        count(dv.pe)::int AS pe_rows,
-        count(sf.roe)::int AS fundamental_rows
-      FROM matched m
-      JOIN daily_prices dp ON dp.symbol = m.symbol AND dp.market = m.market
-      LEFT JOIN symbols s ON s.symbol = m.symbol AND s.market = m.market
-      LEFT JOIN daily_valuations dv ON dv.symbol = dp.symbol AND dv.market = dp.market AND dv.trade_date = dp.trade_date
-      LEFT JOIN stock_fundamentals sf ON sf.symbol = dp.symbol AND sf.market = dp.market AND sf.report_date = dp.trade_date
-      GROUP BY m.symbol, m.market, s.name
-      ORDER BY m.symbol
-    `, [query, like]);
-
-    const rows = [];
-    for (const row of result.rows) {
-      const modelCount = await dbQuery(
-        `SELECT count(*)::int AS n, count(*) FILTER (WHERE reached_target)::int AS q
-         FROM optimization_scan_results WHERE upper(symbol) = upper($1)`, [row.symbol]);
-      rows.push({
-        symbol: row.symbol,
-        market: row.market,
-        name: row.name,
-        priceRows: row.price_rows,
-        firstDate: row.first_date ? row.first_date.toISOString().slice(0, 10) : "",
-        lastDate: row.last_date ? row.last_date.toISOString().slice(0, 10) : "",
-        firstTrainYearRows: row.first_train_year_rows,
-        peRows: row.pe_rows,
-        fundamentalRows: row.fundamental_rows,
-        models: modelCount.rows[0].n,
-        qualifiedModels: modelCount.rows[0].q,
+    const indexMatch = await matchIndexQuery(query);
+    if (indexMatch) {
+      const { entry, rows: constituents } = await resolveIndexConstituents(dbPool, indexMatch.mappingId);
+      const codes = [...new Set(constituents.map((c) => String(c.code || "").trim().toUpperCase()).filter(Boolean))];
+      const officialNames = new Map(constituents.map((c) => [String(c.code || "").trim().toUpperCase(), c.name || ""]));
+      const rows = await fetchSymbolAvailability(
+        `SELECT DISTINCT dp.symbol, dp.market FROM daily_prices dp WHERE upper(dp.symbol) = ANY($1)`,
+        [codes]
+      );
+      // 库里查不到的成分股不能悄悄丢掉——「这个指数里哪几只还没有数据」正是这个界面要回答的
+      // 问题，所以补成 0 行的占位行，名称用指数官方名单里的。
+      const present = new Set(rows.map((row) => row.symbol.toUpperCase()));
+      for (const code of codes) {
+        if (present.has(code)) continue;
+        rows.push({
+          symbol: code, market: "", name: officialNames.get(code) || "",
+          priceRows: 0, firstDate: "", lastDate: "", firstTrainYearRows: 0,
+          peRows: 0, fundamentalRows: 0, models: 0, qualifiedModels: 0,
+        });
+      }
+      rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
+      // 指数官方名单里可能有重名但库里名称为空的，优先用库里的名称，没有才用指数名单的。
+      for (const row of rows) if (!row.name) row.name = officialNames.get(row.symbol.toUpperCase()) || "";
+      sendJson(res, 200, {
+        query, found: rows.length, rows,
+        index: {
+          mappingId: entry.mappingId, officialName: entry.officialName, shortName: entry.shortName,
+          code: entry.code, market: entry.market, matchedVia: indexMatch.matchedVia,
+          constituents: codes.length, withData: present.size, missing: codes.length - present.size,
+        },
       });
+      return;
     }
-    sendJson(res, 200, { query, found: rows.length, rows });
+
+    const rows = await fetchSymbolAvailability(`
+      SELECT DISTINCT dp.symbol, dp.market
+      FROM daily_prices dp
+      LEFT JOIN symbols s ON s.symbol = dp.symbol AND s.market = dp.market
+      WHERE upper(dp.symbol) = upper($1) OR dp.symbol ILIKE $2 OR s.name ILIKE $2
+      LIMIT 50
+    `, [query, `%${query}%`]);
+    sendJson(res, 200, { query, found: rows.length, rows, index: null });
   } catch (error) {
     sendJson(res, error.statusCode || 400, { error: error.message || "查询失败。" });
+  }
+}
+
+// 界面上要列出「可以直接查的指数/ETF」——用户上一版找不到入口，所以这里把可查对象显式给出来，
+// 而不是让人猜该输什么。
+async function handleLookupTargetsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") { sendJson(res, 405, { error: "Method not allowed" }); return; }
+    const catalog = await listIndexCatalog(dbPool);
+    const etfByMapping = new Map();
+    for (const [ticker, mappingId] of Object.entries(ETF_INDEX_MAP)) {
+      if (!etfByMapping.has(mappingId)) etfByMapping.set(mappingId, []);
+      etfByMapping.get(mappingId).push(String(ticker));
+    }
+    sendJson(res, 200, {
+      indices: catalog.filter((entry) => entry.available).map((entry) => ({
+        mappingId: entry.mappingId, officialName: entry.officialName, shortName: entry.shortName,
+        code: entry.code, market: entry.market, cachedCount: entry.cachedCount,
+        etfs: etfByMapping.get(entry.mappingId) || [],
+      })),
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取指数清单失败。" });
   }
 }
 
@@ -8864,6 +8964,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/admin/symbol-lookup") {
     handleSymbolLookupApi(req, res, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/lookup-targets") {
+    handleLookupTargetsApi(req, res);
     return;
   }
 

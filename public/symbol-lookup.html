@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>标的数据自查 · AI Trade</title>
+    <link rel="stylesheet" href="/styles.css?v=20260913-lookup-page">
+    <style>
+      /* 这个页面不加载 app.js（那份脚本绑死在 index.html 的 DOM 上），所以只补它自己要用的
+         几条样式，表格/按钮/提示等继续沿用 styles.css 里已有的类。 */
+      .lookup-shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
+      .lookup-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 12px; }
+      .lookup-bar input[type="text"] { min-width: 280px; padding: 8px 10px; }
+      .lookup-targets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+      .lookup-targets .ghost-button { padding: 4px 10px; font-size: 12px; }
+      .lookup-summary { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: rgba(125, 125, 125, 0.1); }
+      .lookup-summary strong { font-size: 15px; }
+      .lookup-back { font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main class="shell lookup-shell">
+      <p class="lookup-back"><a href="/">← 回到 AI Trade 主页面</a></p>
+      <h1>标的数据自查</h1>
+      <p class="field-hint">
+        查库里有没有这只票、数据够不够跑 AI 搜索（需要 4 年训练 + 2 年验证）。
+        也可以直接输入一个<strong>指数</strong>或<strong>ETF</strong>（如 QQQ、纳指100、沪深300、恒生指数），
+        会把它的全部成分股展开逐只检查。
+      </p>
+
+      <div class="lookup-bar">
+        <label>
+          代码 / 名称 / 指数 / ETF
+          <input id="lookupInput" type="text" placeholder="例如 NVDA、0700、600519、腾讯、QQQ、沪深300" autocomplete="off">
+        </label>
+        <button type="button" id="lookupButton" class="ghost-button">查询</button>
+        <label><input type="checkbox" id="lookupMissingOnly"> 只看库里缺数据的</label>
+        <button type="button" id="lookupCopyUsable" class="ghost-button">复制可用代码</button>
+        <button type="button" id="lookupCopyMissing" class="ghost-button">复制缺数据代码</button>
+        <span id="lookupStatus" class="field-hint"></span>
+      </div>
+
+      <div class="field-hint">可直接点开的指数 / ETF：</div>
+      <div id="lookupTargets" class="lookup-targets"></div>
+
+      <div id="lookupSummary"></div>
+      <div id="lookupResult" class="admin-ranking-list"></div>
+    </main>
+
+    <script src="/stock-tags.js?v=20260913-lookup-page"></script>
+    <script src="/symbol-lookup.js?v=20260913-lookup-page"></script>
+  </body>
+</html>
