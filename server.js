@@ -43,6 +43,10 @@ const IBKR_TWS_AGENT_URL = String(process.env.IBKR_TWS_AGENT_URL || "").trim().r
 const IBKR_TWS_DEFAULT_HOST = String(process.env.IBKR_TWS_DEFAULT_HOST || "127.0.0.1").trim() || "127.0.0.1";
 const IBKR_TWS_DEFAULT_PORT_PAPER = Number(process.env.IBKR_TWS_DEFAULT_PORT_PAPER) || 4002;
 const IBKR_TWS_DEFAULT_PORT_LIVE = Number(process.env.IBKR_TWS_DEFAULT_PORT_LIVE) || 4001;
+const HFDATALIBRARY_API_KEY = String(process.env.HFDATALIBRARY_API_KEY || process.env.HFDATA_API_KEY || "").trim();
+const HFDATALIBRARY_BASE_URL = String(process.env.HFDATALIBRARY_BASE_URL || "https://api.hfdatalibrary.com/v1").trim().replace(/\/+$/, "");
+const HFDATALIBRARY_CACHE_DIR = process.env.HFDATALIBRARY_CACHE_DIR || path.join(DATA_DIR, "hfdata");
+const HFDATALIBRARY_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Number(process.env.HFDATALIBRARY_CACHE_TTL_MS || 12 * 60 * 60 * 1000));
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "").trim();
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
@@ -5864,6 +5868,37 @@ function getJson(url, headers = {}, timeoutMs = 3500, errorLabel = "行情服务
   });
 }
 
+function getText(url, headers = {}, timeoutMs = 30000, errorLabel = "下载服务") {
+  return new Promise((resolve, reject) => {
+    const target = url instanceof URL ? url : new URL(url);
+    const client = target.protocol === "http:" ? http : https;
+    const req = client.get(target, { headers }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        response.resume();
+        const nextUrl = new URL(response.headers.location, target);
+        getText(nextUrl, headers, timeoutMs, errorLabel).then(resolve, reject);
+        return;
+      }
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`${errorLabel}返回 HTTP ${response.statusCode}: ${body.slice(0, 200)}`));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`${errorLabel}请求超时。`));
+    });
+    req.on("error", reject);
+  });
+}
+
 function postJson(url, payload, headers = {}, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const target = url instanceof URL ? url : new URL(url);
@@ -5930,6 +5965,208 @@ async function getJsonWithRetry(urls, headers = {}, attempts = 1) {
   }
 
   throw lastError;
+}
+
+function normalizeUsTicker(value) {
+  const symbol = String(value || "").trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.-]{0,14}$/.test(symbol)) {
+    throw new Error("美股代码格式不合法。");
+  }
+  return symbol;
+}
+
+function normalizeIntradayTimeframe(value) {
+  const timeframe = String(value || "5min").trim().toLowerCase();
+  if (!["1min", "5min", "15min", "30min", "1h"].includes(timeframe)) {
+    throw new Error("暂只支持 1min/5min/15min/30min/1h。");
+  }
+  return timeframe;
+}
+
+function parseCsvLine(line) {
+  const result = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "\"") {
+      if (quoted && line[index + 1] === "\"") {
+        current += "\"";
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      result.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function normalizeHeaderName(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function pickCsvValue(row, names) {
+  for (const name of names) {
+    const key = normalizeHeaderName(name);
+    if (Object.prototype.hasOwnProperty.call(row, key) && String(row[key] || "").trim() !== "") {
+      return row[key];
+    }
+  }
+  return "";
+}
+
+function parseHfIntradayCsv(csv) {
+  const lines = String(csv || "").split(/\r?\n/).filter((line) => line.trim() !== "");
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]).map(normalizeHeaderName);
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const values = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index];
+    });
+    const datetime = pickCsvValue(row, ["datetime", "timestamp", "time", "date"]);
+    const open = Number(pickCsvValue(row, ["open", "o"]));
+    const high = Number(pickCsvValue(row, ["high", "h"]));
+    const low = Number(pickCsvValue(row, ["low", "l"]));
+    const close = Number(pickCsvValue(row, ["close", "c"]));
+    const volume = Number(pickCsvValue(row, ["volume", "v"]));
+    if (!datetime || !(open > 0) || !(high > 0) || !(low > 0) || !(close > 0)) continue;
+    rows.push({
+      datetime: String(datetime).trim(),
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) ? volume : 0,
+    });
+  }
+  rows.sort((a, b) => Date.parse(a.datetime) - Date.parse(b.datetime));
+  return rows;
+}
+
+function intradayRowDate(row) {
+  const raw = String(row.datetime || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function intradayRowTime(row) {
+  const raw = String(row.datetime || "");
+  const match = raw.match(/[T\s](\d{2}:\d{2})(?::\d{2})?/);
+  if (match) return match[1];
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(11, 16);
+}
+
+function isRegularTradingHours(row) {
+  const time = intradayRowTime(row);
+  return time >= "09:30" && time <= "16:00";
+}
+
+function filterIntradayRows(rows, start, end, rthOnly) {
+  return rows.filter((row) => {
+    const date = intradayRowDate(row);
+    if (!date || date < start || date > end) return false;
+    if (rthOnly && !isRegularTradingHours(row)) return false;
+    return true;
+  });
+}
+
+function expectedBarsPerRegularSession(timeframe) {
+  if (timeframe === "1min") return 390;
+  if (timeframe === "5min") return 78;
+  if (timeframe === "15min") return 26;
+  if (timeframe === "30min") return 13;
+  if (timeframe === "1h") return 7;
+  return 0;
+}
+
+function summarizeIntradayCompleteness(rows, timeframe) {
+  const expected = expectedBarsPerRegularSession(timeframe);
+  const byDate = new Map();
+  rows.forEach((row) => {
+    const date = intradayRowDate(row);
+    if (!date) return;
+    byDate.set(date, (byDate.get(date) || 0) + 1);
+  });
+  return Array.from(byDate.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([date, count]) => ({
+    date,
+    bars: count,
+    expectedRegularBars: expected,
+    completeRegularSession: expected > 0 ? count >= expected : null,
+  }));
+}
+
+async function fetchHfIntradayCsv(symbol, timeframe) {
+  if (!HFDATALIBRARY_API_KEY) {
+    throw new Error("HFDATALIBRARY_API_KEY 未配置。");
+  }
+  const tokenUrl = new URL(`${HFDATALIBRARY_BASE_URL}/download-token/${encodeURIComponent(symbol)}`);
+  tokenUrl.searchParams.set("timeframe", timeframe);
+  tokenUrl.searchParams.set("format", "csv");
+  tokenUrl.searchParams.set("version", "clean");
+  const headers = {
+    Authorization: `Bearer ${HFDATALIBRARY_API_KEY}`,
+    "X-API-Key": HFDATALIBRARY_API_KEY,
+  };
+  const payload = await getJson(tokenUrl, headers, 20000, "HF Data Library");
+  const downloadUrl = payload.download_url || payload.downloadUrl || payload.url || payload.signed_url || payload.signedUrl;
+  if (!downloadUrl) {
+    throw new Error("HF Data Library 没有返回下载链接。");
+  }
+  return getText(downloadUrl, {}, 120000, "HF Data Library CSV");
+}
+
+async function loadHfIntradayRows({ symbol, timeframe, refresh = false }) {
+  fs.mkdirSync(HFDATALIBRARY_CACHE_DIR, { recursive: true });
+  const filePath = path.join(HFDATALIBRARY_CACHE_DIR, `${symbol}_clean_${timeframe}.csv`);
+  const metaPath = path.join(HFDATALIBRARY_CACHE_DIR, `${symbol}_clean_${timeframe}.json`);
+  const now = Date.now();
+  let cacheHit = false;
+  if (!refresh && fs.existsSync(filePath)) {
+    const stat = fs.statSync(filePath);
+    cacheHit = now - stat.mtimeMs <= HFDATALIBRARY_CACHE_TTL_MS;
+  }
+  if (!cacheHit) {
+    const csv = await fetchHfIntradayCsv(symbol, timeframe);
+    fs.writeFileSync(filePath, csv);
+    fs.writeFileSync(metaPath, JSON.stringify({
+      symbol,
+      timeframe,
+      source: "HF Data Library",
+      downloadedAt: new Date().toISOString(),
+      bytes: Buffer.byteLength(csv),
+    }, null, 2));
+  }
+  const csv = fs.readFileSync(filePath, "utf8");
+  const rows = parseHfIntradayCsv(csv);
+  let meta = {};
+  try {
+    meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+  } catch (error) {
+    meta = {};
+  }
+  return {
+    rows,
+    cache: {
+      hit: cacheHit,
+      path: filePath,
+      downloadedAt: meta.downloadedAt || "",
+      ttlMs: HFDATALIBRARY_CACHE_TTL_MS,
+    },
+  };
 }
 
 function toValidNumberOrNull(value) {
@@ -8847,6 +9084,49 @@ async function handleBrokerAgentExecutionApi(req, res) {
   }
 }
 
+async function handleIntradayBarsApi(req, res, requestUrl) {
+  try {
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+    const symbol = normalizeUsTicker(requestUrl.searchParams.get("symbol") || requestUrl.searchParams.get("code") || "");
+    const timeframe = normalizeIntradayTimeframe(requestUrl.searchParams.get("timeframe") || "5min");
+    const start = normalizeDate(requestUrl.searchParams.get("start"), "开始日期");
+    const end = normalizeDate(requestUrl.searchParams.get("end"), "结束日期");
+    const refresh = requestUrl.searchParams.get("refresh") === "1" || requestUrl.searchParams.get("refresh") === "true";
+    const rthOnly = requestUrl.searchParams.get("rthOnly") !== "0" && requestUrl.searchParams.get("rthOnly") !== "false";
+    if (new Date(start) > new Date(end)) {
+      throw new Error("开始日期不能晚于结束日期。");
+    }
+    const loaded = await loadHfIntradayRows({ symbol, timeframe, refresh });
+    const rows = filterIntradayRows(loaded.rows, start, end, rthOnly);
+    sendJson(res, 200, {
+      symbol,
+      market: "US",
+      timeframe,
+      source: "HF Data Library",
+      version: "clean",
+      format: "csv",
+      startDate: start,
+      endDate: end,
+      rthOnly,
+      count: rows.length,
+      firstBar: rows[0] || null,
+      lastBar: rows[rows.length - 1] || null,
+      completeness: summarizeIntradayCompleteness(rows, timeframe),
+      cache: {
+        hit: loaded.cache.hit,
+        downloadedAt: loaded.cache.downloadedAt,
+        ttlMs: loaded.cache.ttlMs,
+      },
+      rows,
+    });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取 5 分钟历史数据失败。" });
+  }
+}
+
 async function handleApi(req, res, requestUrl) {
   try {
     const requestedMarket = String(requestUrl.searchParams.get("market") || "").trim().toUpperCase();
@@ -9005,6 +9285,11 @@ const server = http.createServer((req, res) => {
 
   if (requestUrl.pathname === "/api/klines") {
     handleApi(req, res, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/intraday-bars") {
+    handleIntradayBarsApi(req, res, requestUrl);
     return;
   }
 
