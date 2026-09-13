@@ -7,6 +7,7 @@ const { spawn } = require("child_process");
 const { Pool } = require("pg");
 const ModelGenerator = require("./scripts/shared/model-generator.js");
 const { getStockCategories } = require("./scripts/shared/stock-categories.js");
+const { listSectors, listMarkets, resolveSectorSymbols } = require("./scripts/shared/sector-universe.js");
 const { postJsonToResend } = require("./scripts/shared/send-email.js");
 const { runAkshareBridge } = require("./scripts/shared/akshare-client.js");
 const { ensureIndexCatalogTable, listIndexCatalog, resolveIndexConstituents } = require("./scripts/shared/index-catalog.js");
@@ -3831,8 +3832,26 @@ async function handleAdminValidatedSearchRunApi(req, res) {
       testYears = lastScanResult.testYears || 2;
       sessionStartedAt = lastScanResult.sessionStartedAt;
     } else {
+      // 按板块/市场搜索：跟"按指数搜索"同一个模式，在触发时一次性解析成具体标的清单。
+      // 解析会跟数据库核对行情数据量（至少 400 行，够切 4 年训练 + 2 年验证），没有数据的
+      // 代码直接剔除而不是让搜索在上面空转。
+      const sectorId = String(payload.sectorId || "").trim();
+      const sectorMarket = String(payload.sectorMarket || "").trim().toUpperCase();
       const indexMappingId = String(payload.indexMappingId || "").trim();
-      if (indexMappingId) {
+      if (sectorId || sectorMarket) {
+        let resolved;
+        try {
+          resolved = await resolveSectorSymbols(dbPool, { sector: sectorId, market: sectorMarket });
+        } catch (error) {
+          sendJson(res, 400, { error: error.message || "无法解析该板块的标的列表。" });
+          return;
+        }
+        if (resolved.symbols.length === 0) {
+          sendJson(res, 400, { error: resolved.reason || "该板块/市场下没有可搜索的标的（可能是还没有行情数据）。" });
+          return;
+        }
+        symbols = resolved.symbols.slice(0, 350);
+      } else if (indexMappingId) {
         // "按指数搜索": resolve the index's CURRENT constituents ONCE at trigger time (not
         // re-resolved mid-run like 指数盯盘 — a validated-search run is a one-shot batch job,
         // not a persistent recurring watch, so there's no "membership might drift during this
@@ -5548,6 +5567,14 @@ async function handleBacktestsApi(req, res) {
   }
 }
 
+// market=HK 时代码是 4~5 位数字（0700、9988、00700），统一补零成 4 位——symbols.json 用的是
+// 4 位，Yahoo 的 0700.HK 也接受 4 位。不能走下面的 6 位分支，否则港股代码会被当成 A 股。
+function normalizeHkCode(code) {
+  const digits = String(code || "").trim().replace(/\D/g, "");
+  if (!digits || digits.length > 5) throw new Error("港股代码必须是 4~5 位数字，例如 0700、9988。");
+  return digits.replace(/^0+/, "").padStart(4, "0");
+}
+
 function normalizeCode(code) {
   const value = String(code || "").trim();
   if (/^\d{6}$/.test(value)) {
@@ -5588,6 +5615,7 @@ function inferMarket(code) {
 
 function getMarketName(code, market) {
   if (market === "US") return "US";
+  if (market === "HK") return "香港交易所";
   if (/^[48]/.test(code)) return "北京证券交易所";
   if (market === "1") return "上海证券交易所";
   return "深圳证券交易所";
@@ -6226,6 +6254,9 @@ function mergeValuationsIntoRows(rows, valuations) {
 
 function toYahooSymbol(code, market) {
   if (market === "US") return code;
+  // 港股：Yahoo 用 4 位代码 + .HK（0700.HK = 腾讯）。东方财富从这台服务器已被出口拦截
+  // （push2 返回 302、push2his 返回空体），Yahoo 是目前唯一可用的港股行情来源。
+  if (market === "HK") return `${String(code).padStart(4, "0")}.HK`;
   if (market === "1") return `${code}.SS`;
   if (/^[48]/.test(code)) return `${code}.BJ`;
   return `${code}.SZ`;
@@ -6336,7 +6367,8 @@ async function fetchYahooKlines({ code, market, start, end }) {
       symbol,
       name: meta.longName || meta.shortName || symbol,
       market,
-      marketName: "US",
+      // Yahoo 分支同时服务美股和港股，写死 "US" 会让港股显示成美股。
+      marketName: market === "HK" ? "香港交易所" : "US",
       exchangeName: meta.fullExchangeName || meta.exchangeName || meta.exchange || "--",
       currency: meta.currency || "--",
       instrumentType: meta.instrumentType || "--",
@@ -6490,8 +6522,9 @@ async function tryLoadCachedKlines({ code, market, start, end }) {
   };
 }
 
-async function fetchKlines({ code, start, end }) {
-  const market = isChinaCode(code) ? inferMarket(code) : "US";
+async function fetchKlines({ code, start, end, market: explicitMarket = "" }) {
+  // 显式 market 优先：港股代码是 4 位数字，按代码推断会被误判成深市（0 开头）。
+  const market = explicitMarket === "HK" ? "HK" : (isChinaCode(code) ? inferMarket(code) : "US");
 
   const cached = await tryLoadCachedKlines({ code, market, start, end }).catch((error) => {
     console.warn(`Klines cache check skipped for ${code}: ${error.message}`);
@@ -6501,7 +6534,9 @@ async function fetchKlines({ code, start, end }) {
 
   let result;
 
-  if (market === "US") {
+  if (market === "US" || market === "HK") {
+    // 港股没有可用的估值数据源（东方财富出口被拦、AKShare 同样走东财），所以跟美股一样
+    // 只取行情；数据画像里 valuation 会是 null，提示词已说明此时不要设计依赖估值的规则。
     result = await fetchYahooKlines({ code, market, start, end });
   } else {
     try {
@@ -6517,7 +6552,7 @@ async function fetchKlines({ code, start, end }) {
 
   let valuationSource = "";
   let valuations = [];
-  if (market !== "US") {
+  if (market !== "US" && market !== "HK") {
     const eastMoneyValuations = await fetchEastMoneyValuations({ code, start, end });
     let akshareValuations = [];
 
@@ -7592,6 +7627,36 @@ function mapPublicPresetRow(row, { viewerIsOwner = false } = {}) {
   };
 }
 
+// 板块/市场清单，带每个组合下【实际有行情数据】的标的数——界面直接显示这个数字，
+// 避免用户选中一个空板块后才发现搜不出东西。数量是实时查库得出的，不是写死的。
+async function handleSectorsApi(req, res) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") { sendJson(res, 405, { error: "Method not allowed" }); return; }
+    const markets = listMarkets();
+    const sectors = [];
+    for (const sector of listSectors()) {
+      const counts = {};
+      let total = 0;
+      for (const market of markets) {
+        const resolved = await resolveSectorSymbols(dbPool, { sector: sector.id, market: market.id });
+        counts[market.id] = resolved.symbols.length;
+        total += resolved.symbols.length;
+      }
+      sectors.push({ ...sector, counts, total });
+    }
+    // 不选板块、只按市场搜索时能搜多少（整个市场）。
+    const marketTotals = {};
+    for (const market of markets) {
+      const resolved = await resolveSectorSymbols(dbPool, { market: market.id });
+      marketTotals[market.id] = resolved.symbols.length;
+    }
+    sendJson(res, 200, { sectors, markets, marketTotals });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "读取板块列表失败。" });
+  }
+}
+
 // Public, no login required. market=HK always returns an empty list for now — this codebase has
 // no Hong Kong data source at all, so the tab exists as a placeholder rather than pretending to
 // filter data that doesn't exist.
@@ -8575,7 +8640,10 @@ async function handleBrokerAgentExecutionApi(req, res) {
 
 async function handleApi(req, res, requestUrl) {
   try {
-    const code = normalizeCode(requestUrl.searchParams.get("code") || "513100");
+    const requestedMarket = String(requestUrl.searchParams.get("market") || "").trim().toUpperCase();
+    const code = requestedMarket === "HK"
+      ? normalizeHkCode(requestUrl.searchParams.get("code"))
+      : normalizeCode(requestUrl.searchParams.get("code") || "513100");
     const start = normalizeDate(requestUrl.searchParams.get("start"), "开始日期");
     const end = normalizeDate(requestUrl.searchParams.get("end"), "结束日期");
 
@@ -8583,7 +8651,7 @@ async function handleApi(req, res, requestUrl) {
       throw new Error("开始日期不能晚于结束日期。");
     }
 
-    const result = await fetchKlines({ code, start, end });
+    const result = await fetchKlines({ code, start, end, market: requestedMarket });
     // Resolve (and, for a first-time anonymous visitor, cookie-set) the owner BEFORE sending
     // the response — Set-Cookie has to go out with these response headers, not after.
     const ownerKey = await resolveSymbolHistoryOwnerKey(req, res);
@@ -8705,6 +8773,11 @@ const server = http.createServer((req, res) => {
   } catch (error) {
     res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Bad Request");
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/sectors") {
+    handleSectorsApi(req, res);
     return;
   }
 
