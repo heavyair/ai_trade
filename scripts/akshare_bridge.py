@@ -61,6 +61,35 @@ def fetch_valuations(ak, payload):
     return {"source": "AKShare stock_a_lg_indicator", "rows": rows}
 
 
+def fetch_hk_valuations(ak, payload):
+    # 港股估值。东方财富系的接口（stock_hk_valuation_comparison_em 等）从生产服务器访问会被
+    # 拦截——push2 返回 302、push2his 返回空响应体，AKShare 底层同样走东财所以一并失效。
+    # 亿牛网(eniu)是少数仍可达的来源，而且给的是完整历史日频 PE（腾讯 4009 行，2006 年至今），
+    # 正好满足"每个交易日一个 PE"的需求。百度那条(stock_hk_valuation_baidu)只有近一年且是
+    # 阶梯值，不适合做历史回测。
+    #
+    # eniu 的 symbol 形如 hk00700：港股代码补零到 5 位再加 hk 前缀。
+    code = str(payload["code"]).strip().lstrip("0")
+    symbol = "hk" + code.zfill(5)
+    start = payload["start"]
+    end = payload["end"]
+    frame = ak.stock_hk_indicator_eniu(symbol=symbol, indicator="市盈率")
+
+    def map_row(item):
+        date = clean_date(item.get("date"))
+        if not date or date < start or date > end:
+            return None
+        pe = clean_number(item.get("pe"))
+        if pe is None:
+            return None
+        # eniu 只提供市盈率，没有 PB；pe 与 peTtm 用同一个值（它本身就是滚动市盈率口径）。
+        return {"date": date, "pe": pe, "peTtm": pe, "pb": None}
+
+    rows = frame_to_rows(frame, map_row)
+    rows.sort(key=lambda row: row["date"])
+    return {"source": "AKShare stock_hk_indicator_eniu", "rows": rows}
+
+
 def fetch_fundamentals(ak, payload):
     # 毛利率/净资产收益率/营收增长率 — quarterly/annual financial-statement data, NOT daily
     # like PE/PB. A-share uses Sina's 财务分析指标 (already returns every disclosed period,
@@ -201,6 +230,8 @@ def main():
     mode = payload.get("mode")
     if mode == "valuations":
         result = fetch_valuations(ak, payload)
+    elif mode == "hk_valuations":
+        result = fetch_hk_valuations(ak, payload)
     elif mode == "fundamentals":
         result = fetch_fundamentals(ak, payload)
     elif mode == "klines":

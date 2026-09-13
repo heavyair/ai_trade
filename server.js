@@ -5941,6 +5941,18 @@ async function fetchAkshareValuations({ code, start, end }) {
   }
 }
 
+// 港股估值走单独的 bridge 模式（亿牛网），东方财富系的接口从这台服务器全部不可达。
+// 拿到的是完整历史日频 PE，只有 PE 没有 PB——eniu 不提供 PB，画像里 pb 会是 null。
+async function fetchHkValuations({ code, start, end }) {
+  try {
+    const payload = await runAkshareBridge("hk_valuations", { code, start, end });
+    return parseAkshareValuationRows(payload, start, end);
+  } catch (error) {
+    console.warn(`HK PE fetch skipped for ${code}: ${error.message}`);
+    return [];
+  }
+}
+
 function parseAkshareFundamentalsRows(payload) {
   const rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
   return rows
@@ -6552,7 +6564,12 @@ async function fetchKlines({ code, start, end, market: explicitMarket = "" }) {
 
   let valuationSource = "";
   let valuations = [];
-  if (market !== "US" && market !== "HK") {
+  if (market === "HK") {
+    // 港股：行情来自 Yahoo，估值来自亿牛网（见 fetchHkValuations）。两者分开取，
+    // 估值拿不到时不影响行情落库——画像会把 valuation 记成 null 并提示不要用估值规则。
+    valuations = await fetchHkValuations({ code, start, end });
+    if (valuations.length > 0) valuationSource = "AKShare eniu";
+  } else if (market !== "US") {
     const eastMoneyValuations = await fetchEastMoneyValuations({ code, start, end });
     let akshareValuations = [];
 
