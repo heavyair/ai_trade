@@ -976,6 +976,10 @@ async function generateModelFromDataProfile(profile, symbol, previousAttempts = 
     "· rsi14/priceVsMa20Percent/priceVsMa60Percent/atrPercent 都是分布：p10/p50/p90 是该指标在整段窗口里的 10/50/90 分位数。定阈值时请参照这些分位数——例如想让买入信号大约在最低的 10% 的日子触发，就取接近 p10 的值；取一个远超 p90 的阈值会导致整段时间一次都不触发。",
     "· rsi14.overboughtDayRatioPercent/oversoldDayRatioPercent=RSI≥70 和 ≤30 的天数占比；priceVsMa*.aboveMaDayRatioPercent=收盘价位于该均线上方的天数占比。",
     "· drawdowns=回撤发作统计：count=跌幅超过5%并已恢复的次数，medianDepthPercent/maxDepthPercent=这些回撤的中位/最大深度，medianRecoveryDays/maxRecoveryDays=从前高跌下去再回到前高所用交易日的中位/最大值，unrecovered=窗口结束时仍未回到前高的那次。恢复快(中位数几十天)的票适合逢跌加仓；恢复慢或至今未恢复的票必须靠趋势跟随和止损，否则就是一路接飞刀。",
+    // 实测出过的错：AI 在画像 JSON 里看到 priceVsMa60Percent / rsi14 这些字段名，就直接拿去当
+    // condition.indicator 用，结果整条条件被清洗阶段丢弃（而且以前是静默丢弃，根本看不出来）。
+    // 画像字段名和指标名分属两套命名，必须显式说清楚，并给出最容易混的几个的对应关系。
+    "【重要】上面这些画像字段名只是统计数据的名字，不是可以写进 condition.indicator 的指标名——两者是两套不同的命名。condition.indicator 只能从下面那份指标清单里原样选取。最容易搞混的几个对应关系：画像里的 rsi14 对应指标 rsi；画像里的 priceVsMa20Percent/priceVsMa60Percent 对应指标 maValue（用 lookbackDays 指定 20 或 60）；画像里的 atrPercent 对应指标 atrPercent（这个同名，但仍要按指标的用法填 lookbackDays）；画像里的 upDayRatioPercent 没有直接对应的指标，要表达类似含义请用 upDayCount。写错指标名的条件会被整条丢弃，模型会变成你没打算设计的样子。",
     `历史行情特征（JSON）：${JSON.stringify(profile)}`,
     strategyHintLine,
     diversityLine,
