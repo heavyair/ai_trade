@@ -107,11 +107,28 @@ const TRAIN_YEARS = Math.max(1, Math.round(getArg("trainYears", 4)));
 const TEST_YEARS = Math.max(1, Math.round(getArg("testYears", 2)));
 const SYMBOLS_FILTER = getArgString("symbols").split(",").map((s) => s.trim()).filter(Boolean);
 const SHOULD_SAVE = args.includes("--save");
-// 结构级改进的预算占比：0 = 全部是从零生成的新结构（历史行为）；0.5 = 一半的尝试用来
-// 改进"当前最好的结构"。原本 N 次尝试是 N 次独立随机重启，提示词还明确要求"换个不同思路"，
-// 于是某次跑出好结果之后系统会把它扔掉从头再来。详见 model-generator.js 的
-// generateImprovedModel 注释——缺的不是随机性（多样性已饱和）而是收敛。
-const REFINE_RATIO = Math.max(0, Math.min(1, getArg("refineRatio", 0.4)));
+// 结构级改进的预算占比。
+//
+// 【实测结论：默认 0，即保持纯随机重启】A/B/C 三臂对照（NET+TSLA，每臂 20 轮×2 标的 =
+// 120 次 AI 调用，回测上限严格对齐）：
+//
+//   组                          训练通过  验证达标  训练冠军的较差年年化
+//   A 纯随机重启(基线)          7 / 4       1        NET +33.17% / TSLA  +5.71%
+//   B 锁定父模型+逐笔诊断改进   3 / 0       0        NET +13.22% / TSLA −37.18%
+//   C = B + 程序化结构变异      7 / 1       0        NET  −5.74% / TSLA  +2.26%
+//
+// 唯一一个验证达标的模型出自基线 A；两个标的的排序一致都是 A > C > B（上一次 3 轮/臂的小跑
+// 里两标的排序相反，那才是噪音，40 轮/臂后方向一致了）。
+//
+// 失败原因很清楚：B 会把父模型长期锁死。NET 的 B 组 20 轮里多轮都在改进同一个
+// NET-B-1-0-796e53f7，一旦早期选中的父模型方向不好，后面所有轮次都被锁在这个方向上；
+// 而 A 每轮独立重启，20 轮就是 20 次独立机会。TSLA 的 B 组 20 轮一次训练门槛都没过。
+// C 好于 B，很可能正是因为结构变异提供了额外多样性，部分抵消了锁死。
+//
+// 也就是说"缺的是收敛而非随机性"这个判断，前提是"当前最优结构值得深耕"——而父模型是用
+// 训练期指标选的，本身就很容易选错。在这个问题上随机重启的探索价值高于围绕单一父模型深耕。
+// 功能和开关保留，便于将来改进父模型选择策略后重新评估；要改默认值请先重跑那个实验。
+const REFINE_RATIO = Math.max(0, Math.min(1, getArg("refineRatio", 0)));
 // 每次尝试额外派生多少个结构变体（0 = 关闭，保持历史行为）。变体不花 AI 调用，但会把参数
 // 寻优的预算分摊掉，所以默认先关着，等实测确认收益为正再决定默认值。
 const MUTATIONS = Math.max(0, Math.round(getArg("mutations", 0)));
