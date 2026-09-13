@@ -7644,6 +7644,75 @@ function mapPublicPresetRow(row, { viewerIsOwner = false } = {}) {
   };
 }
 
+// 标的数据自查：管理员输入代码或名称，回答"库里有没有这只票、数据够不够用"。
+//
+// 只回答"存在与否"是不够的——真正会卡住人的是"有数据但不够跑 4 年训练 + 2 年验证"，
+// 或者"行情有、估值没有"。所以这里一次性把判断要用的东西都给出来：行情区间与行数、
+// 训练窗口起点那一年的行数（不足 30 行会让整个上行波动门槛无法评估，实测库里 574 个标的
+// 有 459 个是这种情况）、估值覆盖率、已有模型数、板块标签。
+async function handleSymbolLookupApi(req, res, requestUrl) {
+  try {
+    await requireAdminUser(req);
+    if (req.method !== "GET") { sendJson(res, 405, { error: "Method not allowed" }); return; }
+    const query = String(requestUrl.searchParams.get("q") || "").trim();
+    if (!query) { sendJson(res, 400, { error: "请输入股票代码或名称。" }); return; }
+
+    const like = `%${query}%`;
+    const result = await dbQuery(`
+      WITH matched AS (
+        SELECT DISTINCT dp.symbol, dp.market
+        FROM daily_prices dp
+        LEFT JOIN symbols s ON s.symbol = dp.symbol AND s.market = dp.market
+        WHERE upper(dp.symbol) = upper($1)
+           OR dp.symbol ILIKE $2
+           OR s.name ILIKE $2
+        LIMIT 50
+      )
+      SELECT m.symbol, m.market,
+        COALESCE(s.name, '') AS name,
+        count(dp.trade_date)::int AS price_rows,
+        min(dp.trade_date)::date AS first_date,
+        max(dp.trade_date)::date AS last_date,
+        count(*) FILTER (
+          WHERE dp.trade_date >= (current_date - interval '6 years')
+            AND dp.trade_date <  (current_date - interval '5 years')
+        )::int AS first_train_year_rows,
+        count(dv.pe)::int AS pe_rows,
+        count(sf.roe)::int AS fundamental_rows
+      FROM matched m
+      JOIN daily_prices dp ON dp.symbol = m.symbol AND dp.market = m.market
+      LEFT JOIN symbols s ON s.symbol = m.symbol AND s.market = m.market
+      LEFT JOIN daily_valuations dv ON dv.symbol = dp.symbol AND dv.market = dp.market AND dv.trade_date = dp.trade_date
+      LEFT JOIN stock_fundamentals sf ON sf.symbol = dp.symbol AND sf.market = dp.market AND sf.report_date = dp.trade_date
+      GROUP BY m.symbol, m.market, s.name
+      ORDER BY m.symbol
+    `, [query, like]);
+
+    const rows = [];
+    for (const row of result.rows) {
+      const modelCount = await dbQuery(
+        `SELECT count(*)::int AS n, count(*) FILTER (WHERE reached_target)::int AS q
+         FROM optimization_scan_results WHERE upper(symbol) = upper($1)`, [row.symbol]);
+      rows.push({
+        symbol: row.symbol,
+        market: row.market,
+        name: row.name,
+        priceRows: row.price_rows,
+        firstDate: row.first_date ? row.first_date.toISOString().slice(0, 10) : "",
+        lastDate: row.last_date ? row.last_date.toISOString().slice(0, 10) : "",
+        firstTrainYearRows: row.first_train_year_rows,
+        peRows: row.pe_rows,
+        fundamentalRows: row.fundamental_rows,
+        models: modelCount.rows[0].n,
+        qualifiedModels: modelCount.rows[0].q,
+      });
+    }
+    sendJson(res, 200, { query, found: rows.length, rows });
+  } catch (error) {
+    sendJson(res, error.statusCode || 400, { error: error.message || "查询失败。" });
+  }
+}
+
 // 板块/市场清单，带每个组合下【实际有行情数据】的标的数——界面直接显示这个数字，
 // 避免用户选中一个空板块后才发现搜不出东西。数量是实时查库得出的，不是写死的。
 async function handleSectorsApi(req, res) {
@@ -8790,6 +8859,11 @@ const server = http.createServer((req, res) => {
   } catch (error) {
     res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Bad Request");
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/admin/symbol-lookup") {
+    handleSymbolLookupApi(req, res, requestUrl);
     return;
   }
 

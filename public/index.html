@@ -512,6 +512,19 @@
             </div>
             <div id="adminWatchableAiList" class="admin-ranking-list"></div>
           </div>
+          <div id="adminSymbolLookupPanel">
+            <h3>标的数据自查</h3>
+            <p class="field-hint">输入股票代码或名称，查看库里有没有这只票、数据够不够跑 AI 搜索（需要 4 年训练 + 2 年验证）。</p>
+            <div class="admin-toolbar">
+              <label>
+                代码或名称
+                <input id="adminSymbolLookupInput" type="text" placeholder="例如 NVDA、0700、600519、腾讯" autocomplete="off">
+              </label>
+              <button type="button" id="adminSymbolLookupButton" class="ghost-button">查询</button>
+              <span id="adminSymbolLookupStatus" class="field-hint"></span>
+            </div>
+            <div id="adminSymbolLookupResult" class="admin-ranking-list"></div>
+          </div>
           <div id="adminValidatedSearchPanel" class="hidden">
             <p class="field-hint">跟 AI自动生成 的区别：对每个模型思路的每次尝试都立即在验证期打分，专门找验证期年化收益能达标的模型；没达标也会保存当前最好成绩，方便下次继续搜索时跳过已经很成熟的股票。</p>
             <div class="field-hint">选股方式</div>
@@ -1729,7 +1742,7 @@
     </main>
     <script src="/formula-engine.js?v=20260903-fundamentals"></script>
     <script src="/model-recommendation.js?v=20260912-shared-score"></script>
-    <script src="/stock-tags.js?v=20260913-tags"></script>
-    <script src="/app.js?v=20260913-tags"></script>
+    <script src="/stock-tags.js?v=20260913-lookup"></script>
+    <script src="/app.js?v=20260913-lookup"></script>
   </body>
 </html>
