@@ -981,6 +981,10 @@ function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuc
     "· rsi14.overboughtDayRatioPercent/oversoldDayRatioPercent=RSI≥70 和 ≤30 的天数占比；priceVsMa*.aboveMaDayRatioPercent=收盘价位于该均线上方的天数占比。",
     "· valuation=估值分布：pe/peTtm/pb 各自给出 p10/p50/p90 分位数和 coveragePercent（该字段有数据的交易日占比）。整段为 null 表示这只票没有可用估值数据，此时不要设计任何依赖估值的规则。定阈值请用分位数——PE 的绝对水平跨行业没有可比性，但「跌到自身历史 p10 附近」是可直接用的信号。估值可以写进 formula 条件（可用字段 pe/peTtm/pb），也可以用 pe-volume 策略类型。",
     "· volume.ratio20=成交量比（当日成交量÷过去20日均量）的分布，含 p10/p50/p90，以及 aboveOnePointFiveRatioPercent（≥1.5倍的天数占比）和 belowZeroPointSevenRatioPercent（≤0.7倍的天数占比）。用它来定放量/缩量阈值：同样是「放量1.5倍」，在不同标的上触发频率可能差好几倍，照着这只票自己的分位数取值才不会定出一个几乎不触发或天天触发的条件。对应的现成指标是 volumeRatio。",
+    "· fundamentals=基本面分布：grossMargin(毛利率)/roe/revenueGrowth(营收增长) 各自的 p10/p50/p90 和覆盖率，整段或单项为 null 表示无数据。这类数据一个季度才更新一次，在四年窗口里只有十几个不同取值，【不要用它设计每日进出的信号】；它适合当粗粒度的过滤条件（例如只在 roe 高于自身历史中位时才允许建仓）。公式条件里可用字段名 grossMargin/roe/revenueGrowth。",
+    "· microstructure.gapPercent=今开相对昨收的跳空幅度分布。跳空大而频繁的标的，用收盘价触发的规则实际成交会严重偏离，止损类规则尤其危险，这时应优先用仓位控制而不是精确止损位。",
+    "· microstructure.closePositionInRange=收盘价在当日高低区间中的位置(0=最低,100=最高)的分布。中位数明显高于50说明买盘常在尾盘占优，低于50则相反。",
+    "· microstructure.returnAutocorrelationPercent=日收益的一阶自相关系数(已乘100)。【这是选择策略方向最直接的统计量】：明显为正说明有动量特征，趋势跟随/突破类更可能有效；明显为负说明有均值回归特征，逢跌买入/区间类更可能有效；接近0说明两种方向都没有明显优势，应更依赖波动率和回撤特征来设计。",
     "· drawdowns=回撤发作统计：count=跌幅超过5%并已恢复的次数，medianDepthPercent/maxDepthPercent=这些回撤的中位/最大深度，medianRecoveryDays/maxRecoveryDays=从前高跌下去再回到前高所用交易日的中位/最大值，unrecovered=窗口结束时仍未回到前高的那次。恢复快(中位数几十天)的票适合逢跌加仓；恢复慢或至今未恢复的票必须靠趋势跟随和止损，否则就是一路接飞刀。",
     // 实测出过的错：AI 在画像 JSON 里看到 priceVsMa60Percent / rsi14 这些字段名，就直接拿去当
     // condition.indicator 用，结果整条条件被清洗阶段丢弃（而且以前是静默丢弃，根本看不出来）。
@@ -1282,7 +1286,71 @@ function describeVolumeRatio(rows) {
   };
 }
 
-function buildSymbolDataProfile(rows) {
+// 基本面分布。grossMargin/roe/revenueGrowth 由 loadRowsForSymbol 按季报/年报前向填充到每一行，
+// 库里 285 个标的有数据（覆盖 90~98% 的记录）。这三个字段公式引擎一直支持，但从来没有出现在
+// 画像里——跟 pe/volume 是同一个问题：数据送到了，画像没统计，AI 就用不上。
+//
+// 跟估值一样给分位数：ROE 的绝对水平跨行业不可比，但"处在自身历史高位还是低位"可用。
+// 注意这类数据一个季度才更新一次，在 4 年训练窗口里只有十几个不同取值，不适合做高频择时
+// 信号——提示词里会说明这一点，避免 AI 用它设计每日进出的规则。
+function describeFundamentals(rows) {
+  const pick = (key) => rows.map((row) => row[key]).filter((v) => Number.isFinite(v));
+  const result = {};
+  let any = false;
+  for (const key of ["grossMargin", "roe", "revenueGrowth"]) {
+    const list = pick(key);
+    if (list.length === 0) { result[key] = null; continue; }
+    any = true;
+    result[key] = { ...describeSeries(list), coveragePercent: round2((list.length / rows.length) * 100) };
+  }
+  return any ? result : null;
+}
+
+// 价格微观结构：这些都是现成能算、AI 却看不到的特征。
+// · gapPercent：今开相对昨收的跳空幅度分布——跳空频繁的票，用收盘价触发的规则实际成交价会
+//   严重偏离，止损尤其危险。
+// · closePositionInRange：收盘价在当日高低区间中的位置(0=最低,100=最高)的分布——长期偏高说明
+//   买盘在尾盘占优，偏低则相反。
+// · returnAutocorrelation：日收益的一阶自相关。明显为正 = 动量特征，趋势跟随更可能有效；
+//   明显为负 = 均值回归特征，逢跌买入更可能有效。这是选策略方向最直接的一个统计量。
+function describeMicrostructure(rows) {
+  const gaps = [];
+  const positions = [];
+  const returns = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const range = row.high - row.low;
+    if (Number.isFinite(range) && range > 0) {
+      positions.push(((row.close - row.low) / range) * 100);
+    }
+    if (i === 0) continue;
+    const prevClose = rows[i - 1].close;
+    if (prevClose > 0) {
+      if (Number.isFinite(row.open)) gaps.push(((row.open - prevClose) / prevClose) * 100);
+      returns.push((row.close - prevClose) / prevClose);
+    }
+  }
+  let autocorr = null;
+  if (returns.length > 30) {
+    const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+    let num = 0;
+    let den = 0;
+    for (let i = 1; i < returns.length; i += 1) num += (returns[i] - mean) * (returns[i - 1] - mean);
+    for (let i = 0; i < returns.length; i += 1) den += (returns[i] - mean) * (returns[i] - mean);
+    autocorr = den > 0 ? round2(num / den * 100) : null;
+  }
+  return {
+    gapPercent: describeSeries(gaps),
+    closePositionInRange: describeSeries(positions),
+    returnAutocorrelationPercent: autocorr,
+  };
+}
+
+// dims：维度开关，用于对照实验判断新增维度是否真的带来更好的胜率/每买单期望。
+// 默认全开；传 { valuation:false, volume:false, fundamentals:false, microstructure:false }
+// 可退回只有价格衍生指标的旧画像。
+function buildSymbolDataProfile(rows, dims = {}) {
+  const want = (key) => dims[key] !== false;
   if (!Array.isArray(rows) || rows.length < 30) return null;
   const n = rows.length;
   const first = rows[0];
@@ -1330,8 +1398,10 @@ function buildSymbolDataProfile(rows) {
     // 零达标，那是在没有任何数据支持的情况下瞎猜的结果，而不是估值维度本身没用。
     // 成交量的情况相反：volumeRatio 是现成指标，176 条(26%)在用、达标率 20.5% 与全库持平，
     // 这里补上它的分布是为了让 AI 能照分位数定阈值，而不是拍一个"放量 1.5 倍"。
-    valuation: describeValuation(rows),
-    volume: describeVolumeRatio(rows),
+    valuation: want("valuation") ? describeValuation(rows) : undefined,
+    volume: want("volume") ? describeVolumeRatio(rows) : undefined,
+    fundamentals: want("fundamentals") ? describeFundamentals(rows) : undefined,
+    microstructure: want("microstructure") ? describeMicrostructure(rows) : undefined,
     drawdowns: drawdownEpisodes(rows),
   };
 }

@@ -152,6 +152,11 @@ const REFINE_RATIO = Math.max(0, Math.min(1, getArg("refineRatio", 0)));
 // 每次尝试额外派生多少个结构变体（0 = 关闭，保持历史行为）。变体不花 AI 调用，但会把参数
 // 寻优的预算分摊掉，所以默认先关着，等实测确认收益为正再决定默认值。
 const MUTATIONS = Math.max(0, Math.round(getArg("mutations", 0)));
+// 画像维度开关，用于对照实验：--profileDims=base 退回只有价格衍生指标的旧画像，
+// 默认 full 包含估值/成交量/基本面/微观结构。
+const PROFILE_DIMS = getArgString("profileDims") === "base"
+  ? { valuation: false, volume: false, fundamentals: false, microstructure: false }
+  : {};
 // 策略类型轮转表。AI 自由选择时会把 82% 的尝试压在 block-rules 和 score-rules 上，多半是
 // 提示词里各类型说明长度悬殊造成的偏好，不是这些策略真的更合适，所以改由轮转表分配名额。
 //
@@ -308,7 +313,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} rotation=${ROTATION_MODE} maxFailingTrainYears=${MAX_FAILING_TRAIN_YEARS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} profileDims=${getArgString("profileDims") || "full"} rotation=${ROTATION_MODE} maxFailingTrainYears=${MAX_FAILING_TRAIN_YEARS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -357,7 +362,7 @@ async function main() {
         continue;
       }
 
-      const profile = ModelGenerator.buildSymbolDataProfile(trainRows);
+      const profile = ModelGenerator.buildSymbolDataProfile(trainRows, PROFILE_DIMS);
       console.log(`[${symbolEntry.code}] profile (train window ${trainStartDate}~${trainEndDate}): return=${profile.totalReturnPercent}% vol=${profile.annualizedVolatilityPercent}% maxDD=${profile.maxDrawdownPercent}%`);
 
       engine.setActiveLotSizeSymbol(symbolEntry.code);
@@ -723,6 +728,10 @@ async function main() {
           { minTotal: MIN_TOTAL_CLOSED_BUYS, minPerYear: MIN_CLOSED_BUYS_PER_YEAR, rows: allRows }
         );
         const worstClosedBuys = sampleGate.total;
+        // 始终记录较差验证年的胜率，供实验做分布统计——原先这些指标只在失败时才出现在日志里，
+        // 通过的候选反而什么都不打印，导致"用期望/胜率衡量改动效果"这件事根本无法测量。
+        const worstWinRate = (buyWin1.winRate === null || buyWin2.winRate === null)
+          ? null : Math.min(buyWin1.winRate, buyWin2.winRate);
         const passesSample = sampleGate.passes;
         const passesExpectancy = worstExpectancyPct >= MIN_EXPECTANCY_PERCENT;
         const passesPayoff = worstPayoffRatio >= MIN_PAYOFF_RATIO;
@@ -730,7 +739,7 @@ async function main() {
           && passesSample && passesExpectancy && passesPayoff
           && year1Annualized >= TARGET_PERCENT && year2Annualized >= TARGET_PERCENT
           && passesUpsideYear1 && passesUpsideYear2 && passesDrawdownYear1 && passesDrawdownYear2;
-        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [${isRefineAttempt ? "refine" : "explore"}][训练年未过门槛数=${failingTrainYearCount}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
+        console.log(`[${symbolEntry.code}] validate ${i + 1}/${qualifyingAttempts.length} (${model.strategyType}) [${isRefineAttempt ? "refine" : "explore"}][训练年未过门槛数=${failingTrainYearCount}]: train=${trainAnnualized.toFixed(1)}%年化 year1=${year1Annualized.toFixed(1)}%年化${passesUpsideYear1 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear1 ? "" : "(回撤未小于买入持有)"} year2=${year2Annualized.toFixed(1)}%年化 [较差年 期望${worstExpectancyPct === -Infinity ? "无" : `${worstExpectancyPct >= 0 ? "+" : ""}${worstExpectancyPct.toFixed(2)}%`}·盈亏比${worstPayoffRatio === Infinity ? "∞" : worstPayoffRatio === -Infinity ? "无" : worstPayoffRatio.toFixed(2)}·胜率${worstWinRate === null ? "--" : `${worstWinRate.toFixed(0)}%`}·平仓${sampleGate.total}单]${passesUpsideYear2 ? "" : "(未过上行波动门槛)"}${passesDrawdownYear2 ? "" : "(回撤未小于买入持有)"}${passesSample ? "" : `(样本不足:${describeBuySampleGate(sampleGate)}${sampleGate.passesTotal ? `,第${sampleGate.failingYears.map((y) => y.index).join("/")}年不足${MIN_CLOSED_BUYS_PER_YEAR}单` : `<${MIN_TOTAL_CLOSED_BUYS}单`})`}${passesExpectancy ? "" : `(每买单期望${worstExpectancyPct === -Infinity ? "无" : worstExpectancyPct.toFixed(2) + "%"}<${MIN_EXPECTANCY_PERCENT}%)`}${passesPayoff ? "" : `(盈亏比${worstPayoffRatio === Infinity ? "无" : worstPayoffRatio.toFixed(2)}<${MIN_PAYOFF_RATIO})`}${reachedTarget ? " — TARGET MET" : ""}`);
         writeProgress({ currentReason: `验证阶段第${i + 1}/${qualifyingAttempts.length}个候选：${model.strategyType} 验证第1年${year1Annualized.toFixed(1)}%年化 / 第2年${year2Annualized.toFixed(1)}%年化` });
         return {
           model, best, trainAnnualized, trainYearBreakdown,
