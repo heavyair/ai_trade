@@ -344,7 +344,10 @@ async function main() {
   for (const symbolEntry of symbols) {
     symbolIndex += 1;
     writeProgress({ symbolIndex, currentSymbol: symbolEntry.code, attempt: 0, currentReason: null });
-    const dbMarket = symbolEntry.market === "CN" ? (/^[569]/.test(symbolEntry.code) ? "1" : "0") : "US";
+    // CN 再按代码首位分沪(1)/深(0)；HK 和 US 直接用市场名做库里的 market 值。
+    const dbMarket = symbolEntry.market === "CN"
+      ? (/^[569]/.test(symbolEntry.code) ? "1" : "0")
+      : symbolEntry.market;
     try {
       const freshness = await ensureFreshData(pool, symbolEntry.code, dbMarket);
       if (freshness.refreshed) {

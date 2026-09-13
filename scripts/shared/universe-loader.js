@@ -19,8 +19,13 @@ function loadBaseSymbolManifest() {
 
 // A CN code is always 6 digits; anything else (NET, QQQ, AMD, ...) is US — same heuristic
 // already used independently in run-auto-generate.js for its --symbols= override.
+// 港股代码是 4~5 位数字（0700 腾讯、9988 阿里），既不是 6 位 A 股代码也不是字母 ticker，
+// 不特判的话会被当成美股，取数时一行都拿不到。港股行情 2026-09 起已入库（market='HK'）。
 function inferMarket(code) {
-  return /^\d{6}$/.test(code) ? "CN" : "US";
+  const value = String(code || "").trim();
+  if (/^\d{6}$/.test(value)) return "CN";
+  if (/^\d{4,5}$/.test(value)) return "HK";
+  return "US";
 }
 
 async function loadExpandedUniverse(pool) {

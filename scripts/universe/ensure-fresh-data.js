@@ -46,7 +46,8 @@ function expectedLatestTradeDateIso(dbMarket, now = new Date()) {
   // Daily bars are only considered due after a conservative post-close buffer.
   // US: 23:00 UTC covers both EDT and EST close plus vendor lag.
   // CN: 08:30 UTC is after the 15:00 China close, again with a small buffer.
-  const cutoffUtcHour = market === "US" ? 23 : 8.5;
+  // 港股 16:00 收盘(HKT=UTC+8)，落库延迟后按 UTC 9 点算当日数据应已可得；A 股 8.5、美股 23。
+  const cutoffUtcHour = market === "US" ? 23 : (market === "HK" ? 9 : 8.5);
   return utcHour >= cutoffUtcHour ? today : previousWeekdayIso(now);
 }
 
@@ -101,7 +102,10 @@ async function ensureFreshData(pool, symbolCode, dbMarket) {
 
   const start = lastDate ? shiftIsoDate(lastDate, -3) : shiftIsoDate(today, -30);
   try {
-    await fetchJson(`/api/klines?code=${encodeURIComponent(symbolCode)}&start=${start}&end=${today}`);
+    // 港股必须显式传 market：代码是 4 位数字（0700），服务端按代码推断会当成 A 股/美股。
+    // A 股和美股维持原样不传，避免改变既有行为。
+    const marketParam = dbMarket === "HK" ? "&market=HK" : "";
+    await fetchJson(`/api/klines?code=${encodeURIComponent(symbolCode)}&start=${start}&end=${today}${marketParam}`);
     await sleep(POST_REFRESH_DELAY_MS);
     return { refreshed: true, lastDate, expectedLatestDate };
   } catch (error) {
