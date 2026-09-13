@@ -945,6 +945,8 @@ async function generateModelFromDescription(description, symbol, requestedLabel)
 // currently does it for a random ~50% of attempts, to compare against blind generation rather
 // than assume few-shot examples are strictly better.
 function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuccessfulModels = [], options = {}) {
+  // 历史实测甜区提示的开关，默认开启；对照实验用 includeYieldHints:false 关掉。
+  const hints = options.includeYieldHints !== false;
   if (!profile) {
     const error = new Error("历史数据不足，无法生成数据画像。");
     error.statusCode = 400;
@@ -981,6 +983,14 @@ function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuc
     // 实测出过的错：AI 在画像 JSON 里看到 priceVsMa60Percent / rsi14 这些字段名，就直接拿去当
     // condition.indicator 用，结果整条条件被清洗阶段丢弃（而且以前是静默丢弃，根本看不出来）。
     // 画像字段名和指标名分属两套命名，必须显式说清楚，并给出最容易混的几个的对应关系。
+    // 这三条来自 635 条历史结果的实测分布，不是经验之谈。写进提示词而不是做成事后门槛，
+    // 是因为门槛只能省算力不能增加产出：实测"训练期望>=2"这道门槛放行率 60%、把放行者的
+    // 达标率从 22.1% 提到 26.5%，代价却是丢掉 28% 的达标模型，而它省下的只有两次验证回测
+    // ——相比已经花掉的那次 AI 调用可以忽略。让 AI 一开始就往甜区设计才是净收益。
+    hints ? "【经验区间，来自历史结果的实测统计】设计时请让模型落在下面这些区间里：" : null,
+    hints ? "· 每买单期望：训练期落在 +2% ~ +8% 的模型，后续验证期达标率约 34%；低于 +1% 只有 11.5%。但超过 +8% 反而掉到 17.4%——那通常意味着交易次数太少、恰好几笔都赚，是过拟合而不是优势，不要刻意追求极高的单笔期望。" : null,
+    hints ? "· 完整买卖次数：训练期 20~50 笔时达标率最高(30.2%)，200 笔以上掉到 11.1%。过于频繁的交易会被手续费和噪音吃掉边际优势，不要设计每隔几天就进出一次的规则。" : null,
+    hints ? "· 换句话说：宁可要一个每笔 +3%、四年做 40 笔的模型，也不要一个每笔 +15%、四年只做 8 笔，或者每笔 +0.5%、四年做 300 笔的模型。" : null,
     "【重要】上面这些画像字段名只是统计数据的名字，不是可以写进 condition.indicator 的指标名——两者是两套不同的命名。condition.indicator 只能从下面那份指标清单里原样选取。最容易搞混的几个对应关系：画像里的 rsi14 对应指标 rsi；画像里的 priceVsMa20Percent/priceVsMa60Percent 对应指标 maValue（用 lookbackDays 指定 20 或 60）；画像里的 atrPercent 对应指标 atrPercent（这个同名，但仍要按指标的用法填 lookbackDays）；画像里的 upDayRatioPercent 没有直接对应的指标，要表达类似含义请用 upDayCount。写错指标名的条件会被整条丢弃，模型会变成你没打算设计的样子。",
     `历史行情特征（JSON）：${JSON.stringify(profile)}`,
     strategyHintLine,

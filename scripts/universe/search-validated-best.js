@@ -64,6 +64,17 @@ const UPSIDE_THRESHOLD_PERCENT = Math.max(0, getArg("upsideThresholdPercent", 30
 // is skipped for that specific year (treated as unevaluable, not as a pass or a fail) rather than
 // let a handful of days decide whether an otherwise-solid model gets thrown out.
 const MIN_UPSIDE_GATE_ROWS = 30;
+// 允许多少个训练年没过上行波动门槛（0 = 全部年份都必须过，历史行为）。
+//
+// 加这个开关是因为实测发现这道门槛是整个搜索的主瓶颈，而且没有预测力：
+//   · 失败归因：一次 4 标的×12 轮的搜索里，31 次尝试有 28 次(90%)死在这道门槛上，
+//     跑输买入持有 0 次、回撤门槛 0 次、买单指标门槛 0 次——预算几乎全耗在这一道上。
+//   · 预测力检验：把 272 条已保存结果按"最勉强的那个训练年超过门槛的倍数"分箱，
+//     刚好过线(1~1.5倍)的验证达标率 52.0%，而远超门槛(4~8倍)的只有 40.0%，
+//     1.5~2.5 倍 36.8%、2.5~4 倍 38.6%。倍数越高达标率并不越高，甚至略微反向——
+//     跟"训练期期望过高反而预示过拟合"是同一个规律。
+// 也就是说这道门槛杀掉九成尝试却没换来质量。具体放宽到什么程度由对照实验定，见下方提交记录。
+const MAX_FAILING_TRAIN_YEARS = Math.max(0, Math.round(getArg("maxFailingTrainYears", 0)));
 // Per-year drawdown gate tolerance: a model's max drawdown in a given year must be smaller than
 // buy-hold's OWN drawdown in that same year, scaled up by this percentage — e.g. 5 means the
 // model may draw down up to buy-hold's drawdown × 1.05. Proportional rather than a flat
@@ -132,15 +143,36 @@ const REFINE_RATIO = Math.max(0, Math.min(1, getArg("refineRatio", 0)));
 // 每次尝试额外派生多少个结构变体（0 = 关闭，保持历史行为）。变体不花 AI 调用，但会把参数
 // 寻优的预算分摊掉，所以默认先关着，等实测确认收益为正再决定默认值。
 const MUTATIONS = Math.max(0, Math.round(getArg("mutations", 0)));
-// 策略类型轮转表。按实测的"平均较差年每买单期望"给高质量类型更多的采样机会，同时保证每种
-// 类型都拿得到名额——期望高但样本极少的类型（order-grid 只生成过 2 次）需要更多机会才能判断
-// 它到底是真的好还是碰巧。block-rules 产出最多且质量不错(8.17%)，保留最多份额；score-rules
-// 实测最差(1.59%)，份额压到最低。
-const STRATEGY_TYPE_ROTATION = [
+// 策略类型轮转表。AI 自由选择时会把 82% 的尝试压在 block-rules 和 score-rules 上，多半是
+// 提示词里各类型说明长度悬殊造成的偏好，不是这些策略真的更合适，所以改由轮转表分配名额。
+//
+// 名额按【实测达标率】分配。达标率 = 已保存结果中"较差验证年每买单期望≥1.5% 且盈亏比≥1.2"
+// 的占比，样本是库里 635 条带完整指标的结果：
+//
+//   ma-rsi-band 62.5%(n=16) · stagnation-reversal 52.2%(n=23) · block-rules 25.4%(n=264)
+//   score-rules 20.5%(n=249) · local-high-ladder 16.7%(n=6) · pe-volume 7.7%(n=13)
+//   wave 3.2%(n=62)
+//
+// 上一版轮转表是按"平均较差年每买单期望"排的，那个指标会被少数极端值带偏——wave 的平均期望
+// 高达 19.64%，但达标率只有 3.2%（62 个里仅 2 个），说明它的高均值来自个别几笔运气单。
+// 达标率才是对的口径，所以这一版把 wave 从 3/12 降到 1/12，把名额让给 ma-rsi-band 和
+// stagnation-reversal。样本少的类型（ma-rsi-band n=16、stagnation-reversal n=23）仍然保留
+// 多于其达标率应得的份额，一是给它们积累样本的机会，二是避免一次测量就把某个类型判死。
+const STRATEGY_TYPE_ROTATION_BY_YIELD = [
+  "ma-rsi-band", "block-rules", "stagnation-reversal", "score-rules",
+  "ma-rsi-band", "block-rules", "stagnation-reversal", "local-high-ladder",
+  "ma-rsi-band", "block-rules", "stagnation-reversal", "wave",
+];
+// 上一版（按平均期望排）保留下来做对照，--rotation=legacy 可切回。
+const STRATEGY_TYPE_ROTATION_LEGACY = [
   "block-rules", "wave", "order-grid", "block-rules", "stagnation-reversal",
   "wave", "ma-rsi-band", "block-rules", "order-grid", "local-high-ladder",
   "wave", "score-rules",
 ];
+const ROTATION_MODE = getArgString("rotation") || "yield";
+const STRATEGY_TYPE_ROTATION = ROTATION_MODE === "legacy"
+  ? STRATEGY_TYPE_ROTATION_LEGACY
+  : STRATEGY_TYPE_ROTATION_BY_YIELD;
 
 const INITIAL_CASH = 2000000;
 const TRADE_FEE = 5;
@@ -257,7 +289,7 @@ async function main() {
   engine.setOptimizationPointCountOverride(POINT_COUNT);
 
   const symbols = SYMBOLS_FILTER.map((code) => ({ code, market: inferMarket(code), name: code }));
-  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
+  console.log(`minExpectancyPct=${MIN_EXPECTANCY_PERCENT}% minPayoffRatio=${MIN_PAYOFF_RATIO} minTotalClosedBuys=${MIN_TOTAL_CLOSED_BUYS} minClosedBuysPerYear=${MIN_CLOSED_BUYS_PER_YEAR} minTrainClosedBuys=${MIN_TRAIN_CLOSED_BUYS} minTrainPayoffFloor=${MIN_TRAIN_PAYOFF_FLOOR} refineRatio=${REFINE_RATIO} mutations=${MUTATIONS} rotation=${ROTATION_MODE} maxFailingTrainYears=${MAX_FAILING_TRAIN_YEARS} targetPercent=${TARGET_PERCENT}% upsideThresholdPercent=${UPSIDE_THRESHOLD_PERCENT}% drawdownTolerancePercent=${DRAWDOWN_TOLERANCE_PERCENT}% attemptsPerSymbol=${ATTEMPTS_PER_SYMBOL} maxAttempts=${MAX_ATTEMPTS} candidates=${CANDIDATES_PER_SYMBOL} pointCount=${POINT_COUNT} trainYears=${TRAIN_YEARS} testYears=${TEST_YEARS} save=${SHOULD_SAVE} symbols=${symbols.map((s) => s.code).join(",")}`);
 
   let aiCalls = 0;
   let saved = 0;
@@ -532,7 +564,7 @@ async function main() {
             passesDrawdownGate: passesDrawdown,
           });
         });
-        const passesTrainUpsideGate = failingTrainYears.length === 0;
+        const passesTrainUpsideGate = failingTrainYears.length <= MAX_FAILING_TRAIN_YEARS;
         const passesTrainDrawdownGate = failingTrainDrawdownYears.length === 0;
 
         if (!beatsReturn || !beatsDrawdown) {
@@ -609,6 +641,10 @@ async function main() {
         qualifyingAttempts.push({
           model, best, trainAnnualized, trainYearBreakdown,
           passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples,
+          // 随条目带过去：验证阶段是独立的 map 回调，取不到尝试循环里的局部变量。
+          // 之前直接在那里引用 isRefineAttempt 导致 ReferenceError，而且只在"有候选进入
+          // 验证"时才触发——恰恰是最稀有的路径，冒烟测试全都没碰到，却让整轮实验的结果作废。
+          isRefineAttempt,
         });
         console.log(`[${symbolEntry.code}] attempt ${attempt + 1}/${ATTEMPTS_PER_SYMBOL} strategyType=${model.strategyType} [${isRefineAttempt ? "refine" : "explore"}] train=${trainAnnualized.toFixed(1)}%年化 — beat buy-hold, queued for validation (${qualifyingAttempts.length} so far)`);
         writeProgress({
@@ -621,7 +657,7 @@ async function main() {
       // (reset-account scoring, see engine.js's buildScoredBacktestStates) — every candidate
       // gets checked, not just whichever happened to be found first or scored best on train.
       console.log(`[${symbolEntry.code}] train phase done: ${qualifyingAttempts.length} candidate(s) beat buy-hold, validating each against both test years...`);
-      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples }, i) => {
+      const validated = qualifyingAttempts.map(({ model, best, trainAnnualized, trainYearBreakdown, passesTrainUpsideGate, passesTrainDrawdownGate, usedPriorExamples, isRefineAttempt }, i) => {
         const scoredYear1 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[0].startDate, testWindows[0].endDate);
         const scoredYear2 = engine.buildScoredBacktestStates(allRows, best.config, testWindows[1].startDate, testWindows[1].endDate);
         const year1Annualized = annualizedReturnRate(scoredYear1.returnRate, scoredYear1.rowsScored) || 0;
