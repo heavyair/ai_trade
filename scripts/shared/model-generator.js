@@ -744,7 +744,7 @@ function buildPromptGuideLines(schema) {
     "- local-high-ladder：以最近 N 天的高点为基准，跌够一档就加一层仓，涨够一档就减一层——适合在一个区间里反复震荡、回撤不深且能较快收复的标的。对应 localLadderRule 对象，字段：lookbackDays（取最近多少天的高点作基准，典型 3~20）、entryDrop（从该高点回撤百分之几开始首次建仓，典型 1~8）、ladderDrop（此后每再跌百分之几加一级，典型 2~10）、buyAdd（每级加仓占总资金的百分比，典型 15~40）、maxTarget（最大总仓位%，一般 100）、sellRise（持仓成本上涨百分之几减一级，典型 2~10）、sellReduce（每级减仓百分比，通常和 buyAdd 取同值）、stopLoss（亏损百分之几止损，典型 15~30）、stopReduce（止损时减仓百分比，一般 100）、maxSellsPerDay（每天最多减仓几次，典型 1~3）、resetPositionBelow（仓位低于百分之几时重置阶梯状态，典型 5~15）。",
     "- order-grid：把资金拆成若干等额“订单”，每笔订单各自独立地建仓、加仓、止盈，互不干扰——适合波动频繁、单次波段幅度不大的标的，靠高频小幅的低买高卖累积收益。对应 orderGridRule 对象，字段：lookbackDays（取最近多少天的高点作基准，典型 2~10）、entryDrop（从高点回撤百分之几下第一笔单，典型 1~5）、addDrop（此后每再跌百分之几追加一笔，典型 1~5）、takeProfit（每笔单各自涨够百分之几就止盈平掉这一笔，典型 1~6）、orderCapitalPercent（每笔单占总资金的百分比，典型 10~25）、maxLots（最多同时持有几笔，取 100/orderCapitalPercent 向上取整）。注意 takeProfit 要明显大于交易成本，否则频繁小额止盈会被手续费吃掉。",
     "- ma-rsi-band：用快慢均线判断趋势方向、RSI 判断超买超卖、ATR 判断波动是否过大，三者共同决定目标仓位——适合趋势明确、上涨和下跌阶段分明的标的。对应 maRsiBandRule 对象，字段：fastMa/slowMa（快慢均线天数，典型 20/60 或 60/120，fastMa 必须小于 slowMa）、slowBuffer（价格要超过慢均线百分之几才算站上，典型 0~3）、useSlowTrend（是否启用慢均线趋势判断）、bearTarget/bullTarget（慢均线判定为空头/多头时的目标仓位%，典型 0~30 / 80~100）、useFastBull/fastBullTarget（价格站上快均线时是否额外提仓、提到多少%）、useFastCut/fastBearTarget/fastCut（跌破快均线百分之几时是否砍仓、砍到多少%）、rsiDays（RSI 天数，典型 14）、useRsiBuy/rsiBuy/rsiTarget（RSI 低于阈值时是否加仓、阈值和目标仓位%，典型 30~40）、useRsiSell/rsiSell/hotTarget（RSI 高于阈值时是否减仓、阈值和目标仓位%，典型 65~80）、atrDays/useAtr/highAtr/volTarget（ATR 天数、是否启用、ATR% 高于多少算过热、过热时的目标仓位%）。",
-    "- pe-volume：PE 分位数结合成交量倍率决定仓位，用户描述明确是“低估值+放量买入、高估值或缩量卖出”这类逻辑时选这个类型，对应 peVolumeRule 对象，字段含义：peLookbackDays（计算 PE 分位数的回看天数，默认252）、lowPePercentile/highPePercentile（低/高 PE 分位阈值，0~100，默认30/80——PE 低于低分位线视为低估，高于高分位线视为高估）、volumeMaDays（成交量均线天数，默认20）、volumeBuyMultiplier（成交量达到均量的倍数才算放量，默认1.2）、volumeSellMultiplier（成交量跌破均量的倍数就算缩量，默认0.7）、lowPeTarget/neutralTarget/highPeTarget（低估值放量、中性、高估值或缩量三种情形各自对应的目标仓位百分比，默认80/40/0）。",
+    "- pe-volume：PE 分位数结合成交量倍率决定仓位——低估值且放量时加仓、高估值或缩量时减仓。适合估值有明显周期性波动的标的（看上面 valuation.pe 的 p10/p90 跨度是否够大；跨度很窄说明估值常年稳定，这个类型就没有发挥空间）。对应 peVolumeRule 对象，字段含义：peLookbackDays（计算 PE 分位数的回看天数，默认252）、lowPePercentile/highPePercentile（低/高 PE 分位阈值，0~100，默认30/80——PE 低于低分位线视为低估，高于高分位线视为高估）、volumeMaDays（成交量均线天数，默认20）、volumeBuyMultiplier（成交量达到均量的倍数才算放量，默认1.2）、volumeSellMultiplier（成交量跌破均量的倍数就算缩量，默认0.7）、lowPeTarget/neutralTarget/highPeTarget（低估值放量、中性、高估值或缩量三种情形各自对应的目标仓位百分比，默认80/40/0）。",
     "- stagnation-reversal：跌势“跌不动了”就买、涨势“涨不动了”就卖——用“连续 N 天没有创新低”确认下跌动能衰竭，用“连续 N 天没有创新高”确认上涨动能衰竭。适合有明显阶段性顶底、但转折前会先横盘一段时间的标的。对应 stagnationReversalRule 对象，字段：buyLookbackDays（判断“新低”时回看多少天，典型 3~20）、buyStalledDays（连续多少天没创新低就买入，典型 3~15）、buyTarget（买入后的目标仓位%，典型 60~100）、sellLookbackDays（判断“新高”时回看多少天，典型 3~20）、sellStalledDays（连续多少天没创新高就卖出，典型 3~15）、sellReduce（卖出时减仓百分比，典型 50~100）。buyStalledDays 取得太小会在下跌途中反复抄底，太大则会错过反转起点。",
     "顶层字段 model.waveThreshold 取值范围是1~30，没有特别要求时用默认值20——绝对不要生成0.1、0.5这种接近0的数值，那会让“阶段高点/低点”被任何一天的正常波动刷新，起不到过滤噪音的作用。strategyType 为 wave 时，这个字段是该策略自己买卖逻辑算“阶段高点/低点”用的核心参数；strategyType 是 block-rules/score-rules 时，只要用到了 drawdownFromWaveHigh/riseFromWaveLow/daysSinceNewWaveLow/daysSinceNewWaveHigh 这几个指标，这个字段就是它们共用的波浪确认阈值（详见下方专门说明），不是摆设；其它 strategyType 才是真的填个数字不会被用到。",
     "- block-rules：用户的描述包含多个用“并且/同时”连接的条件、需要触发一次性动作（调仓/清仓），或者用到上面 6 种类型都表达不了的指标（例如均线斜率、N 日内涨跌天数、距低点反弹幅度、按绝对股数建仓、连续 N 天满足某条件）时，选这个类型。",
@@ -979,6 +979,8 @@ function buildDataProfilePrompt(profile, symbol, previousAttempts = [], priorSuc
     "· yearly=分年度拆解，每年给出 returnPercent/volatilityPercent/maxDrawdownPercent/upDayRatioPercent。请重点看它：每年都涨说明是趋势票，适合趋势跟随并尽量少踏空；大起大落说明适合区间/均值回归；某一年巨亏说明必须有止损或回撤保护。",
     "· rsi14/priceVsMa20Percent/priceVsMa60Percent/atrPercent 都是分布：p10/p50/p90 是该指标在整段窗口里的 10/50/90 分位数。定阈值时请参照这些分位数——例如想让买入信号大约在最低的 10% 的日子触发，就取接近 p10 的值；取一个远超 p90 的阈值会导致整段时间一次都不触发。",
     "· rsi14.overboughtDayRatioPercent/oversoldDayRatioPercent=RSI≥70 和 ≤30 的天数占比；priceVsMa*.aboveMaDayRatioPercent=收盘价位于该均线上方的天数占比。",
+    "· valuation=估值分布：pe/peTtm/pb 各自给出 p10/p50/p90 分位数和 coveragePercent（该字段有数据的交易日占比）。整段为 null 表示这只票没有可用估值数据，此时不要设计任何依赖估值的规则。定阈值请用分位数——PE 的绝对水平跨行业没有可比性，但「跌到自身历史 p10 附近」是可直接用的信号。估值可以写进 formula 条件（可用字段 pe/peTtm/pb），也可以用 pe-volume 策略类型。",
+    "· volume.ratio20=成交量比（当日成交量÷过去20日均量）的分布，含 p10/p50/p90，以及 aboveOnePointFiveRatioPercent（≥1.5倍的天数占比）和 belowZeroPointSevenRatioPercent（≤0.7倍的天数占比）。用它来定放量/缩量阈值：同样是「放量1.5倍」，在不同标的上触发频率可能差好几倍，照着这只票自己的分位数取值才不会定出一个几乎不触发或天天触发的条件。对应的现成指标是 volumeRatio。",
     "· drawdowns=回撤发作统计：count=跌幅超过5%并已恢复的次数，medianDepthPercent/maxDepthPercent=这些回撤的中位/最大深度，medianRecoveryDays/maxRecoveryDays=从前高跌下去再回到前高所用交易日的中位/最大值，unrecovered=窗口结束时仍未回到前高的那次。恢复快(中位数几十天)的票适合逢跌加仓；恢复慢或至今未恢复的票必须靠趋势跟随和止损，否则就是一路接飞刀。",
     // 实测出过的错：AI 在画像 JSON 里看到 priceVsMa60Percent / rsi14 这些字段名，就直接拿去当
     // condition.indicator 用，结果整条条件被清洗阶段丢弃（而且以前是静默丢弃，根本看不出来）。
@@ -1231,6 +1233,55 @@ function yearlyBreakdown(rows) {
   return out;
 }
 
+// 估值分布。字段可能整段缺失（个别标的没有估值数据），也可能个别日缺失——都用 null 表示
+// "这只票没有可用的估值数据"，而不是填 0，否则 AI 会把"没数据"误读成"估值为零"。
+// 分位数比绝对值有用得多：PE 的绝对水平跨行业没有可比性，但"当前处在自身历史的什么分位"
+// 是可以直接用来定阈值的。
+function describeValuation(rows) {
+  const pick = (key) => rows.map((row) => row[key]).filter((v) => Number.isFinite(v) && v > 0);
+  const pe = pick("pe");
+  const peTtm = pick("peTtm");
+  const pb = pick("pb");
+  if (pe.length === 0 && peTtm.length === 0 && pb.length === 0) return null;
+  const coverage = (list) => round2((list.length / rows.length) * 100);
+  return {
+    pe: pe.length ? { ...describeSeries(pe), coveragePercent: coverage(pe) } : null,
+    peTtm: peTtm.length ? { ...describeSeries(peTtm), coveragePercent: coverage(peTtm) } : null,
+    pb: pb.length ? { ...describeSeries(pb), coveragePercent: coverage(pb) } : null,
+  };
+}
+
+// 成交量比（当日成交量 / 过去 N 日均量）的分布。用比值而不是绝对成交量：绝对量的量级跨标的
+// 差几个数量级，没法给出通用阈值；比值则天然可比，也正是 volumeRatio 指标的口径。
+function volumeRatioSeries(rows, days = 20) {
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    const v = Number(rows[i].volume);
+    sum += Number.isFinite(v) ? v : 0;
+    if (i >= days) {
+      const old = Number(rows[i - days].volume);
+      sum -= Number.isFinite(old) ? old : 0;
+    }
+    if (i < days) continue;
+    const avg = sum / days;
+    if (avg > 0 && Number.isFinite(v)) out.push(v / avg);
+  }
+  return out;
+}
+
+function describeVolumeRatio(rows) {
+  const series = volumeRatioSeries(rows);
+  if (series.length === 0) return null;
+  return {
+    ratio20: describeSeries(series, {
+      // 放量/缩量各自的天数占比：让 AI 知道"1.5 倍"在这只票上到底是常态还是罕见事件。
+      aboveOnePointFiveRatioPercent: (v) => v >= 1.5,
+      belowZeroPointSevenRatioPercent: (v) => v <= 0.7,
+    }),
+  };
+}
+
 function buildSymbolDataProfile(rows) {
   if (!Array.isArray(rows) || rows.length < 30) return null;
   const n = rows.length;
@@ -1273,6 +1324,14 @@ function buildSymbolDataProfile(rows) {
     priceVsMa20Percent: describeSeries(maDeviationSeries(rows, 20), { aboveMaDayRatioPercent: (v) => v > 0 }),
     priceVsMa60Percent: describeSeries(maDeviationSeries(rows, 60), { aboveMaDayRatioPercent: (v) => v > 0 }),
     atrPercent: describeSeries(atrPercentSeries(rows)),
+    // 估值与成交量：loadRowsForSymbol 一直在每一行上带着 pe/peTtm/pb/volume（库里覆盖率
+    // ~100%），但画像以前只统计价格衍生指标，把它们全丢了——AI 从头到尾没见过一个估值或
+    // 成交量数字，自然无从设计相关规则。实测 681 条搜索结果里只有 18 条用到估值(2.6%)且
+    // 零达标，那是在没有任何数据支持的情况下瞎猜的结果，而不是估值维度本身没用。
+    // 成交量的情况相反：volumeRatio 是现成指标，176 条(26%)在用、达标率 20.5% 与全库持平，
+    // 这里补上它的分布是为了让 AI 能照分位数定阈值，而不是拍一个"放量 1.5 倍"。
+    valuation: describeValuation(rows),
+    volume: describeVolumeRatio(rows),
     drawdowns: drawdownEpisodes(rows),
   };
 }
